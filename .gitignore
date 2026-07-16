@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+
+# Private planning and development continuity documents
+docs/internal/
+.pi-subagents/
+.memory-lane/
