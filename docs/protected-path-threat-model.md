@@ -54,8 +54,8 @@ The protected `read` tool retains Pi's built-in line and output truncation behav
 The protected `ls` tool defaults to 500 visible entries, accepts at most 2,000, and scans at most 5,000 directory entries for one call.
 The protected `find` tool returns files only, defaults to 1,000 results, accepts at most 2,000, skips `.git` and `node_modules` during traversal, and stops at 2,000 directories or 20,000 examined entries.
 The protected `grep` tool preselects at most 500 files whose measured sizes are at most 1,000,000 bytes each and 5,000,000 bytes in total, traverses at most 1,000 directories and 10,000 entries, limits context to 20 lines, accepts at most 2,000 output matches, and gives `rg` 2 seconds.
-Regex `grep` uses `execFile` without a shell and returns bounded messages for unavailable `rg`, invalid patterns, and timeouts.
-When `rg` is unavailable, literal searches use a bounded in-process file reader with no regular-expression evaluation.
+Regex and literal `grep` use `rg` through `execFile` without a shell when it is available and return bounded messages for invalid patterns and timeouts.
+When `rg` is unavailable, regex searches return a bounded unavailable result while explicit literal searches use a bounded in-process file reader with no regular-expression evaluation.
 Search and listing output also passes through Pi's head truncation helper.
 
 ## Redaction boundary

@@ -57,6 +57,8 @@ It uses custom message type `pi-advisor-note`, severity `nit`, `concern`, or `bl
 
 The Slice 1 Advisor uses only verified read-only Pi tools.
 Mutating tools are unavailable.
+Protected `grep` uses `rg` for regex and literal searches when available.
+Without `rg`, regex searches report that they are unavailable and explicit literal searches use a bounded in-process fallback.
 Protected paths are denied before file access and before search or listing results are returned.
 Checks normalize resolved paths and account for symlinks.
 Read-only access and redaction cannot guarantee complete secret protection, and public documentation must state that limitation.
@@ -64,7 +66,7 @@ Read-only access and redaction cannot guarantee complete secret protection, and 
 ## Memory suggestions
 
 Memory suggestions are unavailable in Slice 1, even if the Executor exposes a compatible `memory_suggest` tool.
-Advisor never calls `memory_save`, calls `memory_suggest`, imports Memory Lane, writes Memory Lane storage, or approves memory.
+Advisor never calls `memory_save` or `memory_suggest`, imports Memory Lane, writes Memory Lane storage, or approves memory.
 The retained Slice 0 capability probe and reserved configuration fields do not activate runtime integration.
 Any future Memory suggestion behavior requires a separately approved implementation.
 
@@ -91,7 +93,7 @@ Provider, malformed internal tool, and governor failures are not retried, and fa
 A well-formed read-only tool error remains ordinary review feedback rather than failing the update by itself.
 If a turn or tool-call governor fires after one valid note has already been accepted, that one bounded note may still be delivered while the update counts as failed.
 Three consecutive failed updates pause Advisor and produce one pause warning, while a successful review resets the consecutive-failure count.
-Crossing a context, session token, or reported-cost cap pauses only Advisor and never interrupts Executor.
+Exceeding the context limit or reaching a session token or reported-cost cap pauses only Advisor and never interrupts Executor.
 
 ## Privacy and telemetry
 
