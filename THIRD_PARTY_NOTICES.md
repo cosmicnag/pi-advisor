@@ -3,13 +3,13 @@
 ## OMP
 
 Pi Advisor is independently implemented and inspired by OMP's automatic Advisor design.
-No OMP source or prompt text is included in Slice 0.
+No OMP source or prompt text is included in the Slice 1 implementation.
 Any future direct adaptation must preserve its applicable copyright and license notice here and in the adapted source.
 
 ## @juicesharp/rpiv-advisor
 
 `@juicesharp/rpiv-advisor` informed product comparison and coexistence analysis.
-No `@juicesharp/rpiv-advisor` source is included in Slice 0.
+No `@juicesharp/rpiv-advisor` source is included in the Slice 1 implementation.
 Any future directly adapted implementation pattern must be identified here with its applicable copyright and license notice.
 
 ## Pi

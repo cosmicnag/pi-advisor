@@ -2,6 +2,11 @@
 
 Pi Advisor provides automatic secondary review of a primary Pi agent session while keeping reviewer state separate from the primary conversation.
 
+## Slice 1 terminology status
+
+Slice 1 implements Executor, Advisor, Advisor update, Cursor, Epoch, Meaningful Executor turn, Executor reasoning, Advisory note, Session activation, in-memory caller configuration, Fixed Advisor policy, User instructions, tagged Project instructions, Protected path, Protected-path exception, and Destructive-command guard boundaries.
+Re-prime, Memory suggestion, cross-update Deferred advice restoration, rich Advice cards, durable User configuration, durable Project configuration, and Persisted Advisor transcript remain reserved later-slice terms rather than available Slice 1 features.
+
 ## Language
 
 **Executor**:
@@ -21,7 +26,7 @@ The active-branch position identifying which Executor entries the Advisor has al
 _Avoid_: Message count, file pointer, pagination cursor
 
 **Epoch**:
-The runtime generation that invalidates asynchronous Advisor work created before a reset, configuration change, disablement, session replacement, or disposal.
+The runtime generation that invalidates asynchronous Advisor work created before a branch reset, disablement, shutdown, or future configuration apply.
 _Avoid_: Version, session number, retry count
 
 **Re-prime**:
@@ -58,15 +63,18 @@ A temporary enabled state applying only to the current Pi session.
 _Avoid_: Enabled setting, project activation
 
 **User default activation**:
-An explicit user-owned preference controlling whether new TUI and RPC sessions begin with Advisor active while JSON and print automation remain opt-in.
+A default controlling whether new TUI and RPC sessions begin with Advisor active while JSON and print automation remain opt-in.
+Slice 1 accepts it from trusted in-memory caller configuration, while a durable user-owned preference remains deferred.
 _Avoid_: Global activation, automatic project activation, automation default
 
 **User configuration**:
-User-owned policy controlling the Advisor model, effort, activation default, spending, cadence, and persistence.
+Reserved durable user-owned policy controlling the Advisor model, effort, activation default, spending, cadence, and persistence.
+Slice 1 accepts only an equivalent complete in-memory object from a trusted programmatic caller.
 _Avoid_: Global config, unrestricted base config
 
 **Project configuration**:
-Trusted repository-specific specialization that may add instructions or reduce tools and limits but cannot control activation, model choice, spending increases, or persistence.
+Reserved trusted repository-specific specialization that may add instructions or reduce tools and limits but cannot control activation, model choice, spending increases, or persistence.
+Slice 1 tags Pi-provided project context for review but does not load or merge Project configuration.
 _Avoid_: Project activation, repository default, project spending policy
 
 **Fixed Advisor policy**:
@@ -90,7 +98,8 @@ A file or directory the Advisor cannot read, search, or discover because it may 
 _Avoid_: Ignored file, hidden file, redacted output
 
 **Protected-path exception**:
-A narrow User configuration rule that deliberately permits Advisor access to one otherwise protected target.
+A narrow trusted-caller rule that deliberately permits Advisor access to one otherwise protected target.
+A durable User configuration owner remains deferred.
 _Avoid_: Project exception, protection disablement, unrestricted access
 
 **User interruption**:
@@ -106,7 +115,7 @@ _Avoid_: Advisor blocker, Advisory note enforcement, Advisor tool interruption
 
 **Developer**: Does Project configuration turn the Advisor on when I open this repository?
 
-**Domain expert**: No. Project configuration may customize the Advisor, but only Session activation or User default activation can enable it.
+**Domain expert**: No. Slice 1 does not load Project configuration, and any future Project configuration may customize review but cannot activate it.
 
 **Developer**: What enters the Executor's context after an Advisor update?
 

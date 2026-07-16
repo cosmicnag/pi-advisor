@@ -10,8 +10,8 @@ The Slice 1 core observes meaningful completed Executor turns in the background,
 
 [`@juicesharp/rpiv-advisor`](https://www.npmjs.com/package/@juicesharp/rpiv-advisor) provides an Executor-invoked consultation tool.
 This package is designed for automatic background observation that does not depend on the Executor remembering to request a review.
-Both packages may eventually use `/advisor`, so intentional coexistence requires Pi-assigned suffixed command names and clear user choice.
-Slice 0 measures the exact collision behavior before final coexistence wording is published.
+Both packages register `/advisor`, and Pi 0.80.7 assigns `/advisor:1` and `/advisor:2` in extension load order when both are installed.
+Slice 1 does not add a collision warning, so users must identify the intended command from Pi's command list.
 
 ## Slice 1 behavior
 
@@ -33,7 +33,7 @@ Cross-update deduplication, rich advice cards, lifecycle restoration, provider r
 The normative public contract is in [`docs/behavior-contract.md`](docs/behavior-contract.md).
 The measured OMP parity position is tracked in [`docs/omp-parity.md`](docs/omp-parity.md).
 Slice 0 compatibility evidence is in [`docs/slice-0-compatibility.md`](docs/slice-0-compatibility.md).
-The proposed limits are in [`docs/slice-0-limit-proposal.md`](docs/slice-0-limit-proposal.md).
+The approved defaults and hard maxima are in [`docs/slice-0-limit-proposal.md`](docs/slice-0-limit-proposal.md).
 The protected-path analysis is in [`docs/protected-path-threat-model.md`](docs/protected-path-threat-model.md).
 
 ## Install the Slice 1 package locally
@@ -51,9 +51,65 @@ pi --no-extensions -e ./src/index.ts --no-session
 ```
 
 The installed default registers `/advisor` and `--advisor` but does not start a nested runtime because no model is durably configured in Slice 1.
-Programmatic SDK fixtures may use the exported `createPiAdvisorExtension({ config })` factory to supply approved in-memory configuration.
 The manifest remains deliberately private as an accidental-publication guard.
 An approved release change must remove that guard before the manual trusted-publishing workflow can publish.
+
+## Session controls
+
+- `/advisor on` enables review for the current session when the configured `provider/model` is available and authenticated.
+- `/advisor off` disables review, invalidates in-flight work, clears the bounded backlog, and disposes the nested session.
+- `/advisor status` reports activation, model, backlog, context, usage, review, note, pause, and last-failure state.
+- `--advisor` requests activation for the current session in every Pi mode.
+- `defaultEnabled: true` applies only to TUI and RPC sessions, while JSON and print sessions require explicit activation.
+
+Running `/advisor on` after the three-failure pause or a governor pause resets the session token and cost totals before starting again and reports the previous totals.
+Without an in-memory model configuration, `/advisor on` and `--advisor` leave Advisor inactive with an actionable status reason and never fall back to the Executor model.
+
+## In-memory configuration
+
+Slice 1 has no YAML, WATCHDOG, User configuration file, Project configuration file, configuration reload, or `/advisor configure` workflow.
+An embedding extension or SDK host can provide one complete trusted `AdvisorConfig` object for the lifetime of the extension instance:
+
+```ts
+import {
+  createPiAdvisorExtension,
+  DEFAULT_ADVISOR_CONFIG,
+} from "@ribbons-digital/pi-advisor";
+
+const config = structuredClone(DEFAULT_ADVISOR_CONFIG);
+config.model = "anthropic/claude-sonnet-4";
+config.defaultEnabled = true;
+
+export default createPiAdvisorExtension({ config });
+```
+
+The model reference must use `provider/model` syntax and must resolve through Pi's model registry with valid credentials.
+Version 1 defaults to disabled, no model, `high` effort, all four read-only tools, empty review instructions, no additional protected paths, and no protected-path exceptions.
+The active Slice 1 fields are `defaultEnabled`, `model`, `effort`, `tools`, `instructions`, all `context` fields, the note, turn, tool-call, pending-byte, token, and cost limits, and both `security` path lists.
+`maxReprimeTokens`, review cadence, deferred-advice retention, `memorySuggestions`, `persistence`, `AdvisorProjectConfig`, and `CONFIG_VALIDATION_STRATEGY` are reserved contract fields and do not change Slice 1 runtime behavior.
+`PROPOSED_ADVISOR_CONFIG` remains a deprecated compatibility alias for an independent clone of `DEFAULT_ADVISOR_CONFIG`.
+Programmatic hooks are intended for embedding and tests: `onRuntime` exposes the instance, `onStatus` receives status snapshots, and `onWarning` receives pause warnings.
+An additional protected path blocks that target and its descendants by normalized request and canonical target, while an exception permits only one exact normalized or canonical target and can deliberately expose sensitive content.
+
+Project context files supplied by Pi are tagged, redacted, and bounded before review, but they are treated as untrusted review context rather than higher-authority policy.
+
+## Exported API
+
+All Slice 1 modules are re-exported from the package root.
+
+| Surface | Exports |
+| --- | --- |
+| Extension | Default Pi extension, `createPiAdvisorExtension`, `PiAdvisorExtensionOptions` |
+| Runtime | `AdvisorRuntime`, `AdvisorRuntimeHooks`, `AdvisorRuntimeStatus`, `AdvisorUsageTotals`, `formatAdvisorStatus`, `formatAdvisorEnableStatus` |
+| Configuration | `DEFAULT_ADVISOR_CONFIG`, deprecated `PROPOSED_ADVISOR_CONFIG`, `normalizeAdvisorConfig`, `HARD_LIMITS`, `READ_ONLY_TOOL_NAMES`, configuration types, and reserved validation metadata |
+| Advice | `createAdviseTool`, `boundAdvice`, `isContentFreeAdvice`, and Advisory note types |
+| Protected tools | `ProtectedPathPolicy`, `createProtectedAdvisorTools`, `isAdvisorReadOnlyTool`, and `AdvisorToolContext` |
+| Transcript | `ADVISOR_CUSTOM_TYPE`, cursor helpers, meaningful-turn filtering, delta rendering, and transcript types |
+| Redaction | `redactSecrets`, `estimateTokens`, UTF-8 truncation helpers, and `RedactionResult` |
+
+The default extension is the installable entry point.
+`AdvisorRuntime` exposes cloned status snapshots, nested-message inspection, project-context capture, explicit enable and disable, turn observation, and shutdown, while the extension factory wires those lifecycle methods to Pi.
+The factory, runtime hooks, status formatters, and policy helpers support controlled embedding, integration tests, and inspection without enabling durable configuration or persistence.
 
 ## Compatibility
 
@@ -66,9 +122,9 @@ A missing or unavailable configured Advisor model leaves Advisor inactive withou
 Pi extensions run with the user's full system permissions.
 Review package source before installation.
 
-When explicitly configured and active, Advisor sends bounded Executor messages, exposed reasoning, tool activity, tool results, trusted project context, and allowed file contents to the selected secondary model provider.
+When explicitly configured and active, Advisor sends bounded Executor messages, exposed reasoning, tool activity, tool results, Pi-supplied tagged project context, and allowed file contents to the selected secondary model provider.
 Redaction runs before budgeting and protected-path checks cover direct and symlink-resolved access, but neither defense can guarantee that every secret is excluded.
-Automatic review creates additional provider usage and cost, bounded by the approved defaults and hard package maxima.
+Automatic review creates additional provider usage and cost, bounded by configured session governors and the active package hard maxima for notes, turns, tool calls, and pending bytes.
 Advisor transcript persistence remains disabled and unimplemented in Slice 1.
 
 ## Telemetry
