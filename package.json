@@ -1,0 +1,92 @@
+{
+	"name": "@ribbons-digital/pi-advisor",
+	"version": "0.0.0",
+	"description": "Automatic isolated secondary review for Pi sessions",
+	"license": "MIT",
+	"type": "module",
+	"private": true,
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ribbons-digital/pi-advisor.git"
+	},
+	"homepage": "https://github.com/ribbons-digital/pi-advisor#readme",
+	"bugs": {
+		"url": "https://github.com/ribbons-digital/pi-advisor/issues"
+	},
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"advisor",
+		"code-review"
+	],
+	"publishConfig": {
+		"access": "public",
+		"provenance": true
+	},
+	"files": [
+		"src/",
+		"README.md",
+		"LICENSE",
+		"THIRD_PARTY_NOTICES.md",
+		"docs/behavior-contract.md",
+		"docs/omp-parity.md"
+	],
+	"pi": {
+		"extensions": [
+			"./src/index.ts"
+		]
+	},
+	"scripts": {
+		"clean": "rm -rf coverage dist",
+		"typecheck": "tsc --noEmit",
+		"lint": "eslint .",
+		"format": "prettier --write .",
+		"format:check": "prettier --check .",
+		"test": "vitest run",
+		"test:unit": "vitest run tests/unit",
+		"test:integration": "vitest run tests/integration",
+		"test:e2e": "vitest run tests/e2e",
+		"verify": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test",
+		"pack:inspect": "pnpm pack --dry-run"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-agent-core": ">=0.80.7 <0.81.0",
+		"@earendil-works/pi-ai": ">=0.80.7 <0.81.0",
+		"@earendil-works/pi-coding-agent": ">=0.80.7 <0.81.0",
+		"@earendil-works/pi-tui": ">=0.80.7 <0.81.0",
+		"typebox": ">=1.1.38 <2"
+	},
+	"peerDependenciesMeta": {
+		"@earendil-works/pi-agent-core": {
+			"optional": true
+		},
+		"@earendil-works/pi-ai": {
+			"optional": true
+		},
+		"@earendil-works/pi-tui": {
+			"optional": true
+		},
+		"typebox": {
+			"optional": true
+		}
+	},
+	"engines": {
+		"node": ">=22"
+	},
+	"packageManager": "pnpm@10.0.0+sha512.b8fef5494bd3fe4cbd4edabd0745df2ee5be3e4b0b8b08fa643aa3e4c6702ccc0f00d68fa8a8c9858a735a0032485a44990ed2810526c875e416f001b17df12b",
+	"devDependencies": {
+		"@earendil-works/pi-agent-core": "0.80.7",
+		"@earendil-works/pi-ai": "0.80.7",
+		"@earendil-works/pi-coding-agent": "0.80.7",
+		"@earendil-works/pi-tui": "0.80.7",
+		"@eslint/js": "9.39.2",
+		"@types/node": "24.10.1",
+		"eslint": "9.39.2",
+		"prettier": "3.8.2",
+		"tsx": "4.21.0",
+		"typebox": "1.1.38",
+		"typescript": "5.9.3",
+		"typescript-eslint": "8.53.1",
+		"vitest": "4.0.18"
+	}
+}
