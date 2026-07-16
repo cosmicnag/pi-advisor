@@ -2,9 +2,12 @@ node_modules/
 dist/
 coverage/
 *.log
+*.tgz
+pack.json
 .DS_Store
 
 # Private planning and development continuity documents
 docs/internal/
 .pi-subagents/
 .memory-lane/
+.memory-lane-scope
