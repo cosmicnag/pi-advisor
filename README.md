@@ -28,6 +28,9 @@ Slice 0 measures the exact collision behavior before final coexistence wording i
 
 The normative public contract is in [`docs/behavior-contract.md`](docs/behavior-contract.md).
 The measured OMP parity position is tracked in [`docs/omp-parity.md`](docs/omp-parity.md).
+Slice 0 compatibility evidence is in [`docs/slice-0-compatibility.md`](docs/slice-0-compatibility.md).
+The proposed limits are in [`docs/slice-0-limit-proposal.md`](docs/slice-0-limit-proposal.md).
+The protected-path analysis is in [`docs/protected-path-threat-model.md`](docs/protected-path-threat-model.md).
 
 ## Install the Slice 0 package locally
 
@@ -48,7 +51,8 @@ Neither command starts an Advisor runtime in Slice 0.
 ## Compatibility
 
 Slice 0 pins development and API spikes to `@earendil-works/pi-coding-agent` 0.80.7.
-The proposed public compatibility range will be published only after the Slice 0 API and E2E evidence is complete.
+The proposed peer range is `>=0.80.7 <0.81.0`, with 0.80.7 as the only initially tested version.
+Missing critical capabilities leave the future Advisor safely inactive without constructing a partial runtime.
 
 ## Security, privacy, and cost
 

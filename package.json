@@ -28,8 +28,7 @@
 		"README.md",
 		"LICENSE",
 		"THIRD_PARTY_NOTICES.md",
-		"docs/behavior-contract.md",
-		"docs/omp-parity.md"
+		"docs/*.md"
 	],
 	"pi": {
 		"extensions": [
@@ -47,7 +46,7 @@
 		"test:integration": "vitest run tests/integration",
 		"test:e2e": "vitest run tests/e2e",
 		"verify": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test",
-		"pack:inspect": "pnpm pack --dry-run"
+		"pack:inspect": "pnpm --silent pack --json"
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-agent-core": ">=0.80.7 <0.81.0",

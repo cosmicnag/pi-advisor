@@ -1,0 +1,52 @@
+name: Publish npm package
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing approved release tag to publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    environment: npm-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.0.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm verify
+      - run: pnpm test:e2e
+      - name: Verify approved tag and publishable manifest
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          node <<'NODE'
+          const manifest = require('./package.json');
+          const expectedTag = `v${manifest.version}`;
+          if (process.env.RELEASE_TAG !== expectedTag) {
+            throw new Error(`Requested tag ${process.env.RELEASE_TAG} does not match ${expectedTag}`);
+          }
+          if (manifest.private) {
+            throw new Error('package.json must be explicitly changed from private before an approved release');
+          }
+          NODE
+          test "$(git describe --tags --exact-match)" = "$RELEASE_TAG"
+      - run: pnpm pack --json > pack.json
+      - name: Publish with npm trusted publishing provenance
+        run: pnpm publish --access public --provenance --no-git-checks

@@ -2,6 +2,7 @@ node_modules/
 dist/
 coverage/
 *.log
+*.tgz
 .DS_Store
 
 # Private planning and development continuity documents

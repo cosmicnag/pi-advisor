@@ -50,7 +50,19 @@ export interface ScriptedProviderOptions {
 }
 
 function copyContext(context: Context): Context {
-	return structuredClone(context);
+	return {
+		...(context.systemPrompt === undefined ? {} : { systemPrompt: context.systemPrompt }),
+		messages: structuredClone(context.messages),
+		...(context.tools === undefined
+			? {}
+			: {
+					tools: context.tools.map((tool) => ({
+						name: tool.name,
+						description: tool.description,
+						parameters: JSON.parse(JSON.stringify(tool.parameters)) as typeof tool.parameters,
+					})),
+				}),
+	};
 }
 
 function toUsage(scripted: ScriptedUsage | undefined): Usage {
