@@ -286,7 +286,9 @@ describe.sequential("Slice 1 automatic Advisor core", () => {
 			expect(toolText(grep)).toContain("safe/visible.txt");
 			expect(toolText(grep)).not.toContain("safe/large.txt");
 			const invalidPattern = await execute("grep", { path: ".", pattern: "(" });
-			expect(toolText(invalidPattern)).toContain("Invalid or unsupported grep pattern");
+			expect(toolText(invalidPattern)).toMatch(
+				/Invalid or unsupported grep pattern|Regex grep is unavailable/,
+			);
 			const boundedLs = await execute("ls", { path: ".", limit: 1 });
 			expect((boundedLs.details as Record<string, unknown>).entryLimitReached).toBe(true);
 

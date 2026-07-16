@@ -1,5 +1,5 @@
 import { execFile, type ExecFileException } from "node:child_process";
-import { lstat, opendir, realpath, stat } from "node:fs/promises";
+import { lstat, open, opendir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, matchesGlob, normalize, relative, resolve, sep } from "node:path";
 
@@ -369,6 +369,72 @@ function replaceAbsolutePaths(output: string, files: string[], cwd: string): str
 		.join("\n");
 }
 
+async function readBoundedUtf8(
+	file: string,
+	maxBytes: number,
+): Promise<{ text: string; bytes: number } | undefined> {
+	if (maxBytes <= 0) return undefined;
+	let handle;
+	try {
+		handle = await open(file, "r");
+		const buffer = Buffer.allocUnsafe(maxBytes + 1);
+		const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+		if (bytesRead > maxBytes) return undefined;
+		return { text: buffer.subarray(0, bytesRead).toString("utf8"), bytes: bytesRead };
+	} catch {
+		return undefined;
+	} finally {
+		if (handle !== undefined) await handle.close().catch(() => undefined);
+	}
+}
+
+async function runLiteralGrepFallback(
+	files: string[],
+	cwd: string,
+	pattern: string,
+	ignoreCase: boolean,
+	context: number,
+	limit: number,
+): Promise<{ output: string; limitReached: boolean; totalBytes: number }> {
+	const output: string[] = [];
+	let totalBytes = 0;
+	const needle = ignoreCase ? pattern.toLocaleLowerCase("en-US") : pattern;
+	for (const file of files) {
+		const content = await readBoundedUtf8(
+			file,
+			Math.min(MAX_GREP_FILE_BYTES, MAX_GREP_TOTAL_BYTES - totalBytes),
+		);
+		if (content === undefined) continue;
+		totalBytes += content.bytes;
+		if (content.text.includes("\0")) continue;
+		const lines = content.text.split("\n");
+		const matches = lines.flatMap((line, index) => {
+			const candidate = ignoreCase ? line.toLocaleLowerCase("en-US") : line;
+			return candidate.includes(needle) ? [index] : [];
+		});
+		const included = new Set<number>();
+		const matched = new Set(matches);
+		for (const match of matches) {
+			for (
+				let index = Math.max(0, match - context);
+				index <= Math.min(lines.length - 1, match + context);
+				index++
+			) {
+				if (included.has(index)) continue;
+				included.add(index);
+				const separator = matched.has(index) ? ":" : "-";
+				output.push(
+					`${displayPath(cwd, file)}${separator}${String(index + 1)}${separator}${lines[index] ?? ""}`,
+				);
+				if (output.length >= limit) {
+					return { output: output.join("\n"), limitReached: true, totalBytes };
+				}
+			}
+		}
+	}
+	return { output: output.join("\n"), limitReached: false, totalBytes };
+}
+
 function createGrepTool(cwd: string, policy: ProtectedPathPolicy) {
 	return defineTool({
 		name: "grep",
@@ -449,7 +515,25 @@ function createGrepTool(cwd: string, policy: ProtectedPathPolicy) {
 				});
 			}
 			if (result.code === "ENOENT") {
-				return textResult("Grep is unavailable in this Pi environment.", { unavailable: true });
+				if (!params.literal) {
+					return textResult("Regex grep is unavailable in this Pi environment.", {
+						unavailable: true,
+					});
+				}
+				const fallback = await runLiteralGrepFallback(
+					files,
+					cwd,
+					params.pattern,
+					params.ignoreCase ?? false,
+					context,
+					limit,
+				);
+				return textResult(fallback.output, {
+					matchLimitReached: fallback.limitReached,
+					traversalTruncated: collected.truncated,
+					totalBytes: fallback.totalBytes,
+					literalFallback: true,
+				});
 			}
 			if (typeof result.code === "number" && result.code > 1) {
 				return textResult("Invalid or unsupported grep pattern.", { patternError: true });

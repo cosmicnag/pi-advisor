@@ -120,7 +120,9 @@ Pi extensions run with the user's full system permissions.
 Review package source before installation.
 
 When explicitly configured and active, Advisor sends bounded Executor messages, exposed reasoning, tool activity, tool results, Pi-supplied tagged project context, and allowed file contents to the selected secondary model provider.
-Redaction runs before budgeting and protected-path checks cover direct and symlink-resolved access, but neither defense can guarantee that every secret is excluded.
+Transcript redaction runs before budgeting for observed Executor content and Pi-supplied project context.
+Results returned by Advisor's allowed read-only tools, including allowed file contents, are bounded but are not transcript-redacted before the nested provider receives them.
+Protected-path checks cover direct and symlink-resolved access, but neither path protection nor redaction can guarantee that every secret is excluded.
 Automatic review creates additional provider usage and cost, bounded by configured session governors and the active package hard maxima for notes, turns, tool calls, and pending bytes.
 Advisor transcript persistence remains disabled and unimplemented in Slice 1.
 
