@@ -12,6 +12,7 @@ import {
 } from "@earendil-works/pi-ai";
 
 export const SCRIPTED_API = "pi-advisor-scripted" as Api;
+export const ADVISOR_SCRIPTED_API = "pi-advisor-scripted-advisor" as Api;
 
 export interface ScriptedUsage {
 	input?: number;
@@ -45,8 +46,10 @@ export interface ScriptedProviderOptions {
 	providerId: string;
 	modelId: string;
 	responses: ScriptedResponse[];
+	api?: Api;
 	contextWindow?: number;
 	maxTokens?: number;
+	cost?: Model<Api>["cost"];
 }
 
 function copyContext(context: Context): Context {
@@ -105,6 +108,8 @@ function wait(delayMs: number, signal: AbortSignal | undefined): Promise<void> {
 export class ScriptedProvider {
 	readonly model: Model<Api>;
 	readonly requests: ObservedRequest[] = [];
+	activeRequests = 0;
+	maxConcurrentRequests = 0;
 	private readonly responses: ScriptedResponse[];
 	private responseIndex = 0;
 
@@ -113,12 +118,12 @@ export class ScriptedProvider {
 		this.model = {
 			id: options.modelId,
 			name: options.modelId,
-			api: SCRIPTED_API,
+			api: options.api ?? SCRIPTED_API,
 			provider: options.providerId,
 			baseUrl: "https://scripted.invalid",
 			reasoning: true,
 			input: ["text"],
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			cost: options.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: options.contextWindow ?? 128_000,
 			maxTokens: options.maxTokens ?? 8_192,
 		};
@@ -138,7 +143,11 @@ export class ScriptedProvider {
 			startedAt: Date.now(),
 		});
 
-		void this.emit(stream, model, response, options?.signal);
+		this.activeRequests++;
+		this.maxConcurrentRequests = Math.max(this.maxConcurrentRequests, this.activeRequests);
+		void this.emit(stream, model, response, options?.signal).finally(() => {
+			this.activeRequests--;
+		});
 		return stream;
 	};
 
@@ -233,6 +242,7 @@ export function createAdvisorProvider(responses: ScriptedResponse[]): ScriptedPr
 	return new ScriptedProvider({
 		providerId: "pi-advisor-fixture-advisor",
 		modelId: "advisor-scripted",
+		api: ADVISOR_SCRIPTED_API,
 		responses,
 	});
 }

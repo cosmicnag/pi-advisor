@@ -1,4 +1,4 @@
-# Slice 0 Limit Proposal
+# Slice 0 Limit Proposal and Approved Slice 1 Defaults
 
 ## Measurement method
 
@@ -19,10 +19,10 @@ The medium profile contains 24 turns with bounded reasoning and answer text.
 The tool-heavy profile contains 12 turns with 12,000-character tool results and follow-up assistant messages.
 Exact output is recorded in the internal Slice 0 evidence log.
 
-## Proposed release defaults
+## Approved Slice 1 release defaults
 
 The session profiles directly support the update, pending-byte, re-prime, and Memory suggestion cadence proposals.
-The remaining values are conservative engineering judgment defaults inherited from the approved specification and require user approval plus later production validation.
+The user approved the following Slice 1 defaults and hard maxima for implementation, while later long-context validation remains required before publication.
 
 - Maximum update tokens: 24,000.
 - Maximum pending transcript bytes: 200,000.
@@ -58,4 +58,4 @@ The proposed text bound is half the ordinary note bound and is suppress-only rat
 
 The initial hard maxima are 8,000 characters and 2,048 estimated tokens for an Advisory note, 4,000 characters and 1,024 estimated tokens for proposed memory, 12 Advisor turns, 32 Advisor tool calls, 1,000,000 pending bytes, and 128,000 re-prime tokens.
 Project configuration may only lower user limits.
-These values require user approval before Slice 1 and remain subject to later long-context validation.
+These values were approved for Slice 1 and remain subject to later long-context validation before publication.

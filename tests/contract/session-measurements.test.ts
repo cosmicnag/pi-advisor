@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { HARD_LIMITS, PROPOSED_ADVISOR_CONFIG } from "../../src/config.js";
+import { DEFAULT_ADVISOR_CONFIG, HARD_LIMITS } from "../../src/config.js";
 import { measureRepresentativeSessions } from "../fixtures/session-measurements.js";
 
 describe("Slice 0 representative session measurements", () => {
@@ -18,13 +18,13 @@ describe("Slice 0 representative session measurements", () => {
 			messages: 48,
 		});
 		expect(toolHeavy.serializedBytes).toBeLessThan(
-			PROPOSED_ADVISOR_CONFIG.limits.maxPendingTranscriptBytes,
+			DEFAULT_ADVISOR_CONFIG.limits.maxPendingTranscriptBytes,
 		);
 		expect(toolHeavy.estimatedTokens).toBeGreaterThan(
-			PROPOSED_ADVISOR_CONFIG.context.maxUpdateTokens,
+			DEFAULT_ADVISOR_CONFIG.context.maxUpdateTokens,
 		);
 		expect(HARD_LIMITS.maxPendingTranscriptBytes).toBeGreaterThan(
-			PROPOSED_ADVISOR_CONFIG.limits.maxPendingTranscriptBytes,
+			DEFAULT_ADVISOR_CONFIG.limits.maxPendingTranscriptBytes,
 		);
 	});
 });

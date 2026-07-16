@@ -3,8 +3,8 @@
 ## Status
 
 This document defines the intended public behavior of `@ribbons-digital/pi-advisor`.
-Slice 0 supplies a no-op installable package and measured compatibility evidence only.
-Production automatic Advisor behavior is outside Slice 0.
+Slice 1 implements the safe automatic core with in-memory configuration, one nested Advisor, protected read-only tools, bounded updates and notes, single-flight draining, failure pauses, minimal delivery, commands, and a session flag.
+Durable configuration, richer delivery and presentation, cross-update lifecycle restoration, context compaction, transcript persistence, and Memory suggestions remain deferred to their separately approved slices.
 
 ## Roles
 
@@ -23,7 +23,7 @@ Missing model configuration, credentials, or critical Pi capabilities leaves Adv
 
 ## Review and silence
 
-The production design reviews each meaningful completed internal Executor turn by default.
+The Slice 1 core reviews each meaningful completed internal Executor turn by default.
 Aborted, empty, and Advisor-generated turns are excluded.
 Silence is the successful normal result when no material issue exists.
 At most one Advisory note is accepted from one Advisor update.
@@ -48,7 +48,7 @@ Every accepted note remains user-visible and is framed as guidance to weigh rath
 
 ## Tools and protected paths
 
-The initial production Advisor uses only verified read-only Pi tools.
+The Slice 1 Advisor uses only verified read-only Pi tools.
 Mutating tools are unavailable.
 Protected paths are denied before file access and before search or listing results are returned.
 Checks normalize resolved paths and account for symlinks.
