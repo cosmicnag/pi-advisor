@@ -58,5 +58,13 @@ describe("ScriptedProvider", () => {
 		controller.abort();
 		const aborted = await stream.result();
 		expect(aborted.stopReason).toBe("aborted");
+
+		const alreadyAbortedController = new AbortController();
+		alreadyAbortedController.abort();
+		const immediate = createAdvisorProvider([{}]);
+		const immediatelyAborted = await immediate
+			.streamSimple(immediate.model, { messages: [] }, { signal: alreadyAbortedController.signal })
+			.result();
+		expect(immediatelyAborted.stopReason).toBe("aborted");
 	});
 });

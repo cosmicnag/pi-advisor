@@ -87,6 +87,9 @@ function toUsage(scripted: ScriptedUsage | undefined): Usage {
 }
 
 function wait(delayMs: number, signal: AbortSignal | undefined): Promise<void> {
+	if (signal?.aborted) {
+		return Promise.reject(new DOMException("Scripted request aborted", "AbortError"));
+	}
 	if (delayMs <= 0) return Promise.resolve();
 	return new Promise((resolve, reject) => {
 		const timer = setTimeout(resolve, delayMs);

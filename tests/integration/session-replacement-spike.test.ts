@@ -11,6 +11,7 @@ import {
 	ModelRegistry,
 	SessionManager,
 	SettingsManager,
+	type AgentSessionRuntime,
 	type CreateAgentSessionRuntimeFactory,
 	type InlineExtension,
 } from "@earendil-works/pi-coding-agent";
@@ -20,90 +21,95 @@ import { SCRIPTED_API, createPrimaryProvider } from "../fixtures/scripted-provid
 
 describe("Pi 0.80.7 session replacement spike", () => {
 	it("shuts down the old extension instance before rebinding a replacement session", async () => {
-		const root = await mkdtemp(join(tmpdir(), "pi-advisor-runtime-"));
-		const cwd = join(root, "project");
-		const agentDir = join(root, "agent");
-		await mkdir(cwd, { recursive: true });
-		await mkdir(agentDir, { recursive: true });
-
 		const lifecycle: string[] = [];
-		let instanceCount = 0;
-		const extension: InlineExtension = {
-			name: "replacement-spike",
-			factory: (pi) => {
-				const instance = ++instanceCount;
-				pi.on("session_start", (event) => {
-					lifecycle.push(`start:${String(instance)}:${event.reason}`);
-				});
-				pi.on("session_shutdown", (event) => {
-					lifecycle.push(`shutdown:${String(instance)}:${event.reason}`);
-				});
-			},
-		};
-		const provider = createPrimaryProvider([
-			{ content: [{ type: "text", text: "old session" }] },
-			{ content: [{ type: "text", text: "new session" }] },
-		]);
 		const sourceId = "pi-advisor-session-replacement-spike";
-		const authStorage = AuthStorage.inMemory();
-		authStorage.setRuntimeApiKey(provider.model.provider, "scripted-key");
-		const modelRegistry = ModelRegistry.inMemory(authStorage);
-		registerApiProvider(
-			{
-				api: SCRIPTED_API,
-				stream: provider.streamSimple,
-				streamSimple: provider.streamSimple,
-			},
-			sourceId,
-		);
-		const settingsManager = SettingsManager.inMemory({
-			compaction: { enabled: false },
-			retry: { enabled: false },
-		});
-		const createRuntime: CreateAgentSessionRuntimeFactory = async ({
-			cwd: runtimeCwd,
-			sessionManager,
-			sessionStartEvent,
-		}) => {
-			const services = await createAgentSessionServices({
-				cwd: runtimeCwd,
-				agentDir,
-				authStorage,
-				modelRegistry,
-				settingsManager,
-				resourceLoaderOptions: {
-					extensionFactories: [extension],
-					noSkills: true,
-					noPromptTemplates: true,
-					noThemes: true,
-					noContextFiles: true,
-					systemPromptOverride: () => "Replacement spike.",
-					appendSystemPromptOverride: () => [],
-				},
-			});
-			return {
-				...(await createAgentSessionFromServices({
-					services,
-					sessionManager,
-					...(sessionStartEvent === undefined ? {} : { sessionStartEvent }),
-					model: provider.model,
-					thinkingLevel: "off",
-					tools: [],
-				})),
-				services,
-				diagnostics: services.diagnostics,
-			};
-		};
-
-		const runtime = await createAgentSessionRuntime(createRuntime, {
-			cwd,
-			agentDir,
-			sessionManager: SessionManager.inMemory(cwd),
-		});
-		runtime.setRebindSession((session) => session.bindExtensions({ mode: "json" }));
-		await runtime.session.bindExtensions({ mode: "json" });
+		let root: string | undefined;
+		let providerRegistered = false;
+		let runtime: AgentSessionRuntime | undefined;
 
 		try {
+			root = await mkdtemp(join(tmpdir(), "pi-advisor-runtime-"));
+			const cwd = join(root, "project");
+			const agentDir = join(root, "agent");
+			await mkdir(cwd, { recursive: true });
+			await mkdir(agentDir, { recursive: true });
+
+			let instanceCount = 0;
+			const extension: InlineExtension = {
+				name: "replacement-spike",
+				factory: (pi) => {
+					const instance = ++instanceCount;
+					pi.on("session_start", (event) => {
+						lifecycle.push(`start:${String(instance)}:${event.reason}`);
+					});
+					pi.on("session_shutdown", (event) => {
+						lifecycle.push(`shutdown:${String(instance)}:${event.reason}`);
+					});
+				},
+			};
+			const provider = createPrimaryProvider([
+				{ content: [{ type: "text", text: "old session" }] },
+				{ content: [{ type: "text", text: "new session" }] },
+			]);
+			const authStorage = AuthStorage.inMemory();
+			authStorage.setRuntimeApiKey(provider.model.provider, "scripted-key");
+			const modelRegistry = ModelRegistry.inMemory(authStorage);
+			registerApiProvider(
+				{
+					api: SCRIPTED_API,
+					stream: provider.streamSimple,
+					streamSimple: provider.streamSimple,
+				},
+				sourceId,
+			);
+			providerRegistered = true;
+			const settingsManager = SettingsManager.inMemory({
+				compaction: { enabled: false },
+				retry: { enabled: false },
+			});
+			const createRuntime: CreateAgentSessionRuntimeFactory = async ({
+				cwd: runtimeCwd,
+				sessionManager,
+				sessionStartEvent,
+			}) => {
+				const services = await createAgentSessionServices({
+					cwd: runtimeCwd,
+					agentDir,
+					authStorage,
+					modelRegistry,
+					settingsManager,
+					resourceLoaderOptions: {
+						extensionFactories: [extension],
+						noSkills: true,
+						noPromptTemplates: true,
+						noThemes: true,
+						noContextFiles: true,
+						systemPromptOverride: () => "Replacement spike.",
+						appendSystemPromptOverride: () => [],
+					},
+				});
+				return {
+					...(await createAgentSessionFromServices({
+						services,
+						sessionManager,
+						...(sessionStartEvent === undefined ? {} : { sessionStartEvent }),
+						model: provider.model,
+						thinkingLevel: "off",
+						tools: [],
+					})),
+					services,
+					diagnostics: services.diagnostics,
+				};
+			};
+
+			runtime = await createAgentSessionRuntime(createRuntime, {
+				cwd,
+				agentDir,
+				sessionManager: SessionManager.inMemory(cwd),
+			});
+			runtime.setRebindSession((session) => session.bindExtensions({ mode: "json" }));
+			await runtime.session.bindExtensions({ mode: "json" });
+
 			const oldSession = runtime.session;
 			const oldSessionId = oldSession.sessionId;
 			await oldSession.prompt("old prompt");
@@ -125,9 +131,9 @@ describe("Pi 0.80.7 session replacement spike", () => {
 				runtime.session.messages.some((message) => JSON.stringify(message).includes("old prompt")),
 			).toBe(false);
 		} finally {
-			await runtime.dispose();
-			unregisterApiProviders(sourceId);
-			await rm(root, { recursive: true, force: true });
+			if (runtime !== undefined) await runtime.dispose();
+			if (providerRegistered) unregisterApiProviders(sourceId);
+			if (root !== undefined) await rm(root, { recursive: true, force: true });
 		}
 
 		expect(lifecycle).toEqual([

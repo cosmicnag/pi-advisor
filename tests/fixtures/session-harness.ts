@@ -39,62 +39,76 @@ export async function createSessionHarness(
 	const root = await mkdtemp(join(tmpdir(), "pi-advisor-slice0-"));
 	const cwd = join(root, "project");
 	const agentDir = join(root, "agent");
-	await mkdir(cwd, { recursive: true });
-	await mkdir(agentDir, { recursive: true });
 	const sourceId = `pi-advisor-scripted-${String(harnessId++)}`;
+	let providerRegistered = false;
+	let session: AgentSession | undefined;
 
-	const authStorage = AuthStorage.inMemory();
-	authStorage.setRuntimeApiKey(options.provider.model.provider, "scripted-key");
-	const modelRegistry = ModelRegistry.inMemory(authStorage);
-	registerApiProvider(
-		{
-			api: SCRIPTED_API,
-			stream: options.provider.streamSimple,
-			streamSimple: options.provider.streamSimple,
-		},
-		sourceId,
-	);
-	const settingsManager = SettingsManager.inMemory({
-		compaction: { enabled: false },
-		retry: { enabled: false },
-	});
-	const resourceLoader = new DefaultResourceLoader({
-		cwd,
-		agentDir,
-		settingsManager,
-		...(options.extensions === undefined ? {} : { extensionFactories: options.extensions }),
-		noSkills: true,
-		noPromptTemplates: true,
-		noThemes: true,
-		noContextFiles: true,
-		systemPromptOverride: () => "Scripted Pi Slice 0 test session.",
-		appendSystemPromptOverride: () => [],
-	});
-	await resourceLoader.reload();
+	try {
+		await mkdir(cwd, { recursive: true });
+		await mkdir(agentDir, { recursive: true });
 
-	const sessionManager = options.sessionManager ?? SessionManager.inMemory(cwd);
-	const { session } = await createAgentSession({
-		cwd,
-		agentDir,
-		authStorage,
-		modelRegistry,
-		model: options.provider.model,
-		thinkingLevel: "off",
-		resourceLoader,
-		sessionManager,
-		settingsManager,
-		...(options.customTools === undefined ? {} : { customTools: options.customTools }),
-		...(options.tools === undefined ? {} : { tools: options.tools }),
-	});
-	await session.bindExtensions({ mode: "json" });
+		const authStorage = AuthStorage.inMemory();
+		authStorage.setRuntimeApiKey(options.provider.model.provider, "scripted-key");
+		const modelRegistry = ModelRegistry.inMemory(authStorage);
+		registerApiProvider(
+			{
+				api: SCRIPTED_API,
+				stream: options.provider.streamSimple,
+				streamSimple: options.provider.streamSimple,
+			},
+			sourceId,
+		);
+		providerRegistered = true;
+		const settingsManager = SettingsManager.inMemory({
+			compaction: { enabled: false },
+			retry: { enabled: false },
+		});
+		const resourceLoader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			settingsManager,
+			...(options.extensions === undefined ? {} : { extensionFactories: options.extensions }),
+			noSkills: true,
+			noPromptTemplates: true,
+			noThemes: true,
+			noContextFiles: true,
+			systemPromptOverride: () => "Scripted Pi Slice 0 test session.",
+			appendSystemPromptOverride: () => [],
+		});
+		await resourceLoader.reload();
 
-	return {
-		session,
-		sessionManager,
-		async dispose() {
-			session.dispose();
-			unregisterApiProviders(sourceId);
-			await rm(root, { recursive: true, force: true });
-		},
-	};
+		const sessionManager = options.sessionManager ?? SessionManager.inMemory(cwd);
+		({ session } = await createAgentSession({
+			cwd,
+			agentDir,
+			authStorage,
+			modelRegistry,
+			model: options.provider.model,
+			thinkingLevel: "off",
+			resourceLoader,
+			sessionManager,
+			settingsManager,
+			...(options.customTools === undefined ? {} : { customTools: options.customTools }),
+			...(options.tools === undefined ? {} : { tools: options.tools }),
+		}));
+		await session.bindExtensions({ mode: "json" });
+
+		let disposed = false;
+		return {
+			session,
+			sessionManager,
+			async dispose() {
+				if (disposed) return;
+				disposed = true;
+				session?.dispose();
+				unregisterApiProviders(sourceId);
+				await rm(root, { recursive: true, force: true });
+			},
+		};
+	} catch (error) {
+		session?.dispose();
+		if (providerRegistered) unregisterApiProviders(sourceId);
+		await rm(root, { recursive: true, force: true });
+		throw error;
+	}
 }

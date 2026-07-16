@@ -10,10 +10,12 @@ Protection applies before access and before returning directory or search result
 - Direct reads of environment files, credentials, private keys, authentication stores, and secret-manager exports.
 - Discovery of protected names or paths through `find`, `grep`, or `ls` results.
 - Relative traversal, absolute paths, mixed separators, redundant segments, case variation on case-insensitive filesystems, and leading `@` aliases.
-- Symlink or hard-link aliases that point from an apparently safe path to protected content.
+- Symlink aliases that point from an apparently safe path to protected content.
+- Hard-link aliases that expose a protected inode through an unrelated pathname, which pathname and `realpath` checks alone cannot identify.
 - User exceptions that are broader than intended.
 - Project configuration attempting to weaken package or user protections.
 - Secrets embedded in otherwise ordinary source, logs, fixtures, or tool results outside known protected paths.
+- Hard-link aliases unless a future implementation adds device-and-inode tracking across protected roots.
 
 ## Provisional default targets
 
