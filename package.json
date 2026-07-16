@@ -47,7 +47,8 @@
 		"test:e2e": "vitest run tests/e2e",
 		"verify": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test",
 		"pack:inspect": "pnpm --silent pack --json",
-		"pack:validate": "pnpm --silent pack --json > pack.json && tsx scripts/validate-pack.ts pack.json && rm pack.json"
+		"pack:prepare": "pnpm --silent pack --out pi-advisor-package.tgz --json > pack.json && tsx scripts/validate-pack.ts pack.json",
+		"pack:validate": "pnpm pack:prepare && rm pack.json pi-advisor-package.tgz"
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-agent-core": ">=0.80.7 <0.81.0",
