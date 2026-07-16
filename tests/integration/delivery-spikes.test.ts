@@ -70,6 +70,10 @@ describe.sequential("Pi 0.80.7 delivery spikes", () => {
 
 	it("queues nextTurn while idle without triggering a completion", async () => {
 		let queued = false;
+		let resolveQueued: (() => void) | undefined;
+		const nextTurnQueued = new Promise<void>((resolve) => {
+			resolveQueued = resolve;
+		});
 		const provider = createPrimaryProvider([
 			{ content: [{ type: "text", text: "first terminal answer" }] },
 			{ content: [{ type: "text", text: "second answer" }] },
@@ -88,6 +92,7 @@ describe.sequential("Pi 0.80.7 delivery spikes", () => {
 						},
 						{ deliverAs: "nextTurn" },
 					);
+					resolveQueued?.();
 				});
 			},
 		};
@@ -95,7 +100,7 @@ describe.sequential("Pi 0.80.7 delivery spikes", () => {
 
 		try {
 			await harness.session.prompt("first user turn");
-			await new Promise((resolve) => setTimeout(resolve, 20));
+			await nextTurnQueued;
 			expect(harness.session.isIdle).toBe(true);
 			expect(provider.requests).toHaveLength(1);
 			expect(contextText(provider.requests[0]?.context)).not.toContain("deferred advisory");

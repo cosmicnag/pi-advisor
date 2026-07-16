@@ -97,7 +97,10 @@ describe.sequential("Pi 0.80.7 branch and lifecycle spikes", () => {
 			});
 		}
 		const provider = createPrimaryProvider([
-			{ content: [{ type: "text", text: "measured compacted summary" }], usage: { input: 20_000, output: 100 } },
+			{
+				content: [{ type: "text", text: "measured compacted summary" }],
+				usage: { input: 20_000, output: 100 },
+			},
 		]);
 		const harness = await createSessionHarness({ provider, sessionManager: manager, tools: [] });
 

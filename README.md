@@ -47,6 +47,8 @@ pi --no-extensions -e ./src/index.ts --no-session
 ```
 
 Neither command starts an Advisor runtime in Slice 0.
+The Slice 0 manifest is deliberately marked private as an accidental-publication guard.
+An approved release change must remove that guard before the manual trusted-publishing workflow can publish.
 
 ## Compatibility
 

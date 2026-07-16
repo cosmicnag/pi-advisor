@@ -41,12 +41,13 @@
 		"lint": "eslint .",
 		"format": "prettier --write .",
 		"format:check": "prettier --check .",
-		"test": "vitest run",
+		"test": "vitest run tests/unit tests/contract tests/integration",
 		"test:unit": "vitest run tests/unit",
 		"test:integration": "vitest run tests/integration",
 		"test:e2e": "vitest run tests/e2e",
 		"verify": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test",
-		"pack:inspect": "pnpm --silent pack --json"
+		"pack:inspect": "pnpm --silent pack --json",
+		"pack:validate": "pnpm --silent pack --json > pack.json && tsx scripts/validate-pack.ts pack.json && rm pack.json"
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-agent-core": ">=0.80.7 <0.81.0",

@@ -18,6 +18,8 @@ Pi 0.80.7 configures these built-in tools:
 - `find`
 - `ls`
 
+The default active Executor set is `read`, `bash`, `edit`, and `write`.
+`grep`, `find`, and `ls` are configured but inactive by default, so a nested Advisor must explicitly activate its complete read-only allowlist.
 The initial Advisor allowlist remains `read`, `grep`, `find`, and `ls`.
 Pi exposes `find`, not an OMP-style `glob` tool.
 
@@ -35,7 +37,8 @@ No fallback injection is required for Pi 0.80.7.
 Two extensions registering `/advisor` become `/advisor:1` and `/advisor:2` in extension load order.
 The resolved names are available through `getCommands()` by `session_start` and remain available at `resources_discover`.
 A detector that checks both hooks can issue exactly one warning by retaining an extension-instance boolean.
-Calling `getCommands()` from the extension factory is not used because command resolution is not yet finalized at that phase.
+Factory-phase command discovery is not part of the supported evidence claim.
+The earliest measured reliable detection point is `session_start`.
 
 ## Branch and lifecycle measurements
 

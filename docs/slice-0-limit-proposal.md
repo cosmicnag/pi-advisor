@@ -21,6 +21,9 @@ Exact output is recorded in the internal Slice 0 evidence log.
 
 ## Proposed release defaults
 
+The session profiles directly support the update, pending-byte, re-prime, and Memory suggestion cadence proposals.
+The remaining values are conservative engineering judgment defaults inherited from the approved specification and require user approval plus later production validation.
+
 - Maximum update tokens: 24,000.
 - Maximum pending transcript bytes: 200,000.
 - Maximum re-prime tokens: 32,000.
@@ -35,7 +38,8 @@ Exact output is recorded in the internal Slice 0 evidence log.
 
 The 200,000-byte pending bound contains the complete representative tool-heavy profile, while the 24,000-token update bound requires large accumulated contexts to be split, truncated, compacted, or re-primed rather than copied into one update.
 The 32,000-token re-prime bound is larger than one update but remains bounded.
-The session token and cost caps are safety stops rather than spending targets.
+The session token and cost caps are judgment-based safety stops rather than measured spending targets.
+The four-turn, eight-tool-call, and Advisory note bounds are also judgment defaults intended to constrain loops and context while production evidence is unavailable.
 
 ## Memory suggestion proposal
 

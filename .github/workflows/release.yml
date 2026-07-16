@@ -47,6 +47,7 @@ jobs:
           }
           NODE
           test "$(git describe --tags --exact-match)" = "$RELEASE_TAG"
-      - run: pnpm pack --json > pack.json
+      - name: Validate the exact publish tarball contents and metadata
+        run: pnpm pack:validate
       - name: Publish with npm trusted publishing provenance
         run: pnpm publish --access public --provenance --no-git-checks
