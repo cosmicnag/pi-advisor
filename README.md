@@ -71,10 +71,7 @@ Slice 1 has no YAML, WATCHDOG, User configuration file, Project configuration fi
 An embedding extension or SDK host can provide one complete trusted `AdvisorConfig` object for the lifetime of the extension instance:
 
 ```ts
-import {
-  createPiAdvisorExtension,
-  DEFAULT_ADVISOR_CONFIG,
-} from "@ribbons-digital/pi-advisor";
+import { createPiAdvisorExtension, DEFAULT_ADVISOR_CONFIG } from "@ribbons-digital/pi-advisor";
 
 const config = structuredClone(DEFAULT_ADVISOR_CONFIG);
 config.model = "anthropic/claude-sonnet-4";
@@ -97,15 +94,15 @@ Project context files supplied by Pi are tagged, redacted, and bounded before re
 
 All Slice 1 modules are re-exported from the package root.
 
-| Surface | Exports |
-| --- | --- |
-| Extension | Default Pi extension, `createPiAdvisorExtension`, `PiAdvisorExtensionOptions` |
-| Runtime | `AdvisorRuntime`, `AdvisorRuntimeHooks`, `AdvisorRuntimeStatus`, `AdvisorUsageTotals`, `formatAdvisorStatus`, `formatAdvisorEnableStatus` |
-| Configuration | `DEFAULT_ADVISOR_CONFIG`, deprecated `PROPOSED_ADVISOR_CONFIG`, `normalizeAdvisorConfig`, `HARD_LIMITS`, `READ_ONLY_TOOL_NAMES`, configuration types, and reserved validation metadata |
-| Advice | `createAdviseTool`, `boundAdvice`, `isContentFreeAdvice`, and Advisory note types |
-| Protected tools | `ProtectedPathPolicy`, `createProtectedAdvisorTools`, `isAdvisorReadOnlyTool`, and `AdvisorToolContext` |
-| Transcript | `ADVISOR_CUSTOM_TYPE`, cursor helpers, meaningful-turn filtering, delta rendering, and transcript types |
-| Redaction | `redactSecrets`, `estimateTokens`, UTF-8 truncation helpers, and `RedactionResult` |
+| Surface         | Exports                                                                                                                                                                                |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Extension       | Default Pi extension, `createPiAdvisorExtension`, `PiAdvisorExtensionOptions`                                                                                                          |
+| Runtime         | `AdvisorRuntime`, `AdvisorRuntimeHooks`, `AdvisorRuntimeStatus`, `AdvisorUsageTotals`, `formatAdvisorStatus`, `formatAdvisorEnableStatus`                                              |
+| Configuration   | `DEFAULT_ADVISOR_CONFIG`, deprecated `PROPOSED_ADVISOR_CONFIG`, `normalizeAdvisorConfig`, `HARD_LIMITS`, `READ_ONLY_TOOL_NAMES`, configuration types, and reserved validation metadata |
+| Advice          | `createAdviseTool`, `boundAdvice`, `isContentFreeAdvice`, and Advisory note types                                                                                                      |
+| Protected tools | `ProtectedPathPolicy`, `createProtectedAdvisorTools`, `isAdvisorReadOnlyTool`, and `AdvisorToolContext`                                                                                |
+| Transcript      | `ADVISOR_CUSTOM_TYPE`, cursor helpers, meaningful-turn filtering, delta rendering, and transcript types                                                                                |
+| Redaction       | `redactSecrets`, `estimateTokens`, UTF-8 truncation helpers, and `RedactionResult`                                                                                                     |
 
 The default extension is the installable entry point.
 `AdvisorRuntime` exposes cloned status snapshots, nested-message inspection, project-context capture, explicit enable and disable, turn observation, and shutdown, while the extension factory wires those lifecycle methods to Pi.
