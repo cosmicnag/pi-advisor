@@ -100,13 +100,13 @@ function serializeEntry(entry: SessionEntry): string | undefined {
 export function isMeaningfulExecutorTurn(event: TurnEndEvent, entries: SessionEntry[]): boolean {
 	if (event.message.role !== "assistant") return false;
 	if (event.message.stopReason === "aborted") return false;
-	if (
-		entries.some(
-			(entry) => entry.type === "custom_message" && entry.customType === ADVISOR_CUSTOM_TYPE,
-		)
-	) {
-		return false;
-	}
+	const hasAdvisorNote = entries.some(
+		(entry) => entry.type === "custom_message" && entry.customType === ADVISOR_CUSTOM_TYPE,
+	);
+	const hasExecutorUserMessage = entries.some(
+		(entry) => entry.type === "message" && entry.message.role === "user",
+	);
+	if (hasAdvisorNote && !hasExecutorUserMessage) return false;
 	const assistantContent = contentText(event.message.content).trim();
 	return assistantContent.length > 0 || event.toolResults.length > 0;
 }

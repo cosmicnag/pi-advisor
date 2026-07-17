@@ -25,7 +25,8 @@ Running `/advisor on` while paused explicitly resets the current session usage b
 ## Review and silence
 
 The Slice 1 core reviews each meaningful completed internal Executor turn by default.
-Aborted, empty, and Advisor-generated turns are excluded.
+Aborted and empty turns are excluded.
+A follow-up containing an Advisory note but no new Executor user message is treated as Advisor-generated and excluded, while a later user-driven turn remains eligible even when it materializes queued `nextTurn` advice.
 Silence is the successful normal result when no material issue exists.
 At most one Advisory note is accepted from one Advisor update.
 Normalized content-free approval phrases are suppressed, while an oversized material note is redacted, truncated to both configured note bounds with a marker as space permits, and tagged with truncation metadata.
@@ -51,7 +52,7 @@ Slice 1 does not implement cross-update deferred-advice restoration or a package
 Advice accepted after the Executor becomes idle is queued with Pi's `nextTurn` delivery and does not trigger a completion.
 An incompatible active-branch cursor invalidates in-flight review before delivery, while disablement and shutdown invalidate the runtime epoch and dispose nested work.
 Every accepted note is user-visible and is framed as guidance to weigh rather than obey blindly.
-It uses custom message type `pi-advisor-note`, severity `nit`, `concern`, or `blocker` with `concern` as the default, and details for review intent, active or deferred delivery, truncation, original size, and creation time.
+It uses custom message type `pi-advisor-note`, severity `nit`, `concern`, or `blocker` with `concern` as the default, and details for review intent, active or deferred delivery, truncation, original post-redaction size, and creation time.
 
 ## Tools and protected paths
 
@@ -59,6 +60,7 @@ The Slice 1 Advisor uses only verified read-only Pi tools.
 Mutating tools are unavailable.
 Protected `grep` uses `rg` for regex and literal searches when available.
 Without `rg`, regex searches report that they are unavailable and explicit literal searches use a bounded in-process fallback.
+Ripgrep match and context filename prefixes are rewritten from absolute to working-directory-relative paths before output.
 Protected paths are denied before file access and before search or listing results are returned.
 Checks normalize resolved paths and account for symlinks.
 Read-only access and redaction cannot guarantee complete secret protection, and public documentation must state that limitation.

@@ -138,6 +138,8 @@ describe.sequential("Slice 1 delivery and safety behavior", () => {
 			expect(JSON.stringify(primary.requests[1]?.context)).toContain(
 				"Check the final artifact checksum.",
 			);
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 2);
+			expect(advisor.requests).toHaveLength(2);
 		} finally {
 			await harness.dispose();
 		}

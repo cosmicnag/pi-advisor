@@ -35,6 +35,7 @@ _Avoid_: Retry, resume, full transcript replay
 
 **Meaningful Executor turn**:
 A completed internal Executor turn containing new user, reasoning, tool, or result information that can affect review.
+An Advisory-note-only follow-up is not meaningful, while a later turn that also contains a new Executor user message remains eligible.
 _Avoid_: Request, full task, empty turn
 
 **Executor reasoning**:

@@ -70,6 +70,7 @@ These approved contract values remain present in `AdvisorConfig` but have no Sli
 - Maximum re-prime tokens: 32,000, with a reserved hard maximum of 128,000.
 - Review cadence: at least one Executor turn and zero milliseconds between reviews.
 - Deferred advice retention: 24 hours.
+- Memory suggestions: the reserved `enabled` field defaults to true but has no Slice 1 runtime effect.
 - Memory suggestion cadence: at least eight Executor turns and ten minutes.
 - Memory suggestion session cap: five.
 - Proposed memory bound: 1,000 characters and 256 estimated tokens, with reserved hard maxima of 4,000 characters and 1,024 estimated tokens.

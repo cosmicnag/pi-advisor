@@ -10,7 +10,7 @@
 
 | Capability                                         | Pi Advisor position    | Slice 1 behavior or evidence                                                                    |
 | -------------------------------------------------- | ---------------------- | ----------------------------------------------------------------------------------------------- |
-| Automatic review after Executor work               | implemented in Slice 1 | Reviews meaningful completed turns and skips aborted, empty, and Advisor-generated turns        |
+| Automatic review after Executor work               | implemented in Slice 1 | Skips aborted, empty, and note-only follow-ups while retaining later user-driven turns          |
 | Silence when work is sound                         | implemented in Slice 1 | Empty completions, plain text without `advise`, and normalized approval phrases stay silent     |
 | One long-lived isolated Advisor                    | implemented in Slice 1 | Uses one in-memory nested `AgentSession` with extensions and recursive resources disabled       |
 | Explicit secondary model selection                 | implemented in Slice 1 | Requires `provider/model`, valid credentials, and no Executor-model fallback                    |
