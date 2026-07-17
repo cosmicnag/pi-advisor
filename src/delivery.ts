@@ -92,24 +92,27 @@ export function takeRenderedPrefix<T>(
 	if (!Number.isInteger(maxBytes) || maxBytes < 1) {
 		throw new RangeError("Rendered prefix byte bound must be a positive integer");
 	}
-	const selected: RenderedQueueItem<T>[] = [];
+	const renderedPrefix: string[] = [];
 	let selectedBytes = 0;
-	while (queue.length > 0) {
-		const next = queue.peek();
-		if (next === undefined) break;
-		const rendered = render(next.value);
+	for (const value of queue.values()) {
+		const rendered = render(value);
 		const renderedBytes = Buffer.byteLength(rendered, "utf8");
 		if (renderedBytes > maxBytes) {
 			throw new RangeError("One rendered FIFO entry exceeds the prefix byte bound");
 		}
-		const separatorBytes = selected.length === 0 ? 0 : Buffer.byteLength("\n\n", "utf8");
-		if (selected.length > 0 && selectedBytes + separatorBytes + renderedBytes > maxBytes) {
+		const separatorBytes = renderedPrefix.length === 0 ? 0 : Buffer.byteLength("\n\n", "utf8");
+		if (renderedPrefix.length > 0 && selectedBytes + separatorBytes + renderedBytes > maxBytes) {
 			break;
 		}
-		const shifted = queue.shift();
-		if (shifted === undefined) break;
-		selected.push({ ...shifted, rendered });
+		renderedPrefix.push(rendered);
 		selectedBytes += separatorBytes + renderedBytes;
 	}
-	return selected;
+
+	return renderedPrefix.map((rendered) => {
+		const shifted = queue.shift();
+		if (shifted === undefined) {
+			throw new Error("Rendered FIFO prefix changed before dequeue");
+		}
+		return { ...shifted, rendered };
+	});
 }

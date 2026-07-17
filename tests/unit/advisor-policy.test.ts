@@ -297,11 +297,45 @@ describe("Slice 1 transcript filtering and redaction", () => {
 		const second = takeRenderedPrefix(queue, 6, (value) => value);
 		expect(second.map(({ value }) => value)).toEqual(["cc"]);
 		expect(queue.length).toBe(0);
-		expect(() => {
-			const oversized = new BoundedKeyedByteFifo<string>(1, 100);
-			oversized.enqueue("x", "1234567", 7);
-			takeRenderedPrefix(oversized, 6, (value) => value);
-		}).toThrow("exceeds the prefix byte bound");
+
+		const oversized = new BoundedKeyedByteFifo<string>(1, 100);
+		expect(oversized.enqueue("x", "1234567", 7)).toBe("accepted");
+		expect(() => takeRenderedPrefix(oversized, 6, (value) => value)).toThrow(
+			"exceeds the prefix byte bound",
+		);
+		expect(oversized.values()).toEqual(["1234567"]);
+		expect(oversized.totalBytes).toBe(7);
+		expect(oversized.has("x")).toBe(true);
+	});
+
+	it.each([
+		{
+			name: "renderer failure",
+			render: (value: string) => {
+				if (value === "bb") throw new Error("renderer failed");
+				return value;
+			},
+			error: "renderer failed",
+		},
+		{
+			name: "oversized later candidate",
+			render: (value: string) => (value === "bb" ? "1234567" : value),
+			error: "exceeds the prefix byte bound",
+		},
+	])("leaves FIFO state unchanged after $name", ({ render, error }) => {
+		const queue = new BoundedKeyedByteFifo<string>(4, 100);
+		for (const value of ["aa", "bb", "cc"]) {
+			expect(queue.enqueue(value, value, Buffer.byteLength(value, "utf8"))).toBe("accepted");
+		}
+
+		expect(() => takeRenderedPrefix(queue, 6, render)).toThrow(error);
+		expect(queue.values()).toEqual(["aa", "bb", "cc"]);
+		expect(queue.length).toBe(3);
+		expect(queue.totalBytes).toBe(6);
+		for (const key of ["aa", "bb", "cc"]) {
+			expect(queue.has(key)).toBe(true);
+			expect(queue.enqueue(key, "duplicate", 1)).toBe("duplicate");
+		}
 	});
 
 	it("skips aborted, empty, and Advisor-generated turns", () => {
