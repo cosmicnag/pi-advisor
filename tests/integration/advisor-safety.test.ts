@@ -995,6 +995,61 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 		}
 	});
 
+	it("defers advice after the abort signal before aborted turn_end handling", async () => {
+		const advisorBarrier = createBarrier();
+		const abortedTurnEndBarrier = createBarrier();
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "first answer" }] },
+			{ delayMs: 10_000, waitAfterAbort: abortedTurnEndBarrier.promise },
+			{ content: [{ type: "text", text: "answer after signal-first interruption" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			{
+				...acceptedAdvice("Keep this signal-first interruption advice deferred."),
+				waitFor: advisorBarrier.promise,
+			},
+			{ content: [] },
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("start review before signal-first interruption");
+			await waitFor(() => advisor.activeRequests === 1);
+			const interrupted = harness.session.prompt("abort before turn_end can run");
+			await waitFor(() => primary.activeRequests === 1);
+			const aborting = harness.session.abort();
+			await waitFor(() => primary.requests[1]?.options?.signal?.aborted === true);
+			advisorBarrier.release();
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			expect(primary.activeRequests).toBe(1);
+			expect(runtime?.getStatus()).toMatchObject({ notesDelivered: 0 });
+			expect(JSON.stringify(harness.sessionManager.getEntries())).not.toContain(
+				"Keep this signal-first interruption advice deferred.",
+			);
+			abortedTurnEndBarrier.release();
+			await Promise.all([aborting, interrupted]);
+			await harness.session.prompt("resume after signal-first interruption");
+			const context = JSON.stringify(primary.requests[2]?.context);
+			expect(context.match(/Keep this signal-first interruption advice deferred\./gu)).toHaveLength(
+				1,
+			);
+			expect(runtime?.getStatus()).toMatchObject({
+				notesDelivered: 1,
+				deferredNotesPending: 0,
+			});
+		} finally {
+			advisorBarrier.release();
+			abortedTurnEndBarrier.release();
+			await harness.dispose();
+		}
+	});
+
 	it("keeps an aborted turn's in-flight review deferred when the next turn starts first", async () => {
 		const advisorBarrier = createBarrier();
 		const nextTurnBarrier = createBarrier();

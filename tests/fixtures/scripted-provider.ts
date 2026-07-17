@@ -31,6 +31,7 @@ export interface ScriptedResponse {
 	content?: ScriptedContent[];
 	delayMs?: number;
 	waitFor?: Promise<void>;
+	waitAfterAbort?: Promise<void>;
 	stopReason?: StopReason;
 	errorMessage?: string;
 	usage?: ScriptedUsage;
@@ -246,6 +247,9 @@ export class ScriptedProvider {
 			});
 			stream.end();
 		} catch (error) {
+			if (signal?.aborted && response?.waitAfterAbort !== undefined) {
+				await response.waitAfterAbort;
+			}
 			message.stopReason = signal?.aborted ? "aborted" : "error";
 			message.errorMessage = error instanceof Error ? error.message : String(error);
 			stream.push({ type: "error", reason: message.stopReason, error: message });

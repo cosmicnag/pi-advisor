@@ -609,7 +609,7 @@ export class AdvisorRuntime {
 			this.status.notesSuppressed++;
 			return false;
 		}
-		const deferred = forceDeferred || ctx.isIdle();
+		const deferred = forceDeferred || ctx.signal?.aborted === true || ctx.isIdle();
 		if (deferred) {
 			this.pendingAdvice.push({
 				advice,
