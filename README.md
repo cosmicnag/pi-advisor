@@ -84,7 +84,8 @@ The model reference must use `provider/model` syntax and must resolve through Pi
 Version 1 defaults to disabled, no model, `high` effort, all four read-only tools, empty review instructions, no additional protected paths, and no protected-path exceptions.
 The active Slice 1 fields are `defaultEnabled`, `model`, `effort`, `tools`, `instructions`, all `context` fields, the note, turn, tool-call, pending-byte, token, and cost limits, and both `security` path lists.
 `maxReprimeTokens`, review cadence, deferred-advice retention, `memorySuggestions`, `persistence`, `AdvisorProjectConfig`, and `CONFIG_VALIDATION_STRATEGY` are reserved contract fields and do not change Slice 1 runtime behavior.
-`PROPOSED_ADVISOR_CONFIG` remains a deprecated compatibility alias for an independent clone of `DEFAULT_ADVISOR_CONFIG`.
+`DEFAULT_ADVISOR_CONFIG` is deeply frozen; clone it before editing configuration.
+`PROPOSED_ADVISOR_CONFIG` remains a deprecated compatibility alias containing an independent mutable clone of the canonical defaults.
 Programmatic hooks are intended for embedding and tests: `onRuntime` exposes the instance, `onStatus` receives status snapshots, and `onWarning` receives pause warnings.
 An additional protected path blocks that target and its descendants by normalized request and canonical target, while an exception permits only one exact normalized or canonical target and can deliberately expose sensitive content.
 

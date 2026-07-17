@@ -1,5 +1,5 @@
 import { mkdir, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, parse } from "node:path";
 
 import type { ExtensionContext, InlineExtension } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
@@ -8,6 +8,7 @@ import {
 	createPiAdvisorExtension,
 	createProtectedAdvisorTools,
 	DEFAULT_ADVISOR_CONFIG,
+	ProtectedPathPolicy,
 	type AdvisorConfig,
 	type AdvisorRuntime,
 } from "../../src/index.js";
@@ -253,6 +254,7 @@ describe.sequential("Slice 1 automatic Advisor core", () => {
 				await mkdir(join(cwd, "protected-real"), { recursive: true });
 				await writeFile(join(cwd, ".env"), "TOKEN=super-secret-value\nneedle hidden");
 				await writeFile(join(cwd, "safe", "visible.txt"), "needle visible");
+				await writeFile(join(cwd, "safe", "context.txt"), "before\nneedle context\nafter");
 				await writeFile(join(cwd, "safe", "large.txt"), `needle ${"x".repeat(1_000_001)}`);
 				await writeFile(join(cwd, "protected-real", "hidden.txt"), "additional-secret-value");
 				await symlink(join(cwd, ".env"), join(cwd, "safe", "alias.txt"));
@@ -262,6 +264,11 @@ describe.sequential("Slice 1 automatic Advisor core", () => {
 		try {
 			const config = structuredClone(DEFAULT_ADVISOR_CONFIG);
 			config.security.additionalProtectedPaths = ["protected-alias"];
+			const rootPolicy = new ProtectedPathPolicy(harness.cwd, {
+				additionalProtectedPaths: [parse(harness.cwd).root],
+				protectedPathExceptions: [],
+			});
+			expect(await rootPolicy.allows("safe/visible.txt")).toBe(false);
 			const tools = createProtectedAdvisorTools(harness.cwd, config);
 			const ctx = {} as ExtensionContext;
 			const execute = async (name: string, args: Record<string, unknown>) => {
@@ -270,7 +277,12 @@ describe.sequential("Slice 1 automatic Advisor core", () => {
 				return tool.execute(`call-${name}`, args, undefined, undefined, ctx);
 			};
 			const read = await execute("read", { path: ".env" });
-			const grep = await execute("grep", { path: ".", pattern: "needle", literal: true });
+			const grep = await execute("grep", {
+				path: ".",
+				pattern: "needle",
+				literal: true,
+				context: 1,
+			});
 			const find = await execute("find", { path: ".", pattern: "*" });
 			const ls = await execute("ls", { path: "." });
 			const alias = await execute("read", { path: "safe/alias.txt" });
@@ -285,6 +297,7 @@ describe.sequential("Slice 1 automatic Advisor core", () => {
 			}
 			expect(toolText(grep)).toContain("safe/visible.txt");
 			expect(toolText(grep)).not.toContain("safe/large.txt");
+			expect(toolText(grep)).not.toContain(harness.cwd);
 			const invalidPattern = await execute("grep", { path: ".", pattern: "(" });
 			expect(toolText(invalidPattern)).toMatch(
 				/Invalid or unsupported grep pattern|Regex grep is unavailable/,

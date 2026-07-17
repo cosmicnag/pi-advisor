@@ -67,14 +67,26 @@ function runtimeStatus(): AdvisorRuntimeStatus {
 }
 
 describe("Slice 1 configuration and emission policy", () => {
+	it("keeps release defaults deeply immutable and normalization fallbacks canonical", () => {
+		expect(Object.isFrozen(DEFAULT_ADVISOR_CONFIG)).toBe(true);
+		expect(Object.isFrozen(DEFAULT_ADVISOR_CONFIG.limits)).toBe(true);
+		expect(Reflect.set(DEFAULT_ADVISOR_CONFIG.limits, "maxAdviceCharacters", 1)).toBe(false);
+		const input = structuredClone(DEFAULT_ADVISOR_CONFIG);
+		input.limits.maxAdviceCharacters = Number.NaN;
+		expect(normalizeAdvisorConfig(input).limits.maxAdviceCharacters).toBe(2_000);
+	});
+
 	it("keeps the deprecated proposed config export independent from release defaults", () => {
 		// eslint-disable-next-line @typescript-eslint/no-deprecated
 		const original = PROPOSED_ADVISOR_CONFIG.limits.maxAdviceCharacters;
-		// eslint-disable-next-line @typescript-eslint/no-deprecated
-		PROPOSED_ADVISOR_CONFIG.limits.maxAdviceCharacters = original - 1;
-		expect(DEFAULT_ADVISOR_CONFIG.limits.maxAdviceCharacters).toBe(original);
-		// eslint-disable-next-line @typescript-eslint/no-deprecated
-		PROPOSED_ADVISOR_CONFIG.limits.maxAdviceCharacters = original;
+		try {
+			// eslint-disable-next-line @typescript-eslint/no-deprecated
+			PROPOSED_ADVISOR_CONFIG.limits.maxAdviceCharacters = original - 1;
+			expect(DEFAULT_ADVISOR_CONFIG.limits.maxAdviceCharacters).toBe(original);
+		} finally {
+			// eslint-disable-next-line @typescript-eslint/no-deprecated
+			PROPOSED_ADVISOR_CONFIG.limits.maxAdviceCharacters = original;
+		}
 	});
 
 	it("clamps every approved package hard maximum", () => {

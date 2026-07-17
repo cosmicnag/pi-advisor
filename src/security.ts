@@ -59,9 +59,8 @@ function comparePath(path: string): string {
 function isWithin(candidate: string, root: string): boolean {
 	const comparedCandidate = comparePath(candidate);
 	const comparedRoot = comparePath(root);
-	return (
-		comparedCandidate === comparedRoot || comparedCandidate.startsWith(`${comparedRoot}${sep}`)
-	);
+	const rootPrefix = comparedRoot.endsWith(sep) ? comparedRoot : `${comparedRoot}${sep}`;
+	return comparedCandidate === comparedRoot || comparedCandidate.startsWith(rootPrefix);
 }
 
 async function canonicalize(path: string): Promise<string> {
@@ -357,7 +356,10 @@ function runRipgrep(
 function replaceAbsolutePaths(output: string, files: string[], cwd: string): string {
 	const replacements = [...files]
 		.sort((left, right) => right.length - left.length)
-		.map((file) => [`${file}:`, `${displayPath(cwd, file)}:`] as const);
+		.flatMap((file) => [
+			[`${file}:`, `${displayPath(cwd, file)}:`] as const,
+			[`${file}-`, `${displayPath(cwd, file)}-`] as const,
+		]);
 	return output
 		.split("\n")
 		.map((line) => {
@@ -534,6 +536,9 @@ function createGrepTool(cwd: string, policy: ProtectedPathPolicy) {
 					totalBytes: fallback.totalBytes,
 					literalFallback: true,
 				});
+			}
+			if (typeof result.code === "string") {
+				return textResult("Grep failed in this Pi environment.", { systemError: true });
 			}
 			if (typeof result.code === "number" && result.code > 1) {
 				return textResult("Invalid or unsupported grep pattern.", { patternError: true });

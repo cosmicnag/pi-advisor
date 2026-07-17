@@ -73,7 +73,13 @@ export interface AdvisorProjectConfig {
 	};
 }
 
-export const DEFAULT_ADVISOR_CONFIG: AdvisorConfig = {
+function deepFreeze<T>(value: T): T {
+	if (typeof value !== "object" || value === null || Object.isFrozen(value)) return value;
+	for (const nested of Object.values(value as Record<string, unknown>)) deepFreeze(nested);
+	return Object.freeze(value);
+}
+
+const CANONICAL_DEFAULT_ADVISOR_CONFIG: AdvisorConfig = deepFreeze({
 	version: ADVISOR_CONFIG_VERSION,
 	defaultEnabled: false,
 	effort: "high",
@@ -112,10 +118,16 @@ export const DEFAULT_ADVISOR_CONFIG: AdvisorConfig = {
 	persistence: {
 		transcript: false,
 	},
-};
+});
+
+export const DEFAULT_ADVISOR_CONFIG: AdvisorConfig = deepFreeze(
+	structuredClone(CANONICAL_DEFAULT_ADVISOR_CONFIG),
+);
 
 /** @deprecated Use DEFAULT_ADVISOR_CONFIG. */
-export const PROPOSED_ADVISOR_CONFIG: AdvisorConfig = structuredClone(DEFAULT_ADVISOR_CONFIG);
+export const PROPOSED_ADVISOR_CONFIG: AdvisorConfig = structuredClone(
+	CANONICAL_DEFAULT_ADVISOR_CONFIG,
+);
 
 export const HARD_LIMITS = {
 	maxAdviceCharacters: 8_000,
@@ -137,7 +149,7 @@ function finiteClamped(value: number, minimum: number, maximum: number, fallback
 }
 
 export function normalizeAdvisorConfig(input: AdvisorConfig): AdvisorConfig {
-	const defaults = DEFAULT_ADVISOR_CONFIG;
+	const defaults = CANONICAL_DEFAULT_ADVISOR_CONFIG;
 	const tools = input.tools.filter(
 		(tool, index, values) => READ_ONLY_TOOL_NAMES.includes(tool) && values.indexOf(tool) === index,
 	);
