@@ -23,7 +23,8 @@ Slice 1 does not add a collision warning, so users must identify the intended co
 - Active advice reaches Pi's next steering boundary regardless of severity.
 - Terminal and interruption-time advice waits for the next user-driven turn without triggering completion.
 - A severity-scoped 4,096-key in-memory FIFO suppresses duplicate ordinary review notes across updates on the active branch.
-  Dedupe normalizes Unicode, case, whitespace, and attached trailing prose punctuation while preserving internal and standalone code punctuation and symbols.
+  Dedupe applies NFKC and whitespace normalization, lowercases prose outside well-formed matching backtick spans, preserves backtick delimiters and code-span case, and folds only attached trailing prose punctuation.
+  Notes with unmatched backticks skip case and trailing-punctuation folding so malformed code markup cannot suppress a code-sensitive variant.
   The suppressed-note status count combines content-free calls, extra valid calls from one update, cross-update duplicates, and deferred queue admission rejections.
 - Deferred advice is bounded to 4,096 notes and 1,000,000 raw note bytes.
   Each user-driven turn receives at most a 64 KiB FIFO prefix, with remaining notes retained for later turns.
@@ -99,7 +100,8 @@ A full deferred queue rejects newer advice, increments the suppressed-note count
 `maxReprimeTokens`, review cadence, deferred-advice retention, `memorySuggestions`, `persistence`, `AdvisorProjectConfig`, and `CONFIG_VALIDATION_STRATEGY` remain reserved and do not change Batch A runtime behavior.
 `DEFAULT_ADVISOR_CONFIG` is deeply frozen; clone it before editing configuration.
 `PROPOSED_ADVISOR_CONFIG` remains a deprecated compatibility alias containing an independent mutable clone of the canonical defaults.
-Programmatic hooks are intended for embedding and tests: `onRuntime` exposes the instance, `onStatus` receives status snapshots, and `onWarning` receives pause warnings.
+Programmatic hooks are intended for embedding and tests: `onRuntime` exposes the instance, `onStatus` receives status snapshots, and `onWarning` receives runtime warnings.
+Observer exceptions from `onStatus` and `onWarning` do not alter runtime outcomes or prevent built-in status and UI publication.
 An additional protected path blocks that target and its descendants by normalized request and canonical target, while an exception permits only one exact normalized or canonical target and can deliberately expose sensitive content.
 
 Project context files supplied by Pi are tagged, redacted, and bounded before review, but they are treated as untrusted review context rather than higher-authority policy.

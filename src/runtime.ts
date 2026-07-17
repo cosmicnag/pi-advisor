@@ -746,9 +746,17 @@ export class AdvisorRuntime {
 
 	private warn(message: string): void {
 		this.status.warnings++;
-		this.hooks.onWarning?.(message);
+		this.publishWarning(message);
 		if (this.hostContext?.hasUI) this.hostContext.ui.notify(message, "warning");
 		this.publishStatus();
+	}
+
+	private publishWarning(message: string): void {
+		try {
+			this.hooks.onWarning?.(message);
+		} catch {
+			return;
+		}
 	}
 
 	private async resetForBranchMismatch(

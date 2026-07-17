@@ -232,7 +232,7 @@ describe("Slice 1 transcript filtering and redaction", () => {
 		}
 	});
 
-	it("deduplicates only conservative prose variants and preserves code operators", () => {
+	it("deduplicates only conservative prose variants and preserves code identity", () => {
 		expect(normalizeAdviceForDedupe("  VERIFY rollback punctuation... ")).toBe(
 			"verify rollback punctuation",
 		);
@@ -246,10 +246,26 @@ describe("Slice 1 transcript filtering and redaction", () => {
 			["Use x / y", "Use x y"],
 			["Negate !flag", "Negate flag"],
 			["Add the missing ;", "Add the missing"],
+			["Change `User` to `user`.", "Change `user` to `User`."],
+			["Change ``User`` now.", "Change ``user`` now."],
 		] as const) {
 			expect(dedupe.add(dedupeIdentity(left))).toBe(true);
 			expect(dedupe.add(dedupeIdentity(right))).toBe(true);
 		}
+
+		expect(normalizeAdviceForDedupe("CHANGE `User` NOW!")).toBe("change `User` now");
+		expect(dedupe.add(dedupeIdentity("CHANGE `Account` NOW!"))).toBe(true);
+		expect(dedupe.add(dedupeIdentity("change `Account` now..."))).toBe(false);
+	});
+
+	it("avoids case and trailing-punctuation suppression for unmatched backticks", () => {
+		expect(normalizeAdviceForDedupe("  Review `User carefully... ")).toBe(
+			"Review `User carefully...",
+		);
+		const dedupe = new BoundedAdviceDedupe(4);
+		expect(dedupe.add(dedupeIdentity("Review `User carefully."))).toBe(true);
+		expect(dedupe.add(dedupeIdentity("Review `User carefully..."))).toBe(true);
+		expect(dedupe.add(dedupeIdentity("review `user carefully..."))).toBe(true);
 	});
 
 	it("includes severity in dedupe identity and retains FIFO insertion order", () => {

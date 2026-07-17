@@ -5,11 +5,14 @@ import {
 	type InlineExtension,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
 	createPiAdvisorExtension,
 	DEFAULT_ADVISOR_CONFIG,
+	MAX_PENDING_ADVICE_BYTES,
+	type AcceptedAdvice,
+	type BoundedKeyedByteFifo,
 	type AdvisorConfig,
 	type AdvisorRuntime,
 } from "../../src/index.js";
@@ -155,6 +158,94 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			await waitFor(() => runtime?.getStatus().reviewsCompleted === 2);
 			expect(advisor.requests).toHaveLength(2);
 		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("isolates throwing warning observers from capacity rejection", async () => {
+		const advisorBarrier = createBarrier();
+		const capacityWarning =
+			"Deferred Advisor queue reached its fixed item or byte bound; newer advice was suppressed.";
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "terminal answer" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			{ ...acceptedAdvice("Rejected note at queue capacity."), waitFor: advisorBarrier.promise },
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		let warningCalls = 0;
+		let statusCalls = 0;
+		const notify = vi.fn();
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [
+				extensionFor(
+					configFor(advisor),
+					(value) => (runtime = value),
+					() => {
+						warningCalls++;
+						throw new Error("warning observer failed");
+					},
+					() => {
+						statusCalls++;
+					},
+				),
+			],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("fill deferred queue");
+			await waitFor(() => advisor.activeRequests === 1);
+			if (runtime === undefined) throw new Error("Expected Advisor runtime");
+			const activeRuntime = runtime;
+			const hostContext = Reflect.get(activeRuntime, "hostContext") as ExtensionContext;
+			Reflect.set(activeRuntime, "hostContext", {
+				...hostContext,
+				hasUI: true,
+				ui: { ...hostContext.ui, notify },
+			});
+			const pendingAdvice = Reflect.get(activeRuntime, "pendingAdvice") as BoundedKeyedByteFifo<{
+				advice: AcceptedAdvice;
+				stale: boolean;
+				branchWindow: { expectedIndex: number };
+			}>;
+			const seededAdvice: AcceptedAdvice = {
+				note: "Existing queued note.",
+				severity: "concern",
+				truncated: false,
+				originalCharacters: 21,
+				originalEstimatedTokens: 6,
+				createdAt: Date.now(),
+			};
+			expect(
+				pendingAdvice.enqueue(
+					"full-queue-entry",
+					{ advice: seededAdvice, stale: false, branchWindow: { expectedIndex: 0 } },
+					MAX_PENDING_ADVICE_BYTES,
+				),
+			).toBe("accepted");
+			const statusCallsBeforeWarning = statusCalls;
+
+			advisorBarrier.release();
+			await waitFor(() => activeRuntime.getStatus().reviewsCompleted === 1);
+
+			expect(activeRuntime.getStatus()).toMatchObject({
+				reviewsCompleted: 1,
+				silentReviews: 1,
+				failedReviews: 0,
+				notesDelivered: 0,
+				notesSuppressed: 1,
+				warnings: 1,
+			});
+			expect(pendingAdvice.length).toBe(1);
+			expect(pendingAdvice.totalBytes).toBe(MAX_PENDING_ADVICE_BYTES);
+			expect(warningCalls).toBe(1);
+			expect(statusCalls).toBeGreaterThan(statusCallsBeforeWarning);
+			expect(notify).toHaveBeenCalledWith(capacityWarning, "warning");
+		} finally {
+			advisorBarrier.release();
 			await harness.dispose();
 		}
 	});

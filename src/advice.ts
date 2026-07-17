@@ -51,10 +51,45 @@ export function normalizeContentFreeAdvice(input: string): string {
 		.trim();
 }
 
+function foldProseCaseOutsideCodeSpans(input: string): string | undefined {
+	let output = "";
+	let cursor = 0;
+	while (cursor < input.length) {
+		const openingStart = input.indexOf("`", cursor);
+		if (openingStart === -1) {
+			return `${output}${input.slice(cursor).toLocaleLowerCase("en-US")}`;
+		}
+		output += input.slice(cursor, openingStart).toLocaleLowerCase("en-US");
+		let openingEnd = openingStart;
+		while (input[openingEnd] === "`") openingEnd++;
+		const delimiterLength = openingEnd - openingStart;
+		let search = openingEnd;
+		let closingStart = -1;
+		let closingEnd = -1;
+		while (search < input.length) {
+			const candidateStart = input.indexOf("`", search);
+			if (candidateStart === -1) break;
+			let candidateEnd = candidateStart;
+			while (input[candidateEnd] === "`") candidateEnd++;
+			if (candidateEnd - candidateStart === delimiterLength) {
+				closingStart = candidateStart;
+				closingEnd = candidateEnd;
+				break;
+			}
+			search = candidateEnd;
+		}
+		if (closingStart === -1) return undefined;
+		output += input.slice(openingStart, closingEnd);
+		cursor = closingEnd;
+	}
+	return output;
+}
+
 export function normalizeAdviceForDedupe(input: string): string {
-	return input
-		.normalize("NFKC")
-		.toLocaleLowerCase("en-US")
+	const normalized = input.normalize("NFKC");
+	const caseFolded = foldProseCaseOutsideCodeSpans(normalized);
+	if (caseFolded === undefined) return normalized.replace(/\s+/g, " ").trim();
+	return caseFolded
 		.replace(/\s+/g, " ")
 		.trim()
 		.replace(/(?<=\S)[.,;:?!…]+$/gu, "")

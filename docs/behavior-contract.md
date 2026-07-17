@@ -92,7 +92,8 @@ Fixed Advisor safety and protocol policy remains above caller instructions, tagg
 Only one Advisor update runs at a time.
 Updates arriving while Advisor is busy are coalesced within a bounded backlog.
 Content-free phrase matching uses broad punctuation and symbol folding against the fixed noise list.
-Ordinary-note dedupe separately uses NFKC Unicode normalization, `en-US` lowercasing, whitespace collapse, and attached trailing sentence-punctuation folding while preserving internal and standalone punctuation and symbols.
+Ordinary-note dedupe separately uses NFKC Unicode normalization and whitespace collapse, applies `en-US` lowercasing only to prose outside well-formed matching backtick spans, preserves each backtick delimiter and the case inside its code span, and folds only attached trailing prose sentence punctuation.
+If any backtick delimiter is unmatched, dedupe skips case and trailing-punctuation folding for the whole note so malformed code markup cannot suppress a code-sensitive variant.
 Dedupe identity includes review intent, severity, and normalized note text before SHA-256 hashing, so a severity change is not suppressed.
 The in-memory dedupe history holds 4,096 keys and evicts the oldest key in insertion order without refreshing duplicate access.
 A branch reset clears that branch-local dedupe history.
@@ -112,6 +113,7 @@ Provider, malformed internal tool, and governor failures are not retried, and fa
 A well-formed read-only tool error remains ordinary review feedback rather than failing the update by itself.
 If a turn or tool-call governor fires after one valid note has already been accepted, that one bounded note may still be delivered while the update counts as failed.
 Three consecutive failed updates pause Advisor and produce one pause warning, while a successful review resets the consecutive-failure count.
+Programmatic status and warning observers are isolated so observer exceptions cannot alter review outcomes, counters, queue admission, built-in UI warning publication, or later status publication.
 Exceeding the context limit or reaching a session token or reported-cost cap pauses only Advisor and never interrupts Executor.
 
 ## Privacy and telemetry
