@@ -42,7 +42,7 @@ const CONTENT_FREE = new Set([
 ]);
 const TRUNCATION_MARKER = "\n[Advisory note truncated to configured limit]";
 
-export function normalizeAdviceForDedupe(input: string): string {
+export function normalizeContentFreeAdvice(input: string): string {
 	return input
 		.normalize("NFKC")
 		.toLocaleLowerCase("en-US")
@@ -51,8 +51,25 @@ export function normalizeAdviceForDedupe(input: string): string {
 		.trim();
 }
 
-export function adviceDedupeKey(note: string): string {
-	return createHash("sha256").update(normalizeAdviceForDedupe(note)).digest("hex");
+export function normalizeAdviceForDedupe(input: string): string {
+	return input
+		.normalize("NFKC")
+		.toLocaleLowerCase("en-US")
+		.replace(/\s+/g, " ")
+		.trim()
+		.replace(/(?<=\S)[.,;:?!…]+$/gu, "")
+		.trim();
+}
+
+export type AdviceDedupeIdentity = Pick<AcceptedAdvice, "note" | "severity">;
+
+export function adviceDedupeKey(advice: AdviceDedupeIdentity): string {
+	const identity = JSON.stringify([
+		"review",
+		advice.severity,
+		normalizeAdviceForDedupe(advice.note),
+	]);
+	return createHash("sha256").update(identity).digest("hex");
 }
 
 export class BoundedAdviceDedupe {
@@ -64,8 +81,12 @@ export class BoundedAdviceDedupe {
 		}
 	}
 
-	add(note: string): boolean {
-		const key = adviceDedupeKey(note);
+	has(advice: AdviceDedupeIdentity): boolean {
+		return this.keys.has(adviceDedupeKey(advice));
+	}
+
+	add(advice: AdviceDedupeIdentity): boolean {
+		const key = adviceDedupeKey(advice);
 		if (this.keys.has(key)) return false;
 		this.keys.add(key);
 		if (this.keys.size > this.capacity) {
@@ -75,8 +96,8 @@ export class BoundedAdviceDedupe {
 		return true;
 	}
 
-	delete(note: string): boolean {
-		return this.keys.delete(adviceDedupeKey(note));
+	delete(advice: AdviceDedupeIdentity): boolean {
+		return this.keys.delete(adviceDedupeKey(advice));
 	}
 
 	clear(): void {
@@ -89,7 +110,7 @@ export class BoundedAdviceDedupe {
 }
 
 export function isContentFreeAdvice(note: string): boolean {
-	return CONTENT_FREE.has(normalizeAdviceForDedupe(note));
+	return CONTENT_FREE.has(normalizeContentFreeAdvice(note));
 }
 
 function truncateCharacters(

@@ -829,6 +829,46 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 		}
 	});
 
+	it("delivers the same normalized note again when severity changes", async () => {
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "first terminal answer" }] },
+			{ content: [{ type: "text", text: "second terminal answer" }] },
+			{ content: [{ type: "text", text: "third terminal answer" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			acceptedAdvice("Verify the rollback path!", "severity-concern", "concern"),
+			acceptedAdvice("VERIFY the rollback path...", "severity-blocker", "blocker"),
+			{ content: [] },
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("first severity");
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			await harness.session.prompt("materialize concern and review again");
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			await harness.session.prompt("materialize blocker escalation");
+			expect(JSON.stringify(primary.requests[1]?.context)).toContain(
+				"[Advisor concern - deferred]",
+			);
+			expect(JSON.stringify(primary.requests[2]?.context)).toContain(
+				"[Advisor blocker - deferred]",
+			);
+			expect(runtime?.getStatus()).toMatchObject({
+				notesDelivered: 2,
+				notesSuppressed: 0,
+			});
+		} finally {
+			await harness.dispose();
+		}
+	});
+
 	it("marks advice stale when the Executor advances beyond the reviewed window", async () => {
 		const advisorBarrier = createBarrier();
 		const primary = createPrimaryProvider([

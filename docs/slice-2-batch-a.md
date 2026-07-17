@@ -15,7 +15,7 @@ Issues #8, #9, and #10 remain ordered later work.
 | Deferred next-user-turn delivery     | Pi `nextTurn` was used directly                           | Individually bounded notes are held in in-memory runtime state and injected from `before_agent_start` because Pi 0.80.7 exposes no public cancellation API for queued `nextTurn` messages after branch navigation |
 | Terminal-answer preservation         | Late advice used `nextTurn` without triggering completion | Preserved without triggering completion and materialized only after the next user prompt                                                                                                                          |
 | User-interrupt preservation          | Aborted turns were excluded from review                   | Every public abort signal or aborted stop reason forces in-flight accepted advice to defer because Pi 0.80.7 exposes no public abort cause                                                                        |
-| Cross-update dedupe                  | Not implemented                                           | SHA-256 keys of NFKC-normalized, `en-US`-lowercased, punctuation-and-symbol-folded, whitespace-collapsed notes use a 4,096-entry FIFO in-memory set                                                               |
+| Cross-update dedupe                  | Not implemented                                           | Severity-scoped SHA-256 keys use conservative NFKC, case, whitespace, and attached-trailing-prose-punctuation normalization while preserving code punctuation; history is a 4,096-entry FIFO                      |
 | Staleness                            | Not implemented                                           | Advice is potentially stale when the active branch advances beyond the fixed submitted window during review or before deferred materialization and includes a verification instruction                            |
 | Branch/session clearing              | In-flight work was invalidated                            | In-memory deferred advice and dedupe state are cleared on branch mismatch, disablement, shutdown, and session replacement                                                                                         |
 
@@ -26,7 +26,8 @@ Custom TUI message rendering, immediate late-advice cards, XML markup, `/advisor
 Memory suggestion behavior remains issue #9.
 Cross-exit restoration remains Slice 3.
 No durable configuration or new user-configurable field was added.
-The dedupe capacity is a fixed protocol bound, not a configuration option.
+The 4,096-key dedupe history, 4,096-note and 1,000,000-byte deferred queue, and 64 KiB deferred delivery batch are fixed protocol bounds rather than configuration options.
+Deferred queue admission rejects newer notes when full, while delivery drains bounded FIFO prefixes across later user-driven turns.
 
 ## Compatibility sanity gate
 
@@ -37,13 +38,17 @@ The measured public API still exposes an aborted stop reason without a user-inte
 ## Verification evidence
 
 - `pnpm exec vitest run tests/integration/delivery-spikes.test.ts tests/integration/lifecycle-spikes.test.ts tests/integration/session-replacement-spike.test.ts tests/contract/session-measurements.test.ts` passed before edits with 4 files and 8 tests.
-- `pnpm verify` passed after implementation with typecheck, lint, formatting, and 11 unit, contract, and integration files containing 72 tests.
+- `pnpm verify` passed after the ground-up dedupe and deferred-queue redesign with typecheck, lint, formatting, and 11 unit, contract, and integration files containing 77 tests.
 - `pnpm test:e2e` passed the packed package installation and inactive-default load scenario.
 - `git diff --check` passed.
 - Claude Fable 5 approved the implementation in review round 1 with no blockers and five non-blocking hardening recommendations.
 - The recommendations were resolved with pending-versus-delivered counters, unseen-note dedupe removal, pinned promise-ordering evidence, aligned documentation, and multi-note deferred coverage.
 - Claude Fable 5 approved review round 2 with consensus that issue #7 was ready to commit.
 - The final status-publication hardening recommendation was also applied before commit.
+- After repeated incremental normalization findings, no-mistakes was stopped and its in-progress patches were discarded at the user's direction.
+- Claude Fable 5 and the executor agreed on the root cause and a complete policy split for content-free matching, conservative severity-scoped dedupe, bounded deferred storage, and bounded multi-turn FIFO delivery.
+- Claude Fable 5 approved the completed ground-up implementation with no blockers.
+- CodeRabbit CLI reviewed the completed staged redesign, its findings were fixed, and the final re-review completed with zero findings.
 
 Manual advice-card theme verification is not part of Batch A because custom advice cards remain issue #8.
 
@@ -52,4 +57,6 @@ Manual advice-card theme verification is not part of Batch A because custom advi
 Direct Pi `nextTurn` queuing remains valid for no-trigger timing but cannot be cancelled through a public Pi 0.80.7 API after branch navigation.
 Batch A therefore holds individually bounded notes in memory and uses `before_agent_start` injection to preserve the measured next-user-turn behavior while meeting branch-clearing requirements.
 Pi 0.80.7 does not expose a public abort cause, so the runtime intentionally treats every abort as an interruption for delivery safety.
-The in-memory deferred collection has no separate configuration field or explicit independent cap, but it is constrained by one note per update, single-flight draining, bounded coalescing, and consumption on the next user-driven turn.
+The in-memory deferred collection has no separate configuration field.
+It is bounded by fixed item and raw-note-byte limits, and each primary-context injection has a separate fixed formatted-byte limit.
+The reserved `deferredAdviceRetentionHours` field remains unenforced until cross-exit lifecycle work.

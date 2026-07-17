@@ -13,6 +13,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import {
+	adviceDedupeKey,
 	BoundedAdviceDedupe,
 	createAdviseTool,
 	formatAdviceForDelivery,
@@ -21,6 +22,13 @@ import {
 	type AdviceDelivery,
 } from "./advice.js";
 import { normalizeAdvisorConfig, type AdvisorConfig } from "./config.js";
+import {
+	BoundedKeyedByteFifo,
+	MAX_DEFERRED_DELIVERY_BYTES,
+	MAX_PENDING_ADVICE_BYTES,
+	MAX_PENDING_ADVICE_ITEMS,
+	takeRenderedPrefix,
+} from "./delivery.js";
 import {
 	estimateTokens,
 	redactSecrets,
@@ -189,7 +197,11 @@ export class AdvisorRuntime {
 	private disposed = false;
 	private projectContext = "";
 	private currentRun?: CurrentRun;
-	private readonly pendingAdvice: PendingAdvice[] = [];
+	private readonly pendingAdvice = new BoundedKeyedByteFifo<PendingAdvice>(
+		MAX_PENDING_ADVICE_ITEMS,
+		MAX_PENDING_ADVICE_BYTES,
+	);
+	private pendingAdviceWarningEmitted = false;
 	private readonly adviceDedupe = new BoundedAdviceDedupe();
 	private readonly collector: AdviceCollector = {
 		validCalls: 0,
@@ -605,19 +617,36 @@ export class AdvisorRuntime {
 		stale: boolean,
 		forceDeferred: boolean,
 	): boolean {
-		if (!this.adviceDedupe.add(advice.note)) {
+		const identity = adviceDedupeKey(advice);
+		if (this.pendingAdvice.has(identity) || this.adviceDedupe.has(advice)) {
 			this.status.notesSuppressed++;
 			return false;
 		}
 		const deferred = forceDeferred || ctx.signal?.aborted === true || ctx.isIdle();
 		if (deferred) {
-			this.pendingAdvice.push({
-				advice,
-				stale,
-				branchWindow: cursorAtTail(ctx.sessionManager.getBranch()),
-			});
+			const admission = this.pendingAdvice.enqueue(
+				identity,
+				{
+					advice,
+					stale,
+					branchWindow: cursorAtTail(ctx.sessionManager.getBranch()),
+				},
+				Buffer.byteLength(advice.note, "utf8"),
+			);
+			if (admission !== "accepted") {
+				this.status.notesSuppressed++;
+				if (admission === "capacity" && !this.pendingAdviceWarningEmitted) {
+					this.pendingAdviceWarningEmitted = true;
+					this.warn(
+						"Deferred Advisor queue reached its fixed item or byte bound; newer advice was suppressed.",
+					);
+				}
+				return false;
+			}
+			this.adviceDedupe.add(advice);
 			this.status.deferredNotesPending = this.pendingAdvice.length;
 		} else {
+			this.adviceDedupe.add(advice);
 			const details = this.adviceDetails(advice, "active", stale);
 			this.pi.sendMessage(
 				{
@@ -643,26 +672,34 @@ export class AdvisorRuntime {
 		| undefined {
 		if (this.pendingAdvice.length === 0) return undefined;
 		const branch = ctx.sessionManager.getBranch();
-		const compatible = this.pendingAdvice.every((pending) =>
-			cursorMatches(branch, pending.branchWindow),
-		);
+		const compatible = this.pendingAdvice
+			.values()
+			.every((pending) => cursorMatches(branch, pending.branchWindow));
 		if (!compatible) {
-			for (const pending of this.pendingAdvice) this.adviceDedupe.delete(pending.advice.note);
-			this.pendingAdvice.length = 0;
+			for (const pending of this.pendingAdvice.values()) {
+				this.adviceDedupe.delete(pending.advice);
+			}
+			this.pendingAdvice.clear();
 			this.status.deferredNotesPending = 0;
 			this.publishStatus();
 			return undefined;
 		}
-		const pending = this.pendingAdvice.splice(0).map((item) => ({
-			...item,
-			stale: item.stale || branch.length > item.branchWindow.expectedIndex,
+
+		const batch = takeRenderedPrefix(this.pendingAdvice, MAX_DEFERRED_DELIVERY_BYTES, (pending) => {
+			const stale = pending.stale || branch.length > pending.branchWindow.expectedIndex;
+			return formatAdviceForDelivery(pending.advice, "deferred", stale);
+		});
+		const pending = batch.map(({ value, rendered }) => ({
+			...value,
+			stale: value.stale || branch.length > value.branchWindow.expectedIndex,
+			formatted: rendered,
 		}));
-		this.status.deferredNotesPending = 0;
+		for (const { advice } of pending) this.adviceDedupe.add(advice);
+
+		this.status.deferredNotesPending = this.pendingAdvice.length;
 		this.status.notesDelivered += pending.length;
 		const notes = pending.map(({ advice, stale }) => this.adviceDetails(advice, "deferred", stale));
-		const content = pending
-			.map(({ advice, stale }) => formatAdviceForDelivery(advice, "deferred", stale))
-			.join("\n\n");
+		const content = pending.map(({ formatted }) => formatted).join("\n\n");
 		const single = notes.length === 1 ? notes[0] : undefined;
 		this.publishStatus();
 		return {
@@ -720,7 +757,7 @@ export class AdvisorRuntime {
 		this.status.epoch++;
 		this.status.branchResets++;
 		this.pendingText = "";
-		this.pendingAdvice.length = 0;
+		this.pendingAdvice.clear();
 		this.status.deferredNotesPending = 0;
 		this.adviceDedupe.clear();
 		const session = this.session;
@@ -748,7 +785,7 @@ export class AdvisorRuntime {
 		this.status.paused = false;
 		delete this.status.pauseReason;
 		this.pendingText = "";
-		this.pendingAdvice.length = 0;
+		this.pendingAdvice.clear();
 		this.status.deferredNotesPending = 0;
 		this.adviceDedupe.clear();
 		await this.disposeNestedSession();
@@ -762,7 +799,7 @@ export class AdvisorRuntime {
 		this.status.enabled = false;
 		this.status.active = false;
 		this.pendingText = "";
-		this.pendingAdvice.length = 0;
+		this.pendingAdvice.clear();
 		this.status.deferredNotesPending = 0;
 		this.adviceDedupe.clear();
 		await this.disposeNestedSession();

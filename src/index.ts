@@ -92,6 +92,7 @@ export default function piAdvisor(pi: ExtensionAPI): void {
 
 export * from "./advice.js";
 export * from "./config.js";
+export * from "./delivery.js";
 export * from "./redaction.js";
 export * from "./runtime.js";
 export * from "./security.js";

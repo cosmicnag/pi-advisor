@@ -22,8 +22,11 @@ Slice 1 does not add a collision warning, so users must identify the intended co
 - Plain model-visible nit, concern, and blocker labels with active, deferred, and potentially stale states.
 - Active advice reaches Pi's next steering boundary regardless of severity.
 - Terminal and interruption-time advice waits for the next user-driven turn without triggering completion.
-- A normalized 4,096-key in-memory FIFO suppresses duplicate ordinary review notes across updates on the active branch.
-  The suppressed-note status count combines content-free calls, extra valid calls from one update, and cross-update duplicates.
+- A severity-scoped 4,096-key in-memory FIFO suppresses duplicate ordinary review notes across updates on the active branch.
+  Dedupe normalizes Unicode, case, whitespace, and attached trailing prose punctuation while preserving internal and standalone code punctuation and symbols.
+  The suppressed-note status count combines content-free calls, extra valid calls from one update, cross-update duplicates, and deferred queue admission rejections.
+- Deferred advice is bounded to 4,096 notes and 1,000,000 raw note bytes.
+  Each user-driven turn receives at most a 64 KiB FIFO prefix, with remaining notes retained for later turns.
 - Advice produced after the Executor advances beyond the reviewed window is marked potentially stale and asks the Executor to verify it still applies.
 - Separate in-memory Advisor state that does not persist a transcript.
 - Protected `read`, `grep`, `find`, and `ls` tools, with no mutating Advisor tools.
@@ -91,7 +94,8 @@ The model reference must use `provider/model` syntax and must resolve through Pi
 Version 1 defaults to disabled, no model, `high` effort, all four read-only tools, empty review instructions, no additional protected paths, and no protected-path exceptions.
 The active configuration fields are `defaultEnabled`, `model`, `effort`, `tools`, `instructions`, all `context` fields, the note, turn, tool-call, pending-byte, token, and cost limits, and both `security` path lists.
 Slice 2 Batch A adds no configuration field.
-Its 4,096-key in-memory dedupe capacity is a fixed protocol bound.
+Its 4,096-key dedupe history, 4,096-note and 1,000,000-byte deferred queue, and 64 KiB deferred delivery batch are fixed protocol bounds.
+A full deferred queue rejects newer advice, increments the suppressed-note count, and warns once per session.
 `maxReprimeTokens`, review cadence, deferred-advice retention, `memorySuggestions`, `persistence`, `AdvisorProjectConfig`, and `CONFIG_VALIDATION_STRATEGY` remain reserved and do not change Batch A runtime behavior.
 `DEFAULT_ADVISOR_CONFIG` is deeply frozen; clone it before editing configuration.
 `PROPOSED_ADVISOR_CONFIG` remains a deprecated compatibility alias containing an independent mutable clone of the canonical defaults.
@@ -104,15 +108,16 @@ Project context files supplied by Pi are tagged, redacted, and bounded before re
 
 All current modules are re-exported from the package root.
 
-| Surface         | Exports                                                                                                                                                                                  |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Extension       | Default Pi extension, `createPiAdvisorExtension`, `PiAdvisorExtensionOptions`                                                                                                            |
-| Runtime         | `AdvisorRuntime`, `AdvisorRuntimeHooks`, `AdvisorRuntimeStatus`, `AdvisorUsageTotals`, `formatAdvisorStatus`, `formatAdvisorEnableStatus`                                                |
-| Configuration   | `DEFAULT_ADVISOR_CONFIG`, deprecated `PROPOSED_ADVISOR_CONFIG`, `normalizeAdvisorConfig`, `HARD_LIMITS`, `READ_ONLY_TOOL_NAMES`, configuration types, and reserved validation metadata   |
-| Advice          | `createAdviseTool`, `boundAdvice`, `normalizeAdviceForDedupe`, `adviceDedupeKey`, `BoundedAdviceDedupe`, `formatAdviceForDelivery`, `isContentFreeAdvice`, and advice and delivery types |
-| Protected tools | `ProtectedPathPolicy`, `createProtectedAdvisorTools`, `isAdvisorReadOnlyTool`, and `AdvisorToolContext`                                                                                  |
-| Transcript      | `ADVISOR_CUSTOM_TYPE`, cursor helpers, meaningful-turn filtering, delta rendering, and transcript types                                                                                  |
-| Redaction       | `redactSecrets`, `estimateTokens`, UTF-8 truncation helpers, and `RedactionResult`                                                                                                       |
+| Surface         | Exports                                                                                                                                                                                |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Extension       | Default Pi extension, `createPiAdvisorExtension`, `PiAdvisorExtensionOptions`                                                                                                          |
+| Runtime         | `AdvisorRuntime`, `AdvisorRuntimeHooks`, `AdvisorRuntimeStatus`, `AdvisorUsageTotals`, `formatAdvisorStatus`, `formatAdvisorEnableStatus`                                              |
+| Configuration   | `DEFAULT_ADVISOR_CONFIG`, deprecated `PROPOSED_ADVISOR_CONFIG`, `normalizeAdvisorConfig`, `HARD_LIMITS`, `READ_ONLY_TOOL_NAMES`, configuration types, and reserved validation metadata |
+| Advice          | `createAdviseTool`, `boundAdvice`, policy-specific normalizers, severity-scoped dedupe helpers, delivery formatting, and advice types                                                  |
+| Delivery        | Fixed delivery bounds, `BoundedKeyedByteFifo`, `takeRenderedPrefix`, and queue types                                                                                                   |
+| Protected tools | `ProtectedPathPolicy`, `createProtectedAdvisorTools`, `isAdvisorReadOnlyTool`, and `AdvisorToolContext`                                                                                |
+| Transcript      | `ADVISOR_CUSTOM_TYPE`, cursor helpers, meaningful-turn filtering, delta rendering, and transcript types                                                                                |
+| Redaction       | `redactSecrets`, `estimateTokens`, UTF-8 truncation helpers, and `RedactionResult`                                                                                                     |
 
 The default extension is the installable entry point.
 `AdvisorRuntime` exposes cloned status snapshots, nested-message inspection, project-context capture, explicit enable and disable, turn observation, deferred-advice materialization through `takeDeferredAdvice`, branch-change invalidation through `handleBranchChange`, and shutdown, while the extension factory wires those lifecycle methods to Pi.

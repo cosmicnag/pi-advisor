@@ -46,8 +46,9 @@ Re-prime snapshots and persisted records are not implemented in Slice 1.
 ## Delivery
 
 Active advice uses Pi's measured steering boundary for every severity and never claims to abort an in-flight tool.
-Idle or terminal advice waits in in-memory runtime state for the next user-driven turn without triggering a new completion.
-Each pending note remains bounded by the configured note limits, but the pending collection has no independent item or byte cap in Batch A.
+Idle or terminal advice waits in bounded in-memory runtime state for the next user-driven turn without triggering a new completion.
+The deferred queue rejects a new note when admission would exceed 4,096 notes or 1,000,000 UTF-8 bytes of raw note text.
+A rejection preserves older FIFO entries, increments the suppressed-note count, and emits at most one queue-capacity warning per session.
 Pi 0.80.7 exposes no public abort cause, so every public abort signal or aborted Executor stop reason forces advice already being reviewed to use deferred delivery, and aborted Executor turns are excluded from new review.
 Pi 0.80.7 also exposes no public method to cancel an already queued `nextTurn` custom message after branch navigation, so Batch A uses the documented `before_agent_start` injection fallback for branch-safe deferred delivery.
 Batch A does not implement cross-exit deferred-advice restoration or a package-managed retention timer.
@@ -56,7 +57,8 @@ Every delivered note is visible and is framed as guidance to weigh rather than o
 It uses custom message type `pi-advisor-note` and plain `[Advisor severity - delivery - optional staleness]` text labels.
 Severity is `nit`, `concern`, or `blocker`, with `concern` as the default.
 A `notes` details array contains the bounded note, review intent, active or deferred delivery, optional staleness, truncation, original post-redaction size, and creation time.
-Multiple pending notes are emitted once in one deferred custom message, and a one-note message also mirrors its fields at the top level for compatibility.
+Each user-driven turn receives the largest FIFO prefix whose final rendered custom-message content fits 64 KiB in UTF-8, including every advice label, guidance wrapper, and inter-note separator but excluding non-model-visible details metadata.
+No note is split, remaining notes wait for later user turns, and a one-note message mirrors its fields at the top level for compatibility.
 
 ## Tools and protected paths
 
@@ -89,8 +91,10 @@ Fixed Advisor safety and protocol policy remains above caller instructions, tagg
 
 Only one Advisor update runs at a time.
 Updates arriving while Advisor is busy are coalesced within a bounded backlog.
-Ordinary notes are normalized with NFKC Unicode normalization, `en-US` lowercasing, punctuation and symbol folding, and whitespace collapse before SHA-256 deduplication.
-The in-memory dedupe history holds 4,096 keys and evicts the oldest key in insertion order.
+Content-free phrase matching uses broad punctuation and symbol folding against the fixed noise list.
+Ordinary-note dedupe separately uses NFKC Unicode normalization, `en-US` lowercasing, whitespace collapse, and attached trailing sentence-punctuation folding while preserving internal and standalone punctuation and symbols.
+Dedupe identity includes review intent, severity, and normalized note text before SHA-256 hashing, so a severity change is not suppressed.
+The in-memory dedupe history holds 4,096 keys and evicts the oldest key in insertion order without refreshing duplicate access.
 A branch reset clears that branch-local dedupe history.
 Deferred advice removed before emission also removes its dedupe key so unseen advice cannot suppress a future note.
 If the Executor advances beyond the transcript window fixed for Advisor submission, accepted advice is marked potentially stale and instructs the Executor to verify that it still applies.
@@ -101,7 +105,9 @@ Obvious tree-navigation or branch mismatches reset private Advisor context, whil
 Batch A does not reconstruct equal-length branches or restore advice across process or session exits.
 Update, pending-byte, context, turn, tool-call, note, session-token, and reported-cost governors remain enabled by default.
 Review cadence, re-prime, deferred-retention, Memory, and persistence settings remain reserved and have no Batch A runtime effect.
-Batch A adds no user-configurable field, and its 4,096-key dedupe capacity is a fixed protocol bound.
+In particular, `deferredAdviceRetentionHours` does not expire in-memory Batch A advice and remains reserved for cross-exit lifecycle work.
+Batch A adds no user-configurable field.
+Its 4,096-key dedupe history, 4,096-note and 1,000,000-byte deferred queue, and 64 KiB delivery batch are fixed protocol bounds.
 Provider, malformed internal tool, and governor failures are not retried, and failed update messages are removed from private Advisor context.
 A well-formed read-only tool error remains ordinary review feedback rather than failing the update by itself.
 If a turn or tool-call governor fires after one valid note has already been accepted, that one bounded note may still be delivered while the update counts as failed.
