@@ -77,6 +77,7 @@ export interface AdvisorRuntimeStatus {
 	silentReviews: number;
 	failedReviews: number;
 	notesDelivered: number;
+	activeNotesPending: number;
 	deferredNotesPending: number;
 	notesSuppressed: number;
 	redactions: number;
@@ -115,6 +116,12 @@ interface PendingAdvice {
 	branchWindow: AdvisorCursor;
 }
 
+interface OutstandingAdvice extends PendingAdvice {
+	identity: string;
+	deliveryId: string;
+	epoch: number;
+}
+
 interface AdviceMessageNote {
 	intent: "review";
 	note: string;
@@ -125,6 +132,7 @@ interface AdviceMessageNote {
 	originalCharacters: number;
 	originalEstimatedTokens: number;
 	createdAt: number;
+	deliveryId?: string;
 }
 
 function emptyUsage(): AdvisorUsageTotals {
@@ -205,7 +213,13 @@ export class AdvisorRuntime {
 		MAX_PENDING_ADVICE_ITEMS,
 		MAX_PENDING_ADVICE_BYTES,
 	);
+	private readonly activeAdvice = new BoundedKeyedByteFifo<OutstandingAdvice>(
+		MAX_PENDING_ADVICE_ITEMS,
+		MAX_PENDING_ADVICE_BYTES,
+	);
 	private pendingAdviceWarningEmitted = false;
+	private activeAdviceWarningEmitted = false;
+	private deliverySequence = 0;
 	private readonly adviceDedupe = new BoundedAdviceDedupe();
 	private readonly collector: AdviceCollector = {
 		validCalls: 0,
@@ -234,6 +248,7 @@ export class AdvisorRuntime {
 			silentReviews: 0,
 			failedReviews: 0,
 			notesDelivered: 0,
+			activeNotesPending: 0,
 			deferredNotesPending: 0,
 			notesSuppressed: 0,
 			redactions: 0,
@@ -601,6 +616,7 @@ export class AdvisorRuntime {
 		advice: AcceptedAdvice,
 		delivery: AdviceDelivery,
 		stale: boolean,
+		deliveryId?: string,
 	): AdviceMessageNote {
 		return {
 			intent: "review",
@@ -612,6 +628,7 @@ export class AdvisorRuntime {
 			originalCharacters: advice.originalCharacters,
 			originalEstimatedTokens: advice.originalEstimatedTokens,
 			createdAt: advice.createdAt,
+			...(deliveryId === undefined ? {} : { deliveryId }),
 		};
 	}
 
@@ -622,7 +639,11 @@ export class AdvisorRuntime {
 		forceDeferred: boolean,
 	): boolean {
 		const identity = adviceDedupeKey(advice);
-		if (this.pendingAdvice.has(identity) || this.adviceDedupe.has(advice)) {
+		if (
+			this.pendingAdvice.has(identity) ||
+			this.activeAdvice.has(identity) ||
+			this.adviceDedupe.has(advice)
+		) {
 			this.status.notesSuppressed++;
 			return false;
 		}
@@ -650,18 +671,47 @@ export class AdvisorRuntime {
 			this.adviceDedupe.add(advice);
 			this.status.deferredNotesPending = this.pendingAdvice.length;
 		} else {
-			this.adviceDedupe.add(advice);
-			const details = this.adviceDetails(advice, "active", stale);
-			this.pi.sendMessage(
+			const deliveryId = `${String(this.status.epoch)}:${String(++this.deliverySequence)}:${identity}`;
+			const admission = this.activeAdvice.enqueue(
+				identity,
 				{
-					customType: ADVISOR_CUSTOM_TYPE,
-					content: formatAdviceForDelivery(advice, "active", stale),
-					display: true,
-					details: { ...details, notes: [details] },
+					advice,
+					stale,
+					branchWindow: cursorAtTail(ctx.sessionManager.getBranch()),
+					identity,
+					deliveryId,
+					epoch: this.status.epoch,
 				},
-				{ deliverAs: "steer" },
+				Buffer.byteLength(advice.note, "utf8"),
 			);
-			this.status.notesDelivered++;
+			if (admission !== "accepted") {
+				this.status.notesSuppressed++;
+				if (admission === "capacity" && !this.activeAdviceWarningEmitted) {
+					this.activeAdviceWarningEmitted = true;
+					this.warn(
+						"Active Advisor delivery queue reached its fixed item or byte bound; newer advice was suppressed.",
+					);
+				}
+				return false;
+			}
+			this.status.activeNotesPending = this.activeAdvice.length;
+			const details = this.adviceDetails(advice, "active", stale, deliveryId);
+			try {
+				this.pi.sendMessage(
+					{
+						customType: ADVISOR_CUSTOM_TYPE,
+						content: formatAdviceForDelivery(advice, "active", stale),
+						display: true,
+						details: { ...details, notes: [details] },
+					},
+					{ deliverAs: "steer" },
+				);
+			} catch (error) {
+				this.activeAdvice.remove(identity);
+				this.status.activeNotesPending = this.activeAdvice.length;
+				throw error;
+			}
+			this.adviceDedupe.add(advice);
 		}
 		return true;
 	}
@@ -720,6 +770,93 @@ export class AdvisorRuntime {
 		};
 	}
 
+	private deliveryIdFromDetails(details: unknown): string | undefined {
+		if (typeof details !== "object" || details === null) return undefined;
+		const deliveryId = (details as Record<string, unknown>).deliveryId;
+		return typeof deliveryId === "string" ? deliveryId : undefined;
+	}
+
+	private acknowledgeActiveAdvice(deliveryId: string, publish = true): boolean {
+		const outstanding = this.activeAdvice
+			.values()
+			.find((candidate) => candidate.deliveryId === deliveryId);
+		if (outstanding?.epoch !== this.status.epoch) return false;
+		const removed = this.activeAdvice.remove(outstanding.identity);
+		if (removed?.value.deliveryId !== deliveryId) return false;
+		this.status.activeNotesPending = this.activeAdvice.length;
+		this.status.notesDelivered++;
+		if (publish) this.publishStatus();
+		return true;
+	}
+
+	observeExecutorMessage(message: AgentMessage): void {
+		if (message.role !== "custom" || message.customType !== ADVISOR_CUSTOM_TYPE) return;
+		const deliveryId = this.deliveryIdFromDetails(message.details);
+		if (deliveryId !== undefined) this.acknowledgeActiveAdvice(deliveryId);
+	}
+
+	private branchContainsDelivery(
+		branch: ReturnType<ExtensionContext["sessionManager"]["getBranch"]>,
+		outstanding: OutstandingAdvice,
+	): boolean {
+		if (!cursorMatches(branch, outstanding.branchWindow)) return false;
+		return branch.slice(outstanding.branchWindow.expectedIndex).some((entry) => {
+			if (entry.type !== "custom_message" || entry.customType !== ADVISOR_CUSTOM_TYPE) {
+				return false;
+			}
+			return this.deliveryIdFromDetails(entry.details) === outstanding.deliveryId;
+		});
+	}
+
+	async settleActiveAdvice(ctx: ExtensionContext): Promise<void> {
+		if (this.activeAdvice.length === 0 || this.disposed) return;
+		const branch = ctx.sessionManager.getBranch();
+		if (
+			this.activeAdvice
+				.values()
+				.some((outstanding) => !cursorMatches(branch, outstanding.branchWindow))
+		) {
+			await this.resetForBranchMismatch(branch);
+			return;
+		}
+
+		for (const outstanding of this.activeAdvice.values()) {
+			if (outstanding.epoch !== this.status.epoch) {
+				this.activeAdvice.remove(outstanding.identity);
+				continue;
+			}
+			if (this.branchContainsDelivery(branch, outstanding)) {
+				this.acknowledgeActiveAdvice(outstanding.deliveryId, false);
+				continue;
+			}
+
+			this.activeAdvice.remove(outstanding.identity);
+			const admission = this.pendingAdvice.enqueue(
+				outstanding.identity,
+				{
+					advice: outstanding.advice,
+					stale: true,
+					branchWindow: cursorAtTail(branch),
+				},
+				Buffer.byteLength(outstanding.advice.note, "utf8"),
+			);
+			if (admission === "accepted") continue;
+			this.status.notesSuppressed++;
+			if (admission === "capacity") {
+				this.adviceDedupe.delete(outstanding.advice);
+				if (!this.pendingAdviceWarningEmitted) {
+					this.pendingAdviceWarningEmitted = true;
+					this.warn(
+						"Deferred Advisor queue reached its fixed item or byte bound; newer advice was suppressed.",
+					);
+				}
+			}
+		}
+		this.status.activeNotesPending = this.activeAdvice.length;
+		this.status.deferredNotesPending = this.pendingAdvice.length;
+		this.publishStatus();
+	}
+
 	async handleBranchChange(ctx: ExtensionContext): Promise<void> {
 		await this.resetForBranchMismatch(ctx.sessionManager.getBranch());
 	}
@@ -776,6 +913,8 @@ export class AdvisorRuntime {
 		this.status.branchResets++;
 		this.pendingText = "";
 		this.pendingAdvice.clear();
+		this.activeAdvice.clear();
+		this.status.activeNotesPending = 0;
 		this.status.deferredNotesPending = 0;
 		this.adviceDedupe.clear();
 		const session = this.session;
@@ -804,6 +943,8 @@ export class AdvisorRuntime {
 		delete this.status.pauseReason;
 		this.pendingText = "";
 		this.pendingAdvice.clear();
+		this.activeAdvice.clear();
+		this.status.activeNotesPending = 0;
 		this.status.deferredNotesPending = 0;
 		this.adviceDedupe.clear();
 		await this.disposeNestedSession();
@@ -818,6 +959,8 @@ export class AdvisorRuntime {
 		this.status.active = false;
 		this.pendingText = "";
 		this.pendingAdvice.clear();
+		this.activeAdvice.clear();
+		this.status.activeNotesPending = 0;
 		this.status.deferredNotesPending = 0;
 		this.adviceDedupe.clear();
 		await this.disposeNestedSession();
@@ -889,7 +1032,7 @@ export function formatAdvisorStatus(status: AdvisorRuntimeStatus): string {
 		`Session tokens: ${String(status.usage.total)}`,
 		`Session cost: $${status.usage.costUsd.toFixed(4)}`,
 		`Reviews: ${String(status.reviewsCompleted)} completed, ${String(status.silentReviews)} silent, ${String(status.failedReviews)} failed`,
-		`Notes: ${String(status.notesDelivered)} delivered, ${String(status.deferredNotesPending)} deferred, ${String(status.notesSuppressed)} suppressed`,
+		`Notes: ${String(status.notesDelivered)} delivered, ${String(status.activeNotesPending)} active pending, ${String(status.deferredNotesPending)} deferred, ${String(status.notesSuppressed)} suppressed`,
 	];
 	if (status.inactiveReason) lines.push(`Inactive reason: ${status.inactiveReason}`);
 	if (status.pauseReason) lines.push(`Pause reason: ${status.pauseReason}`);

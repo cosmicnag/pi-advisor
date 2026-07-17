@@ -46,8 +46,11 @@ Re-prime snapshots and persisted records are not implemented in Slice 1.
 ## Delivery
 
 Active advice uses Pi's measured steering boundary for every severity and never claims to abort an in-flight tool.
+Queueing an active steer is not counted as delivery.
+The runtime retains a bounded active-pending copy until Pi acknowledges the custom message through message lifecycle or branch state.
+At agent settlement, an unacknowledged copy is recovered into deferred FIFO delivery, covering TUI abort queue clearing without duplicating RPC abort continuation.
 Idle or terminal advice waits in bounded in-memory runtime state for the next user-driven turn without triggering a new completion.
-The deferred queue rejects a new note when admission would exceed 4,096 notes or 1,000,000 UTF-8 bytes of raw note text.
+The active-pending and deferred queues each reject a new note when admission would exceed 4,096 notes or 1,000,000 UTF-8 bytes of raw note text.
 A rejection preserves older FIFO entries, increments the suppressed-note count, and emits at most one queue-capacity warning per session.
 Pi 0.80.7 exposes no public abort cause, so every public abort signal or aborted Executor stop reason forces advice already being reviewed to use deferred delivery, and aborted Executor turns are excluded from new review.
 Pi 0.80.7 also exposes no public method to cancel an already queued `nextTurn` custom message after branch navigation, so Batch A uses the documented `before_agent_start` injection fallback for branch-safe deferred delivery.
@@ -56,7 +59,8 @@ An incompatible active-branch cursor invalidates in-flight review and clears in-
 Every delivered note is visible and is framed as guidance to weigh rather than obey blindly.
 It uses custom message type `pi-advisor-note` and plain `[Advisor severity - delivery - optional staleness]` text labels.
 Severity is `nit`, `concern`, or `blocker`, with `concern` as the default.
-A `notes` details array contains the bounded note, review intent, active or deferred delivery, optional staleness, truncation, original post-redaction size, and creation time.
+A `notes` details array contains the bounded note, review intent, active or deferred delivery, optional staleness, truncation, original post-redaction size, creation time, and an opaque attempt-scoped delivery ID for active acknowledgement.
+Dedupe identity remains separate so a stale acknowledgement cannot confirm a later attempt with the same advice.
 Each user-driven turn receives the largest FIFO prefix whose final rendered custom-message content fits 64 KiB in UTF-8, including every advice label, guidance wrapper, and inter-note separator but excluding non-model-visible details metadata.
 No note is split, remaining notes wait for later user turns, and a one-note message mirrors its fields at the top level for compatibility.
 

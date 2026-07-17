@@ -14,7 +14,7 @@
 | Silence when work is sound                         | implemented            | Empty completions, plain text without `advise`, approval phrases, and normalized duplicates stay silent                |
 | One long-lived isolated Advisor                    | implemented            | Uses one in-memory nested `AgentSession` with extensions and recursive resources disabled                              |
 | Explicit secondary model selection                 | implemented            | Requires `provider/model`, valid credentials, and no Executor-model fallback                                           |
-| Active advice delivery                             | implemented            | Every severity uses Pi 0.80.7 steer at the next assistant boundary without aborting an in-flight tool                  |
+| Active advice delivery                             | implemented            | Every severity uses Pi 0.80.7 steer, with bounded acknowledgement tracking and deferred recovery after TUI queue clear |
 | Idle and terminal deferred advice                  | implemented            | Fixed item, raw-byte, and per-turn formatted-byte bounds preserve FIFO advice without triggering a completion          |
 | Cross-update dedupe                                | implemented            | A severity-scoped conservative-normalization 4,096-key FIFO preserves operators and case inside matched backtick spans |
 | Staleness annotation                               | implemented            | Advice is potentially stale after branch advance or when the pending user prompt triggers deferred materialization     |

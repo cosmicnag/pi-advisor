@@ -70,6 +70,7 @@ function runtimeStatus(): AdvisorRuntimeStatus {
 		silentReviews: 0,
 		failedReviews: 0,
 		notesDelivered: 0,
+		activeNotesPending: 0,
 		deferredNotesPending: 0,
 		notesSuppressed: 0,
 		redactions: 0,
@@ -290,6 +291,9 @@ describe("Slice 1 transcript filtering and redaction", () => {
 		expect(queue.shift()).toMatchObject({ key: "a", value: "one", bytes: 3 });
 		expect(queue.totalBytes).toBe(2);
 		expect(queue.enqueue("c", "three", 3)).toBe("accepted");
+		expect(queue.remove("b")).toMatchObject({ key: "b", value: "two", bytes: 2 });
+		expect(queue.values()).toEqual(["three"]);
+		expect(queue.totalBytes).toBe(3);
 	});
 
 	it("keeps one hard-bounded note below the deferred delivery batch limit", () => {

@@ -44,6 +44,7 @@ _Avoid_: Hidden prompt, transcript, Advisory note
 
 **Advisory note**:
 One accepted, bounded, actionable observation created through a valid internal `advise` call, shown to the user, and delivered to the Executor as peer guidance.
+An active note remains package-owned and active-pending until Pi acknowledges its custom message; settlement recovers an unacknowledged note into Deferred advice.
 _Avoid_: Review result, hidden instruction, approval request, feedback blob
 
 **Memory suggestion**:

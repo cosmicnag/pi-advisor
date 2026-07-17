@@ -8,7 +8,9 @@ import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+	adviceDedupeKey,
 	createPiAdvisorExtension,
+	cursorAtTail,
 	DEFAULT_ADVISOR_CONFIG,
 	MAX_PENDING_ADVICE_BYTES,
 	type AcceptedAdvice,
@@ -85,12 +87,16 @@ function acceptedAdvice(
 
 describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch A", () => {
 	it("delivers a normal accepted note once through active steer and skips the resulting Advisor-generated turn", async () => {
+		const executorBarrier = createBarrier();
 		const primary = createPrimaryProvider([
 			{
 				content: [{ type: "toolCall", id: "hold-1", name: "hold", arguments: {} }],
 				stopReason: "toolUse",
 			},
-			{ delayMs: 150, content: [{ type: "text", text: "Executor continued original work" }] },
+			{
+				waitFor: executorBarrier.promise,
+				content: [{ type: "text", text: "Executor continued original work" }],
+			},
 			{ content: [{ type: "text", text: "Executor weighed peer guidance" }] },
 		]);
 		const advisor = createAdvisorProvider([
@@ -115,7 +121,10 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			mode: "rpc",
 		});
 		try {
-			await harness.session.prompt("start active delivery");
+			const activeTurn = harness.session.prompt("start active delivery");
+			await waitFor(() => runtime?.getStatus().activeNotesPending === 1);
+			executorBarrier.release();
+			await activeTurn;
 			await waitFor(
 				() => primary.requests.length === 3 && runtime?.getStatus().notesDelivered === 1,
 			);
@@ -124,6 +133,246 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			);
 			expect(advisor.requests).toHaveLength(2);
 			expect(runtime?.getStatus()).toMatchObject({ notesDelivered: 1, reviewsCompleted: 2 });
+		} finally {
+			executorBarrier.release();
+			await harness.dispose();
+		}
+	});
+
+	it("preserves active advice when a TUI-style abort clears the steering queue", async () => {
+		const executorBarrier = createBarrier();
+		const note = "Retain this active note across interruption.";
+		const primary = createPrimaryProvider([
+			{
+				content: [{ type: "toolCall", id: "hold-abort", name: "hold", arguments: {} }],
+				stopReason: "toolUse",
+			},
+			{ waitFor: executorBarrier.promise, content: [{ type: "text", text: "interrupted" }] },
+			{ content: [{ type: "text", text: "answer after interruption" }] },
+		]);
+		const advisor = createAdvisorProvider([acceptedAdvice(note)]);
+		const hold = defineTool({
+			name: "hold",
+			label: "hold",
+			description: "Create a deterministic active Executor boundary.",
+			parameters: Type.Object({}),
+			execute: () =>
+				Promise.resolve({ content: [{ type: "text" as const, text: "held" }], details: {} }),
+		});
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			customTools: [hold],
+			tools: ["hold"],
+			mode: "tui",
+		});
+		try {
+			const activeTurn = harness.session.prompt("start interruptible active delivery");
+			await waitFor(
+				() =>
+					primary.activeRequests === 1 &&
+					advisor.requests.length === 1 &&
+					runtime?.getStatus().activeNotesPending === 1,
+			);
+			expect(runtime?.getStatus()).toMatchObject({ notesDelivered: 0 });
+			harness.session.clearQueue();
+			await harness.session.abort();
+			await activeTurn;
+			expect(runtime?.getStatus()).toMatchObject({
+				activeNotesPending: 0,
+				deferredNotesPending: 1,
+				notesDelivered: 0,
+			});
+
+			await harness.session.prompt("resume after clearing the active queue");
+			const context = JSON.stringify(primary.requests[2]?.context);
+			expect(context.split(note).length - 1).toBe(1);
+		} finally {
+			executorBarrier.release();
+			await harness.dispose();
+		}
+	});
+
+	it("acknowledges RPC active advice after abort continuation without deferring a duplicate", async () => {
+		const executorBarrier = createBarrier();
+		const note = "Deliver this active RPC note once.";
+		const primary = createPrimaryProvider([
+			{
+				content: [{ type: "toolCall", id: "hold-rpc-abort", name: "hold", arguments: {} }],
+				stopReason: "toolUse",
+			},
+			{ waitFor: executorBarrier.promise, content: [{ type: "text", text: "interrupted" }] },
+			{ content: [{ type: "text", text: "continued with active advice" }] },
+		]);
+		const advisor = createAdvisorProvider([acceptedAdvice(note), { content: [] }]);
+		const hold = defineTool({
+			name: "hold",
+			label: "hold",
+			description: "Create a deterministic active Executor boundary.",
+			parameters: Type.Object({}),
+			execute: () =>
+				Promise.resolve({ content: [{ type: "text" as const, text: "held" }], details: {} }),
+		});
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			customTools: [hold],
+			tools: ["hold"],
+			mode: "rpc",
+		});
+		try {
+			const activeTurn = harness.session.prompt("start RPC active delivery");
+			await waitFor(
+				() =>
+					primary.activeRequests === 1 &&
+					advisor.requests.length === 1 &&
+					runtime?.getStatus().activeNotesPending === 1,
+			);
+			await harness.session.abort();
+			await activeTurn;
+
+			expect(primary.requests).toHaveLength(3);
+			const context = JSON.stringify(primary.requests[2]?.context);
+			expect(context.split(note).length - 1).toBe(1);
+			expect(runtime?.getStatus()).toMatchObject({
+				activeNotesPending: 0,
+				deferredNotesPending: 0,
+				notesDelivered: 1,
+			});
+		} finally {
+			executorBarrier.release();
+			await harness.dispose();
+		}
+	});
+
+	it("clears active-pending advice on branch invalidation without recovering it", async () => {
+		const executorBarrier = createBarrier();
+		const primary = createPrimaryProvider([
+			{
+				content: [{ type: "toolCall", id: "hold-branch", name: "hold", arguments: {} }],
+				stopReason: "toolUse",
+			},
+			{ waitFor: executorBarrier.promise, content: [{ type: "text", text: "invalidated" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			acceptedAdvice("Do not carry this note onto another branch."),
+		]);
+		const hold = defineTool({
+			name: "hold",
+			label: "hold",
+			description: "Create a deterministic active Executor boundary.",
+			parameters: Type.Object({}),
+			execute: () =>
+				Promise.resolve({ content: [{ type: "text" as const, text: "held" }], details: {} }),
+		});
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			customTools: [hold],
+			tools: ["hold"],
+			mode: "rpc",
+		});
+		try {
+			const activeTurn = harness.session.prompt("start branch-local active delivery");
+			await waitFor(() => runtime?.getStatus().activeNotesPending === 1);
+			if (runtime === undefined) throw new Error("Expected Advisor runtime");
+			const activeRuntime = runtime;
+			const hostContext = Reflect.get(activeRuntime, "hostContext") as ExtensionContext;
+
+			harness.session.clearQueue();
+			const branchChange = activeRuntime.handleBranchChange(hostContext);
+			executorBarrier.release();
+			await branchChange;
+			await activeTurn;
+
+			expect(activeRuntime.getStatus()).toMatchObject({
+				activeNotesPending: 0,
+				deferredNotesPending: 0,
+				notesDelivered: 0,
+				branchResets: 1,
+			});
+		} finally {
+			executorBarrier.release();
+			await harness.dispose();
+		}
+	});
+
+	it("acknowledges an active direct-append delivery from branch state at settlement", async () => {
+		const primary = createPrimaryProvider([]);
+		const advisor = createAdvisorProvider([]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			if (runtime === undefined) throw new Error("Expected Advisor runtime");
+			const activeRuntime = runtime;
+			const advice: AcceptedAdvice = {
+				note: "Acknowledge this direct append.",
+				severity: "concern",
+				truncated: false,
+				originalCharacters: 31,
+				originalEstimatedTokens: 8,
+				createdAt: Date.now(),
+			};
+			const identity = adviceDedupeKey(advice);
+			const deliveryId = `direct-append:${identity}`;
+			const branchWindow = cursorAtTail(harness.sessionManager.getBranch());
+			const activeAdvice = Reflect.get(activeRuntime, "activeAdvice") as BoundedKeyedByteFifo<{
+				advice: AcceptedAdvice;
+				stale: boolean;
+				branchWindow: { expectedIndex: number };
+				identity: string;
+				deliveryId: string;
+				epoch: number;
+			}>;
+			expect(
+				activeAdvice.enqueue(
+					identity,
+					{
+						advice,
+						stale: false,
+						branchWindow,
+						identity,
+						deliveryId,
+						epoch: activeRuntime.getStatus().epoch,
+					},
+					Buffer.byteLength(advice.note, "utf8"),
+				),
+			).toBe("accepted");
+			activeRuntime.observeExecutorMessage({
+				role: "custom",
+				customType: "pi-advisor-note",
+				content: "stale acknowledgement",
+				display: true,
+				details: { deliveryId: `old-attempt:${identity}` },
+				timestamp: Date.now(),
+			});
+			expect(activeAdvice.length).toBe(1);
+			expect(activeRuntime.getStatus().notesDelivered).toBe(0);
+			harness.sessionManager.appendCustomMessageEntry("pi-advisor-note", "direct append", true, {
+				deliveryId,
+			});
+			const hostContext = Reflect.get(activeRuntime, "hostContext") as ExtensionContext;
+
+			await activeRuntime.settleActiveAdvice(hostContext);
+
+			expect(activeAdvice.length).toBe(0);
+			expect(activeRuntime.getStatus()).toMatchObject({
+				activeNotesPending: 0,
+				deferredNotesPending: 0,
+				notesDelivered: 1,
+			});
 		} finally {
 			await harness.dispose();
 		}
@@ -281,7 +530,7 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
 			await harness.session.prompt("materialize deferred advice");
 			const context = JSON.stringify(primary.requests[1]?.context);
-			expect(context.match(new RegExp(note, "gu"))).toHaveLength(1);
+			expect(context.split(note).length - 1).toBe(1);
 			expect(statusCalls).toBeGreaterThan(0);
 			expect(runtime?.getStatus()).toMatchObject({
 				notesDelivered: 1,
@@ -1523,11 +1772,15 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			try {
 				const prompt = harness.session.prompt(`start active ${severity}`);
 				await waitFor(
-					() => primary.requests.length === 2 && runtime?.getStatus().notesDelivered === 1,
+					() => primary.requests.length === 2 && runtime?.getStatus().activeNotesPending === 1,
 				);
 				executorBarrier.release();
 				await prompt;
 				expect(primary.requests).toHaveLength(3);
+				expect(runtime?.getStatus()).toMatchObject({
+					activeNotesPending: 0,
+					notesDelivered: 1,
+				});
 				expect(JSON.stringify(primary.requests[2]?.context)).toContain(
 					`[Advisor ${severity} - active]`,
 				);

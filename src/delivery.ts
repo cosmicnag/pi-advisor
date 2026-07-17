@@ -65,6 +65,16 @@ export class BoundedKeyedByteFifo<T> {
 		return entry;
 	}
 
+	remove(key: string): { key: string; value: T; bytes: number } | undefined {
+		const index = this.entries.findIndex((entry) => entry.key === key);
+		if (index < 0) return undefined;
+		const [entry] = this.entries.splice(index, 1);
+		if (entry === undefined) return undefined;
+		this.keys.delete(entry.key);
+		this.bytes -= entry.bytes;
+		return entry;
+	}
+
 	values(): T[] {
 		return this.entries.map((entry) => entry.value);
 	}

@@ -21,6 +21,7 @@ Slice 1 does not add a collision warning, so users must identify the intended co
 - At most one bounded visible Advisory note per review update.
 - Plain model-visible nit, concern, and blocker labels with active, deferred, and potentially stale states.
 - Active advice reaches Pi's next steering boundary regardless of severity.
+  A bounded package-owned copy remains active-pending until Pi acknowledges the custom message through its lifecycle or persisted branch state; an unacknowledged copy recovered at settlement becomes deferred instead of being lost on TUI queue clearing.
 - Terminal and interruption-time advice waits for the next user-driven turn without triggering completion.
 - A severity-scoped 4,096-key in-memory FIFO suppresses duplicate ordinary review notes across updates on the active branch.
   Dedupe applies NFKC and whitespace normalization, lowercases prose outside well-formed matching backtick spans, preserves backtick delimiters and code-span case, and folds only attached trailing prose punctuation.
@@ -70,7 +71,7 @@ An approved release change must remove that guard before the manual trusted-publ
 
 - `/advisor on` enables review for the current session when the configured `provider/model` is available and authenticated.
 - `/advisor off` disables review, invalidates in-flight work, clears the bounded transcript backlog, pending advice, and dedupe history, and disposes the nested session.
-- `/advisor status` reports activation, model, backlog, context, usage, review, delivered, deferred, suppressed, pause, and last-failure state.
+- `/advisor status` reports activation, model, backlog, context, usage, review, active-pending, delivered, deferred, suppressed, pause, and last-failure state.
 - `--advisor` requests activation for the current session in every Pi mode.
 - `defaultEnabled: true` applies only to TUI and RPC sessions, while JSON and print sessions require explicit activation.
 
@@ -123,8 +124,8 @@ All current modules are re-exported from the package root.
 | Redaction       | `redactSecrets`, `estimateTokens`, UTF-8 truncation helpers, and `RedactionResult`                                                                                                     |
 
 The default extension is the installable entry point.
-`AdvisorRuntime` exposes cloned status snapshots, nested-message inspection, project-context capture, explicit enable and disable, turn observation, deferred-advice materialization through `takeDeferredAdvice`, branch-change invalidation through `handleBranchChange`, and shutdown, while the extension factory wires those lifecycle methods to Pi.
-`AdvisorRuntimeStatus.deferredNotesPending` counts accepted notes still waiting for materialization, while `notesDelivered` increases only when active advice is sent or deferred advice materializes.
+`AdvisorRuntime` exposes cloned status snapshots, nested-message inspection, project-context capture, explicit enable and disable, turn and message observation, active-delivery settlement, deferred-advice materialization through `takeDeferredAdvice`, branch-change invalidation through `handleBranchChange`, and shutdown, while the extension factory wires those lifecycle methods to Pi.
+`AdvisorRuntimeStatus.activeNotesPending` counts active notes awaiting Pi acknowledgement, `deferredNotesPending` counts notes waiting for a later user prompt, and `notesDelivered` increases only after acknowledgement or deferred materialization.
 The factory, runtime hooks, status formatters, and policy helpers support controlled embedding, integration tests, and inspection without enabling durable configuration or persistence.
 
 ## Compatibility

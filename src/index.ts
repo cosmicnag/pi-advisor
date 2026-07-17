@@ -71,6 +71,12 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 		void runtime.observeTurn(event, ctx);
 	});
 
+	pi.on("message_end", (event) => {
+		runtime.observeExecutorMessage(event.message);
+	});
+
+	pi.on("agent_settled", (_event, ctx) => runtime.settleActiveAdvice(ctx));
+
 	pi.on("session_tree", (_event, ctx) => runtime.handleBranchChange(ctx));
 
 	pi.on("session_shutdown", async () => {
