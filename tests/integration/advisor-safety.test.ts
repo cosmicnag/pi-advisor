@@ -855,6 +855,47 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 		}
 	});
 
+	it("recomputes deferred staleness when the branch advances before materialization", async () => {
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "reviewed answer" }] },
+			{ content: [{ type: "text", text: "answer after buffered activity" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			acceptedAdvice("Recheck this after buffered branch activity."),
+			{ content: [] },
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("create current deferred advice");
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			harness.sessionManager.appendMessage({
+				role: "user",
+				content: "buffered user shell activity",
+				timestamp: Date.now(),
+			});
+			await harness.session.prompt("materialize after buffered activity");
+			const context = JSON.stringify(primary.requests[1]?.context);
+			expect(context).toContain("[Advisor concern - deferred - potentially stale]");
+			expect(context).toContain("verify this still applies");
+			const note = harness.sessionManager
+				.getEntries()
+				.find(
+					(entry): entry is CustomMessageEntry =>
+						entry.type === "custom_message" && entry.customType === "pi-advisor-note",
+				);
+			expect(note?.details).toMatchObject({ stale: true, delivery: "deferred" });
+		} finally {
+			await harness.dispose();
+		}
+	});
+
 	it("injects multiple deferred notes once in one bounded next-turn message", async () => {
 		const advisorBarrier = createBarrier();
 		const primary = createPrimaryProvider([
@@ -1046,6 +1087,49 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 		}
 	});
 
+	it("invalidates branch-local state when navigation returns to the observation cursor", async () => {
+		const branchAdvice = "Do not leak this across explicit navigation.";
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "reviewed answer" }] },
+			{ content: [{ type: "text", text: "answer after navigation" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			acceptedAdvice(branchAdvice, "cursor-matching-advice"),
+			acceptedAdvice(branchAdvice, "advice-after-navigation"),
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("create branch-local advice");
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			const observedLeaf = harness.sessionManager.getBranch().at(-1);
+			if (observedLeaf === undefined) throw new Error("Expected observed branch leaf");
+			harness.sessionManager.appendMessage({
+				role: "user",
+				content: "temporary descendant",
+				timestamp: Date.now(),
+			});
+			await harness.session.navigateTree(observedLeaf.id, { summarize: false });
+			expect(runtime?.getStatus()).toMatchObject({
+				branchResets: 1,
+				deferredNotesPending: 0,
+				notesDelivered: 0,
+			});
+			await harness.session.prompt("continue after explicit navigation");
+			expect(JSON.stringify(primary.requests[1]?.context)).not.toContain(branchAdvice);
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			expect(runtime?.getStatus().notesSuppressed).toBe(0);
+		} finally {
+			await harness.dispose();
+		}
+	});
+
 	it("invalidates deferred advice and dedupe on explicit forward navigation", async () => {
 		const branchAdvice = "Revalidate the branch-local migration.";
 		const primary = createPrimaryProvider([
@@ -1097,12 +1181,16 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 	it.each(["nit", "blocker"] as const)(
 		"delivers an active %s at the same steering boundary",
 		async (severity) => {
+			const executorBarrier = createBarrier();
 			const primary = createPrimaryProvider([
 				{
 					content: [{ type: "toolCall", id: `hold-${severity}`, name: "hold", arguments: {} }],
 					stopReason: "toolUse",
 				},
-				{ delayMs: 150, content: [{ type: "text", text: "Executor continued" }] },
+				{
+					waitFor: executorBarrier.promise,
+					content: [{ type: "text", text: "Executor continued" }],
+				},
 				{ content: [{ type: "text", text: "Executor weighed guidance" }] },
 			]);
 			const advisor = createAdvisorProvider([
@@ -1127,14 +1215,18 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 				mode: "rpc",
 			});
 			try {
-				await harness.session.prompt(`start active ${severity}`);
+				const prompt = harness.session.prompt(`start active ${severity}`);
 				await waitFor(
-					() => primary.requests.length === 3 && runtime?.getStatus().notesDelivered === 1,
+					() => primary.requests.length === 2 && runtime?.getStatus().notesDelivered === 1,
 				);
+				executorBarrier.release();
+				await prompt;
+				expect(primary.requests).toHaveLength(3);
 				expect(JSON.stringify(primary.requests[2]?.context)).toContain(
 					`[Advisor ${severity} - active]`,
 				);
 			} finally {
+				executorBarrier.release();
 				await harness.dispose();
 			}
 		},

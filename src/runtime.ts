@@ -653,7 +653,10 @@ export class AdvisorRuntime {
 			this.publishStatus();
 			return undefined;
 		}
-		const pending = this.pendingAdvice.splice(0);
+		const pending = this.pendingAdvice.splice(0).map((item) => ({
+			...item,
+			stale: item.stale || branch.length > item.branchWindow.expectedIndex,
+		}));
 		this.status.deferredNotesPending = 0;
 		this.status.notesDelivered += pending.length;
 		const notes = pending.map(({ advice, stale }) => this.adviceDetails(advice, "deferred", stale));
@@ -671,14 +674,7 @@ export class AdvisorRuntime {
 	}
 
 	async handleBranchChange(ctx: ExtensionContext): Promise<void> {
-		const branch = ctx.sessionManager.getBranch();
-		const nextCursor = cursorAtTail(branch);
-		if (
-			nextCursor.expectedIndex !== this.cursor.expectedIndex ||
-			nextCursor.lastEntryId !== this.cursor.lastEntryId
-		) {
-			await this.resetForBranchMismatch(branch);
-		}
+		await this.resetForBranchMismatch(ctx.sessionManager.getBranch());
 	}
 
 	private recordFailure(reason: string): void {
