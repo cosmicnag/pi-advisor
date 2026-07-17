@@ -33,7 +33,7 @@ It does not abort the in-flight tool.
 Idle `sendMessage` with `deliverAs: "nextTurn"` produces no additional model request.
 The custom message becomes model-visible when the next user prompt starts a turn.
 Pi 0.80.7 exposes no public method to remove an already queued `nextTurn` custom message after branch navigation.
-Slice 2 Batch A therefore preserves the same next-user-turn and no-trigger boundary with bounded in-memory advice injected from `before_agent_start`, allowing branch changes to clear it safely.
+Slice 2 Batch A therefore preserves the same next-user-turn and no-trigger boundary with individually bounded notes held in memory and injected from `before_agent_start`, allowing branch changes to clear them safely.
 It does not implement package-managed deferred-advice expiry or cross-exit restoration.
 
 ## Duplicate commands
@@ -64,7 +64,7 @@ Runtime disposal emits `session_shutdown` with reason `quit`.
 Public `turn_end` exposes assistant `stopReason: "aborted"` after `AgentSession.abort()`.
 The event contains no public cause distinguishing a deliberate user interruption from another abort source.
 The runtime therefore excludes every aborted Executor turn from review.
-Slice 2 Batch A also treats every abort as an interruption signal that forces accepted in-flight advice to wait for the next user-driven turn.
+Slice 2 Batch A also treats every public abort signal or aborted stop reason as an interruption signal that forces accepted in-flight advice to wait for the next user-driven turn.
 It does not claim cause-aware interruption handling.
 
 ## Memory suggestion capability

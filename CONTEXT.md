@@ -52,7 +52,8 @@ It never grants approval to the proposed memory.
 _Avoid_: Saved memory, approved memory, hidden autosave, Advisor-owned memory
 
 **Deferred advice**:
-An accepted Advisory note waiting in bounded runtime state for the next user-driven Executor turn and cleared if the active session or branch changes first.
+An accepted, individually bounded Advisory note waiting in in-memory runtime state for the next user-driven Executor turn and cleared if the active session or branch changes first.
+The pending collection has no independent item or byte cap in Batch A.
 Cross-exit restoration remains deferred to Slice 3.
 _Avoid_: Backlog, hidden instruction, cross-session message
 
@@ -106,6 +107,7 @@ _Avoid_: Project exception, protection disablement, unrestricted access
 
 **User interruption**:
 A deliberate user action stopping the Executor that takes precedence over pending Advisor delivery.
+Pi 0.80.7 exposes no public abort cause, so Batch A conservatively treats every public abort signal or aborted stop reason as an interruption signal for in-flight advice.
 _Avoid_: Provider failure, automatic retry, compaction
 
 **Destructive-command guard**:

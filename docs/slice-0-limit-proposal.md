@@ -65,17 +65,17 @@ Memory suggestion fields and transcript persistence are copied without active ru
 
 ## Reserved defaults
 
-These approved contract values remain present in `AdvisorConfig` but have no Slice 1 runtime effect:
+These approved contract values remain present in `AdvisorConfig` but have no runtime effect through Slice 2 Batch A:
 
 - Maximum re-prime tokens: 32,000, with a reserved hard maximum of 128,000.
 - Review cadence: at least one Executor turn and zero milliseconds between reviews.
 - Deferred advice retention: 24 hours.
-- Memory suggestions: the reserved `enabled` field defaults to true but has no Slice 1 runtime effect.
+- Memory suggestions: the reserved `enabled` field defaults to true but has no runtime effect through Slice 2 Batch A.
 - Memory suggestion cadence: at least eight Executor turns and ten minutes.
 - Memory suggestion session cap: five.
 - Proposed memory bound: 1,000 characters and 256 estimated tokens, with reserved hard maxima of 4,000 characters and 1,024 estimated tokens.
 - Transcript persistence: disabled.
 
-Slice 1 reviews every meaningful completed Executor turn without consulting the reserved cadence fields.
-It does not re-prime, expire queued `nextTurn` advice, compact Advisor context, emit Memory suggestions, or persist a transcript.
+The runtime through Slice 2 Batch A reviews every meaningful completed Executor turn without consulting the reserved cadence fields.
+It does not re-prime, expire in-memory deferred advice, compact Advisor context, emit Memory suggestions, or persist a transcript.
 Later slices must validate and implement these values before they can govern runtime behavior.

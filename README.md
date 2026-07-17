@@ -41,8 +41,9 @@ The measured OMP parity position is tracked in [`docs/omp-parity.md`](docs/omp-p
 Slice 0 compatibility evidence is in [`docs/slice-0-compatibility.md`](docs/slice-0-compatibility.md).
 The approved defaults and hard maxima are in [`docs/slice-0-limit-proposal.md`](docs/slice-0-limit-proposal.md).
 The protected-path analysis is in [`docs/protected-path-threat-model.md`](docs/protected-path-threat-model.md).
+Slice 2 Batch A implementation evidence is in [`docs/slice-2-batch-a.md`](docs/slice-2-batch-a.md).
 
-## Install the Slice 1 package locally
+## Install the package locally
 
 From this repository:
 
@@ -56,14 +57,14 @@ The package can also be loaded for one run:
 pi --no-extensions -e ./src/index.ts --no-session
 ```
 
-The installed default registers `/advisor` and `--advisor` but does not start a nested runtime because no model is durably configured in Slice 1.
+The installed default registers `/advisor` and `--advisor` but does not start a nested runtime because no model is durably configured through Slice 2 Batch A.
 The manifest remains deliberately private as an accidental-publication guard.
 An approved release change must remove that guard before the manual trusted-publishing workflow can publish.
 
 ## Session controls
 
 - `/advisor on` enables review for the current session when the configured `provider/model` is available and authenticated.
-- `/advisor off` disables review, invalidates in-flight work, clears the bounded backlog, and disposes the nested session.
+- `/advisor off` disables review, invalidates in-flight work, clears the bounded transcript backlog, pending advice, and dedupe history, and disposes the nested session.
 - `/advisor status` reports activation, model, backlog, context, usage, review, delivered, deferred, suppressed, pause, and last-failure state.
 - `--advisor` requests activation for the current session in every Pi mode.
 - `defaultEnabled: true` applies only to TUI and RPC sessions, while JSON and print sessions require explicit activation.
@@ -90,7 +91,7 @@ The model reference must use `provider/model` syntax and must resolve through Pi
 Version 1 defaults to disabled, no model, `high` effort, all four read-only tools, empty review instructions, no additional protected paths, and no protected-path exceptions.
 The active configuration fields are `defaultEnabled`, `model`, `effort`, `tools`, `instructions`, all `context` fields, the note, turn, tool-call, pending-byte, token, and cost limits, and both `security` path lists.
 Slice 2 Batch A adds no configuration field.
-Its 4,096-note in-memory dedupe capacity is a fixed protocol bound.
+Its 4,096-key in-memory dedupe capacity is a fixed protocol bound.
 `maxReprimeTokens`, review cadence, deferred-advice retention, `memorySuggestions`, `persistence`, `AdvisorProjectConfig`, and `CONFIG_VALIDATION_STRATEGY` remain reserved and do not change Batch A runtime behavior.
 `DEFAULT_ADVISOR_CONFIG` is deeply frozen; clone it before editing configuration.
 `PROPOSED_ADVISOR_CONFIG` remains a deprecated compatibility alias containing an independent mutable clone of the canonical defaults.
@@ -101,25 +102,26 @@ Project context files supplied by Pi are tagged, redacted, and bounded before re
 
 ## Exported API
 
-All Slice 1 modules are re-exported from the package root.
+All current modules are re-exported from the package root.
 
-| Surface         | Exports                                                                                                                                                                                |
-| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Extension       | Default Pi extension, `createPiAdvisorExtension`, `PiAdvisorExtensionOptions`                                                                                                          |
-| Runtime         | `AdvisorRuntime`, `AdvisorRuntimeHooks`, `AdvisorRuntimeStatus`, `AdvisorUsageTotals`, `formatAdvisorStatus`, `formatAdvisorEnableStatus`                                              |
-| Configuration   | `DEFAULT_ADVISOR_CONFIG`, deprecated `PROPOSED_ADVISOR_CONFIG`, `normalizeAdvisorConfig`, `HARD_LIMITS`, `READ_ONLY_TOOL_NAMES`, configuration types, and reserved validation metadata |
-| Advice          | `createAdviseTool`, `boundAdvice`, normalization and bounded dedupe helpers, delivery formatting, and Advisory note types                                                              |
-| Protected tools | `ProtectedPathPolicy`, `createProtectedAdvisorTools`, `isAdvisorReadOnlyTool`, and `AdvisorToolContext`                                                                                |
-| Transcript      | `ADVISOR_CUSTOM_TYPE`, cursor helpers, meaningful-turn filtering, delta rendering, and transcript types                                                                                |
-| Redaction       | `redactSecrets`, `estimateTokens`, UTF-8 truncation helpers, and `RedactionResult`                                                                                                     |
+| Surface         | Exports                                                                                                                                                                                  |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Extension       | Default Pi extension, `createPiAdvisorExtension`, `PiAdvisorExtensionOptions`                                                                                                            |
+| Runtime         | `AdvisorRuntime`, `AdvisorRuntimeHooks`, `AdvisorRuntimeStatus`, `AdvisorUsageTotals`, `formatAdvisorStatus`, `formatAdvisorEnableStatus`                                                |
+| Configuration   | `DEFAULT_ADVISOR_CONFIG`, deprecated `PROPOSED_ADVISOR_CONFIG`, `normalizeAdvisorConfig`, `HARD_LIMITS`, `READ_ONLY_TOOL_NAMES`, configuration types, and reserved validation metadata   |
+| Advice          | `createAdviseTool`, `boundAdvice`, `normalizeAdviceForDedupe`, `adviceDedupeKey`, `BoundedAdviceDedupe`, `formatAdviceForDelivery`, `isContentFreeAdvice`, and advice and delivery types |
+| Protected tools | `ProtectedPathPolicy`, `createProtectedAdvisorTools`, `isAdvisorReadOnlyTool`, and `AdvisorToolContext`                                                                                  |
+| Transcript      | `ADVISOR_CUSTOM_TYPE`, cursor helpers, meaningful-turn filtering, delta rendering, and transcript types                                                                                  |
+| Redaction       | `redactSecrets`, `estimateTokens`, UTF-8 truncation helpers, and `RedactionResult`                                                                                                       |
 
 The default extension is the installable entry point.
-`AdvisorRuntime` exposes cloned status snapshots, nested-message inspection, project-context capture, explicit enable and disable, turn observation, and shutdown, while the extension factory wires those lifecycle methods to Pi.
+`AdvisorRuntime` exposes cloned status snapshots, nested-message inspection, project-context capture, explicit enable and disable, turn observation, deferred-advice materialization through `takeDeferredAdvice`, branch-change invalidation through `handleBranchChange`, and shutdown, while the extension factory wires those lifecycle methods to Pi.
+`AdvisorRuntimeStatus.deferredNotesPending` counts accepted notes still waiting for materialization, while `notesDelivered` increases only when active advice is sent or deferred advice materializes.
 The factory, runtime hooks, status formatters, and policy helpers support controlled embedding, integration tests, and inspection without enabling durable configuration or persistence.
 
 ## Compatibility
 
-Development, compatibility evidence, and the Slice 1 automatic core target `@earendil-works/pi-coding-agent` 0.80.7.
+Development, compatibility evidence, and the automatic core through Slice 2 Batch A target `@earendil-works/pi-coding-agent` 0.80.7.
 The peer range is `>=0.80.7 <0.81.0`, with 0.80.7 as the only tested version.
 A missing or unavailable configured Advisor model leaves Advisor inactive without fallback or partial nested runtime construction.
 
