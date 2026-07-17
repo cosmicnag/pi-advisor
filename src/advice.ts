@@ -52,14 +52,16 @@ export function normalizeContentFreeAdvice(input: string): string {
 }
 
 function foldProseCaseOutsideCodeSpans(input: string): string | undefined {
+	const foldProse = (value: string): string =>
+		value.toLocaleLowerCase("en-US").replace(/\s+/g, " ");
 	let output = "";
 	let cursor = 0;
 	while (cursor < input.length) {
 		const openingStart = input.indexOf("`", cursor);
 		if (openingStart === -1) {
-			return `${output}${input.slice(cursor).toLocaleLowerCase("en-US")}`;
+			return `${output}${foldProse(input.slice(cursor))}`;
 		}
-		output += input.slice(cursor, openingStart).toLocaleLowerCase("en-US");
+		output += foldProse(input.slice(cursor, openingStart));
 		let openingEnd = openingStart;
 		while (input[openingEnd] === "`") openingEnd++;
 		const delimiterLength = openingEnd - openingStart;
@@ -90,7 +92,6 @@ export function normalizeAdviceForDedupe(input: string): string {
 	const caseFolded = foldProseCaseOutsideCodeSpans(normalized);
 	if (caseFolded === undefined) return normalized.replace(/\s+/g, " ").trim();
 	return caseFolded
-		.replace(/\s+/g, " ")
 		.trim()
 		.replace(/(?<=\S)[.,;:?!…]+$/gu, "")
 		.trim();

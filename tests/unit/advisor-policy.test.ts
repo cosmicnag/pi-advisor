@@ -3,6 +3,7 @@ import { SessionManager, type TurnEndEvent } from "@earendil-works/pi-coding-age
 import { describe, expect, it } from "vitest";
 
 import {
+	adviceDedupeKey,
 	boundAdvice,
 	BoundedAdviceDedupe,
 	BoundedKeyedByteFifo,
@@ -255,6 +256,9 @@ describe("Slice 1 transcript filtering and redaction", () => {
 		}
 
 		expect(normalizeAdviceForDedupe("CHANGE `User` NOW!")).toBe("change `User` now");
+		expect(adviceDedupeKey(dedupeIdentity("Use `a  b` here."))).not.toBe(
+			adviceDedupeKey(dedupeIdentity("Use `a b` here.")),
+		);
 		expect(dedupe.add(dedupeIdentity("CHANGE `Account` NOW!"))).toBe(true);
 		expect(dedupe.add(dedupeIdentity("change `Account` now..."))).toBe(false);
 	});

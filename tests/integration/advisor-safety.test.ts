@@ -1,6 +1,7 @@
 import {
 	defineTool,
 	type CustomMessageEntry,
+	type ExtensionAPI,
 	type ExtensionContext,
 	type InlineExtension,
 } from "@earendil-works/pi-coding-agent";
@@ -138,6 +139,89 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			await harness.dispose();
 		}
 	});
+
+	it.each([
+		{ label: "ordinary review", governorFailure: false },
+		{ label: "governor-failed review", governorFailure: true },
+	])(
+		"counts a thrown active delivery once as failure for a $label",
+		async ({ governorFailure }) => {
+			const executorBarrier = createBarrier();
+			const advisorBarrier = createBarrier();
+			const primary = createPrimaryProvider([
+				{
+					content: [{ type: "toolCall", id: "hold-send-failure", name: "hold", arguments: {} }],
+					stopReason: "toolUse",
+				},
+				{
+					waitFor: executorBarrier.promise,
+					content: [{ type: "text", text: "Executor continued after delivery failure" }],
+				},
+			]);
+			const advisor = createAdvisorProvider([
+				{
+					...acceptedAdvice("This delivery should throw."),
+					waitFor: advisorBarrier.promise,
+				},
+				{ content: [] },
+			]);
+			const hold = defineTool({
+				name: "hold",
+				label: "hold",
+				description: "Create a deterministic active Executor boundary.",
+				parameters: Type.Object({}),
+				execute: () =>
+					Promise.resolve({ content: [{ type: "text" as const, text: "held" }], details: {} }),
+			});
+			let runtime: AdvisorRuntime | undefined;
+			const harness = await createSessionHarness({
+				provider: primary,
+				advisorProvider: advisor,
+				extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+				customTools: [hold],
+				tools: ["hold"],
+				mode: "rpc",
+			});
+			try {
+				if (runtime === undefined) throw new Error("Expected Advisor runtime");
+				const activeRuntime = runtime;
+				const extensionApi = Reflect.get(activeRuntime, "pi") as ExtensionAPI;
+				const sendMessage = vi.spyOn(extensionApi, "sendMessage").mockImplementation(() => {
+					throw new Error("scripted active delivery failure");
+				});
+				const activeTurn = harness.session.prompt("start throwing active delivery");
+				try {
+					await waitFor(() => advisor.activeRequests === 1);
+					if (governorFailure) {
+						const currentRun = Reflect.get(activeRuntime, "currentRun") as {
+							governorFailure?: string;
+						};
+						currentRun.governorFailure = "Advisor tool-call limit reached";
+					}
+					advisorBarrier.release();
+					await waitFor(() => activeRuntime.getStatus().failedReviews >= 1);
+					expect(activeRuntime.getStatus()).toMatchObject({
+						reviewsCompleted: 0,
+						failedReviews: 1,
+						consecutiveFailures: 1,
+						silentReviews: 0,
+						activeNotesPending: 0,
+						lastFailure: "scripted active delivery failure",
+					});
+					expect(activeRuntime.getNestedMessageCount()).toBe(0);
+				} finally {
+					advisorBarrier.release();
+					executorBarrier.release();
+					await activeTurn;
+					sendMessage.mockRestore();
+				}
+			} finally {
+				advisorBarrier.release();
+				executorBarrier.release();
+				await harness.dispose();
+			}
+		},
+	);
 
 	it("preserves active advice when a TUI-style abort clears the steering queue", async () => {
 		const executorBarrier = createBarrier();
@@ -763,10 +847,63 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			projectFiles = [];
 			await harness.session.prompt("instructions removed");
 			await waitFor(() => runtime?.getStatus().reviewsCompleted === 2);
-			const secondUpdate = JSON.stringify(advisor.requests[1]?.context.messages.at(-1));
-			expect(secondUpdate).toContain("CONTENT-AFTER-INSTRUCTIONS-REMOVED");
-			expect(secondUpdate).not.toContain("project-instruction");
+			const secondContext = JSON.stringify(advisor.requests[1]?.context.messages);
+			expect(secondContext).toContain("CONTENT-AFTER-INSTRUCTIONS-REMOVED");
+			expect(secondContext).not.toContain("project-instruction");
 		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("uses the latest project context when submitting coalesced Executor updates", async () => {
+		const advisorBarrier = createBarrier();
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "FIRST-EXECUTOR-CONTENT" }] },
+			{ content: [{ type: "text", text: "COALESCED-WHILE-INSTRUCTIONS-PRESENT" }] },
+			{ content: [{ type: "text", text: "COALESCED-AFTER-INSTRUCTIONS-REMOVED" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			{ waitFor: advisorBarrier.promise, content: [] },
+			{ content: [] },
+		]);
+		let projectFiles = [{ path: "AGENTS.md", content: "REMOVE-ME" }];
+		const projectContextExtension: InlineExtension = {
+			name: "coalesced-project-context-fixture",
+			factory: (pi) => {
+				pi.on("before_agent_start", (event) => {
+					event.systemPromptOptions.contextFiles = projectFiles;
+				});
+			},
+		};
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [
+				projectContextExtension,
+				extensionFor(configFor(advisor), (value) => (runtime = value)),
+			],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("start delayed project-context review");
+			await waitFor(() => advisor.activeRequests === 1);
+			await harness.session.prompt("coalesce with project instructions");
+			projectFiles = [];
+			await harness.session.prompt("coalesce after removing project instructions");
+			advisorBarrier.release();
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 2);
+
+			const firstContext = JSON.stringify(advisor.requests[0]?.context.messages);
+			expect(firstContext).toContain("REMOVE-ME");
+			const secondContext = JSON.stringify(advisor.requests[1]?.context.messages);
+			expect(secondContext).toContain("COALESCED-WHILE-INSTRUCTIONS-PRESENT");
+			expect(secondContext).toContain("COALESCED-AFTER-INSTRUCTIONS-REMOVED");
+			expect(secondContext).not.toContain("REMOVE-ME");
+			expect(secondContext).not.toContain("project-instruction");
+		} finally {
+			advisorBarrier.release();
 			await harness.dispose();
 		}
 	});

@@ -208,6 +208,7 @@ export class AdvisorRuntime {
 	private draining = false;
 	private disposed = false;
 	private projectContext = "";
+	private submittedProjectContext?: string;
 	private currentRun?: CurrentRun;
 	private readonly pendingAdvice = new BoundedKeyedByteFifo<PendingAdvice>(
 		MAX_PENDING_ADVICE_ITEMS,
@@ -465,24 +466,8 @@ export class AdvisorRuntime {
 		if (!isMeaningfulExecutorTurn(event, entries)) return;
 		const rendered = renderAdvisorDelta(entries, this.config.context.maxUpdateTokens);
 		this.status.redactions += rendered.redactions;
-		let update = rendered.text;
-		if (this.projectContext.length > 0) {
-			const prefix = `${this.projectContext}\n\n<executor-update>\n`;
-			const suffix = "\n</executor-update>";
-			const maximumBytes = this.config.context.maxUpdateTokens * 4;
-			const executorBytes = Math.max(
-				1,
-				maximumBytes - Buffer.byteLength(prefix, "utf8") - Buffer.byteLength(suffix, "utf8"),
-			);
-			const boundedExecutor = truncateUtf8TailBytes(
-				rendered.text,
-				executorBytes,
-				"[Older Executor delta content truncated]\n",
-			);
-			update = `${prefix}${boundedExecutor}${suffix}`;
-		}
-		if (update.trim().length === 0) return;
-		this.enqueue(update, cursorAtTail(branch));
+		if (rendered.text.trim().length === 0) return;
+		this.enqueue(rendered.text, cursorAtTail(branch));
 	}
 
 	private enqueue(text: string, window: AdvisorCursor): void {
@@ -537,14 +522,36 @@ export class AdvisorRuntime {
 		}
 	}
 
+	private withProjectContext(update: string): string {
+		if (this.projectContext.length === 0) return update;
+		const prefix = `${this.projectContext}\n\n<executor-update>\n`;
+		const suffix = "\n</executor-update>";
+		const maximumBytes = this.config.context.maxUpdateTokens * 4;
+		const executorBytes = Math.max(
+			1,
+			maximumBytes - Buffer.byteLength(prefix, "utf8") - Buffer.byteLength(suffix, "utf8"),
+		);
+		const boundedExecutor = truncateUtf8TailBytes(
+			update,
+			executorBytes,
+			"[Older Executor delta content truncated]\n",
+		);
+		return `${prefix}${boundedExecutor}${suffix}`;
+	}
+
 	private async runUpdate(update: string, window: AdvisorCursor): Promise<void> {
 		const session = this.session;
 		const ctx = this.hostContext;
 		if (session === undefined || ctx === undefined || this.model === undefined) return;
 		this.applySessionSoftCaps();
 		if (this.status.paused) return;
+		if (this.submittedProjectContext !== this.projectContext) {
+			session.state.messages = [];
+			this.submittedProjectContext = this.projectContext;
+		}
+		const submittedUpdate = this.withProjectContext(update);
 		const contextEstimate =
-			estimateTokens(JSON.stringify(session.messages)) + estimateTokens(update);
+			estimateTokens(JSON.stringify(session.messages)) + estimateTokens(submittedUpdate);
 		this.status.contextEstimateTokens = contextEstimate;
 		if (contextEstimate > this.status.contextLimitTokens) {
 			this.pause("Advisor context fraction or response reserve reached");
@@ -565,7 +572,7 @@ export class AdvisorRuntime {
 		this.currentRun = run;
 		let thrownFailure: string | undefined;
 		try {
-			await session.prompt(`<advisor-update>\n${update}\n</advisor-update>`, {
+			await session.prompt(`<advisor-update>\n${submittedUpdate}\n</advisor-update>`, {
 				expandPromptTemplates: false,
 				source: "extension",
 			});
@@ -592,17 +599,22 @@ export class AdvisorRuntime {
 		const accepted = this.getAcceptedAdvice();
 		if (failure !== undefined) {
 			session.state.messages = session.state.messages.slice(0, messageCount);
-			this.recordFailure(failure);
 			if (run.governorFailure !== undefined && accepted !== undefined) {
 				this.deliver(accepted, ctx, stale, run.deferAdvice);
 			}
+			this.recordFailure(failure);
 		} else {
+			let delivered: boolean;
+			try {
+				delivered = accepted !== undefined && this.deliver(accepted, ctx, stale, run.deferAdvice);
+			} catch (error) {
+				session.state.messages = session.state.messages.slice(0, messageCount);
+				throw error;
+			}
 			this.status.reviewsCompleted++;
 			this.status.consecutiveFailures = 0;
 			this.status.notesSuppressed += this.collector.suppressedCalls;
-			if (accepted === undefined || !this.deliver(accepted, ctx, stale, run.deferAdvice)) {
-				this.status.silentReviews++;
-			}
+			if (!delivered) this.status.silentReviews++;
 		}
 		this.applySessionSoftCaps();
 		this.publishStatus();
@@ -970,6 +982,7 @@ export class AdvisorRuntime {
 	}
 
 	private async disposeNestedSession(): Promise<void> {
+		delete this.submittedProjectContext;
 		this.sessionUnsubscribe?.();
 		delete this.sessionUnsubscribe;
 		const session = this.session;

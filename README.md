@@ -24,8 +24,8 @@ Slice 1 does not add a collision warning, so users must identify the intended co
   A bounded package-owned copy remains active-pending until Pi acknowledges the custom message through its lifecycle or persisted branch state; an unacknowledged copy recovered at settlement becomes deferred instead of being lost on TUI queue clearing.
 - Terminal and interruption-time advice waits for the next user-driven turn without triggering completion.
 - A severity-scoped 4,096-key in-memory FIFO suppresses duplicate ordinary review notes across updates on the active branch.
-  Dedupe applies NFKC and whitespace normalization, lowercases prose outside well-formed matching backtick spans, preserves backtick delimiters and code-span case, and folds only attached trailing prose punctuation.
-  Notes with unmatched backticks skip case and trailing-punctuation folding so malformed code markup cannot suppress a code-sensitive variant.
+  For notes with well-formed matching backtick spans, dedupe applies NFKC and prose-only whitespace normalization, lowercases prose, preserves backtick delimiters plus code-span case and whitespace, and folds only attached trailing prose punctuation.
+  If a backtick is unmatched, dedupe retains whole-note whitespace normalization but skips case and trailing-punctuation folding so malformed code markup cannot suppress a code-sensitive variant.
   The suppressed-note status count combines content-free calls, extra valid calls from one update, cross-update duplicates, and deferred queue admission rejections.
 - Deferred advice is bounded to 4,096 notes and 1,000,000 raw note bytes.
   Each user-driven turn receives at most a 64 KiB FIFO prefix, with remaining notes retained for later turns.
@@ -141,6 +141,7 @@ Review package source before installation.
 
 When explicitly configured and active, Advisor sends bounded Executor messages, exposed reasoning, tool activity, tool results, Pi-supplied tagged project context, and allowed file contents to the selected secondary model provider.
 Transcript redaction runs before budgeting for observed Executor content and Pi-supplied project context.
+When that formatted project context changes, Advisor clears its nested conversation before the next review so removed instructions do not remain in provider context.
 Results returned by Advisor's allowed read-only tools, including allowed file contents, are bounded but are not transcript-redacted before the nested provider receives them.
 The protected `grep` tool uses `rg` when available; without `rg`, explicit literal searches use a bounded in-process fallback while regex searches report that they are unavailable.
 Protected-path checks cover direct and symlink-resolved access, but neither path protection nor redaction can guarantee that every secret is excluded.

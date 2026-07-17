@@ -90,14 +90,15 @@ The exported `AdvisorProjectConfig` and `CONFIG_VALIDATION_STRATEGY` describe re
 Future durable User configuration owns activation defaults, model choice, reasoning effort, spending, cadence, persistence, and protected-path exceptions.
 Future trusted Project configuration may only add instructions, narrow tools, add protections, disable Memory suggestions, and lower limits.
 Fixed Advisor safety and protocol policy remains above caller instructions, tagged project context, and observed Executor context.
+When the formatted Pi-supplied project context changes, the nested Advisor conversation is cleared before its next review so removed instructions do not remain in historical provider messages.
 
 ## Lifecycle and limits
 
 Only one Advisor update runs at a time.
 Updates arriving while Advisor is busy are coalesced within a bounded backlog.
 Content-free phrase matching uses broad punctuation and symbol folding against the fixed noise list.
-Ordinary-note dedupe separately uses NFKC Unicode normalization and whitespace collapse, applies `en-US` lowercasing only to prose outside well-formed matching backtick spans, preserves each backtick delimiter and the case inside its code span, and folds only attached trailing prose sentence punctuation.
-If any backtick delimiter is unmatched, dedupe skips case and trailing-punctuation folding for the whole note so malformed code markup cannot suppress a code-sensitive variant.
+For notes with well-formed matching backtick spans, ordinary-note dedupe uses NFKC Unicode normalization and prose-only whitespace collapse, applies `en-US` lowercasing only to prose, preserves each backtick delimiter plus the case and whitespace inside its code span, and folds only attached trailing prose sentence punctuation.
+If any backtick delimiter is unmatched, dedupe retains NFKC and whole-note whitespace collapse but skips case and trailing-punctuation folding so malformed code markup cannot suppress a code-sensitive variant.
 Dedupe identity includes review intent, severity, and normalized note text before SHA-256 hashing, so a severity change is not suppressed.
 The in-memory dedupe history holds 4,096 keys and evicts the oldest key in insertion order without refreshing duplicate access.
 A branch reset clears that branch-local dedupe history.
