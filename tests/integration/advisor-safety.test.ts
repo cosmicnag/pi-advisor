@@ -35,6 +35,7 @@ function extensionFor(
 	config: AdvisorConfig,
 	onRuntime: (runtime: AdvisorRuntime) => void,
 	onWarning?: (message: string) => void,
+	onStatus?: () => void,
 ): InlineExtension {
 	return {
 		name: "pi-advisor-safety-test",
@@ -43,6 +44,7 @@ function extensionFor(
 			hooks: {
 				onRuntime,
 				...(onWarning === undefined ? {} : { onWarning }),
+				...(onStatus === undefined ? {} : { onStatus }),
 			},
 		}),
 	};
@@ -152,6 +154,55 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			);
 			await waitFor(() => runtime?.getStatus().reviewsCompleted === 2);
 			expect(advisor.requests).toHaveLength(2);
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("isolates throwing status observers from deferred delivery", async () => {
+		const note = "Preserve this deferred note despite observer failures.";
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "terminal answer" }] },
+			{ content: [{ type: "text", text: "answer after deferred advice" }] },
+		]);
+		const advisor = createAdvisorProvider([acceptedAdvice(note), { content: [] }]);
+		let runtime: AdvisorRuntime | undefined;
+		let statusCalls = 0;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [
+				extensionFor(
+					configFor(advisor),
+					(value) => (runtime = value),
+					undefined,
+					() => {
+						statusCalls++;
+						throw new Error("status observer failed");
+					},
+				),
+			],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("finish reviewed turn");
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			await harness.session.prompt("materialize deferred advice");
+			const context = JSON.stringify(primary.requests[1]?.context);
+			expect(context.match(new RegExp(note, "gu"))).toHaveLength(1);
+			expect(statusCalls).toBeGreaterThan(0);
+			expect(runtime?.getStatus()).toMatchObject({
+				notesDelivered: 1,
+				deferredNotesPending: 0,
+			});
+			const notes = harness.sessionManager
+				.getEntries()
+				.filter(
+					(entry): entry is CustomMessageEntry =>
+						entry.type === "custom_message" && entry.customType === "pi-advisor-note",
+				);
+			expect(notes).toHaveLength(1);
 		} finally {
 			await harness.dispose();
 		}

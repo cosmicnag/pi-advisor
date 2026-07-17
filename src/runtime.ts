@@ -836,7 +836,11 @@ export class AdvisorRuntime {
 	}
 
 	private publishStatus(): void {
-		this.hooks.onStatus?.(this.getStatus());
+		try {
+			this.hooks.onStatus?.(this.getStatus());
+		} catch {
+			return;
+		}
 	}
 }
 
