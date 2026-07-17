@@ -929,6 +929,49 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 		}
 	});
 
+	it("keeps an aborted turn's in-flight review deferred when the next turn starts first", async () => {
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "first answer" }] },
+			{ delayMs: 10_000 },
+			{ delayMs: 300, content: [{ type: "text", text: "answer before late review" }] },
+			{ content: [{ type: "text", text: "answer after deferred review" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			{ ...acceptedAdvice("Preserve this interrupted review."), delayMs: 150 },
+			{ content: [] },
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("start review before interruption");
+			await waitFor(() => advisor.activeRequests === 1);
+			const interrupted = harness.session.prompt("interrupt this Executor turn");
+			await waitFor(() => primary.activeRequests === 1);
+			await harness.session.abort();
+			await interrupted;
+			expect(advisor.activeRequests).toBe(1);
+			const nextTurn = harness.session.prompt("start next turn before review finishes");
+			await waitFor(() => primary.activeRequests === 1);
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			expect(JSON.stringify(primary.requests[2]?.context)).not.toContain(
+				"Preserve this interrupted review.",
+			);
+			await nextTurn;
+			await harness.session.prompt("materialize interrupted review");
+			expect(JSON.stringify(primary.requests[3]?.context)).toContain(
+				"Preserve this interrupted review.",
+			);
+		} finally {
+			await harness.dispose();
+		}
+	});
+
 	it("clears deferred advice when the active branch changes", async () => {
 		const primary = createPrimaryProvider([
 			{ content: [{ type: "text", text: "branch answer" }] },

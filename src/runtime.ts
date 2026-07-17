@@ -90,6 +90,7 @@ interface CurrentRun {
 	epoch: number;
 	turns: number;
 	toolCalls: number;
+	deferAdvice: boolean;
 	governorFailure?: string;
 	providerFailure?: string;
 	toolFailure?: string;
@@ -188,7 +189,6 @@ export class AdvisorRuntime {
 	private disposed = false;
 	private projectContext = "";
 	private currentRun?: CurrentRun;
-	private forceDeferredAfterAbort = false;
 	private readonly pendingAdvice: PendingAdvice[] = [];
 	private readonly adviceDedupe = new BoundedAdviceDedupe();
 	private readonly collector: AdviceCollector = {
@@ -419,7 +419,8 @@ export class AdvisorRuntime {
 
 	async observeTurn(event: TurnEndEvent, ctx: ExtensionContext): Promise<void> {
 		if (event.message.role === "assistant" && event.message.stopReason === "aborted") {
-			this.forceDeferredAfterAbort = true;
+			const run = this.currentRun;
+			if (run !== undefined) run.deferAdvice = true;
 		}
 		if (!this.status.enabled || !this.status.active || this.status.paused || this.disposed) return;
 		this.hostContext = ctx;
@@ -527,6 +528,7 @@ export class AdvisorRuntime {
 			epoch,
 			turns: 0,
 			toolCalls: 0,
+			deferAdvice: false,
 			usage: emptyUsage(),
 		};
 		this.currentRun = run;
@@ -561,13 +563,13 @@ export class AdvisorRuntime {
 			session.state.messages = session.state.messages.slice(0, messageCount);
 			this.recordFailure(failure);
 			if (run.governorFailure !== undefined && accepted !== undefined) {
-				this.deliver(accepted, ctx, stale);
+				this.deliver(accepted, ctx, stale, run.deferAdvice);
 			}
 		} else {
 			this.status.reviewsCompleted++;
 			this.status.consecutiveFailures = 0;
 			this.status.notesSuppressed += this.collector.suppressedCalls;
-			if (accepted === undefined || !this.deliver(accepted, ctx, stale)) {
+			if (accepted === undefined || !this.deliver(accepted, ctx, stale, run.deferAdvice)) {
 				this.status.silentReviews++;
 			}
 		}
@@ -597,12 +599,17 @@ export class AdvisorRuntime {
 		};
 	}
 
-	private deliver(advice: AcceptedAdvice, ctx: ExtensionContext, stale: boolean): boolean {
+	private deliver(
+		advice: AcceptedAdvice,
+		ctx: ExtensionContext,
+		stale: boolean,
+		forceDeferred: boolean,
+	): boolean {
 		if (!this.adviceDedupe.add(advice.note)) {
 			this.status.notesSuppressed++;
 			return false;
 		}
-		const deferred = this.forceDeferredAfterAbort || ctx.isIdle();
+		const deferred = forceDeferred || ctx.isIdle();
 		if (deferred) {
 			this.pendingAdvice.push({
 				advice,
@@ -634,7 +641,6 @@ export class AdvisorRuntime {
 				details: Record<string, unknown>;
 		  }
 		| undefined {
-		this.forceDeferredAfterAbort = false;
 		if (this.pendingAdvice.length === 0) return undefined;
 		const branch = ctx.sessionManager.getBranch();
 		const compatible = this.pendingAdvice.every((pending) =>
@@ -715,7 +721,6 @@ export class AdvisorRuntime {
 		this.pendingAdvice.length = 0;
 		this.status.deferredNotesPending = 0;
 		this.adviceDedupe.clear();
-		this.forceDeferredAfterAbort = false;
 		const session = this.session;
 		if (session?.isStreaming) {
 			try {
@@ -744,7 +749,6 @@ export class AdvisorRuntime {
 		this.pendingAdvice.length = 0;
 		this.status.deferredNotesPending = 0;
 		this.adviceDedupe.clear();
-		this.forceDeferredAfterAbort = false;
 		await this.disposeNestedSession();
 		this.updateBacklogStatus();
 		this.publishStatus();
@@ -759,7 +763,6 @@ export class AdvisorRuntime {
 		this.pendingAdvice.length = 0;
 		this.status.deferredNotesPending = 0;
 		this.adviceDedupe.clear();
-		this.forceDeferredAfterAbort = false;
 		await this.disposeNestedSession();
 		this.disposed = true;
 		this.updateBacklogStatus();
