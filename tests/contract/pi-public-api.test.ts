@@ -47,6 +47,12 @@ export function compileCheckedExtensionSurface(
 	pi.on("turn_end", (event) => {
 		void event;
 	});
+	pi.on("message_end", (event) => {
+		void event;
+	});
+	pi.on("agent_settled", (event) => {
+		void event;
+	});
 	pi.on("session_start", (event) => {
 		void event;
 	});

@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -40,7 +42,7 @@ const CONTENT_FREE = new Set([
 ]);
 const TRUNCATION_MARKER = "\n[Advisory note truncated to configured limit]";
 
-function normalizedContent(input: string): string {
+export function normalizeContentFreeAdvice(input: string): string {
 	return input
 		.normalize("NFKC")
 		.toLocaleLowerCase("en-US")
@@ -49,8 +51,102 @@ function normalizedContent(input: string): string {
 		.trim();
 }
 
+function foldProseCaseOutsideCodeSpans(input: string): string | undefined {
+	const foldProse = (value: string): string =>
+		value.toLocaleLowerCase("en-US").replace(/\s+/g, " ");
+	let output = "";
+	let cursor = 0;
+	while (cursor < input.length) {
+		const openingStart = input.indexOf("`", cursor);
+		if (openingStart === -1) {
+			return `${output}${foldProse(input.slice(cursor))}`;
+		}
+		output += foldProse(input.slice(cursor, openingStart));
+		let openingEnd = openingStart;
+		while (input[openingEnd] === "`") openingEnd++;
+		const delimiterLength = openingEnd - openingStart;
+		let search = openingEnd;
+		let closingStart = -1;
+		let closingEnd = -1;
+		while (search < input.length) {
+			const candidateStart = input.indexOf("`", search);
+			if (candidateStart === -1) break;
+			let candidateEnd = candidateStart;
+			while (input[candidateEnd] === "`") candidateEnd++;
+			if (candidateEnd - candidateStart === delimiterLength) {
+				closingStart = candidateStart;
+				closingEnd = candidateEnd;
+				break;
+			}
+			search = candidateEnd;
+		}
+		if (closingStart === -1) return undefined;
+		output += input.slice(openingStart, closingEnd);
+		cursor = closingEnd;
+	}
+	return output;
+}
+
+export function normalizeAdviceForDedupe(input: string): string {
+	const normalized = input.normalize("NFKC");
+	const caseFolded = foldProseCaseOutsideCodeSpans(normalized);
+	if (caseFolded === undefined) return normalized.replace(/\s+/g, " ").trim();
+	return caseFolded
+		.trim()
+		.replace(/(?<=\S)[.,;:?!…]+$/gu, "")
+		.trim();
+}
+
+export type AdviceDedupeIdentity = Pick<AcceptedAdvice, "note" | "severity">;
+
+export function adviceDedupeKey(advice: AdviceDedupeIdentity): string {
+	const identity = JSON.stringify([
+		"review",
+		advice.severity,
+		normalizeAdviceForDedupe(advice.note),
+	]);
+	return createHash("sha256").update(identity).digest("hex");
+}
+
+export class BoundedAdviceDedupe {
+	private readonly keys = new Set<string>();
+
+	constructor(readonly capacity = 4_096) {
+		if (!Number.isInteger(capacity) || capacity < 1) {
+			throw new RangeError("Advice dedupe capacity must be a positive integer");
+		}
+	}
+
+	has(advice: AdviceDedupeIdentity): boolean {
+		return this.keys.has(adviceDedupeKey(advice));
+	}
+
+	add(advice: AdviceDedupeIdentity): boolean {
+		const key = adviceDedupeKey(advice);
+		if (this.keys.has(key)) return false;
+		this.keys.add(key);
+		if (this.keys.size > this.capacity) {
+			const oldest = this.keys.values().next().value;
+			if (oldest !== undefined) this.keys.delete(oldest);
+		}
+		return true;
+	}
+
+	delete(advice: AdviceDedupeIdentity): boolean {
+		return this.keys.delete(adviceDedupeKey(advice));
+	}
+
+	clear(): void {
+		this.keys.clear();
+	}
+
+	get size(): number {
+		return this.keys.size;
+	}
+}
+
 export function isContentFreeAdvice(note: string): boolean {
-	return CONTENT_FREE.has(normalizedContent(note));
+	return CONTENT_FREE.has(normalizeContentFreeAdvice(note));
 }
 
 function truncateCharacters(
@@ -92,6 +188,20 @@ export function boundAdvice(note: string, config: AdvisorConfig): AcceptedAdvice
 		originalEstimatedTokens,
 		createdAt: Date.now(),
 	};
+}
+
+export type AdviceDelivery = "active" | "deferred";
+
+export function formatAdviceForDelivery(
+	advice: AcceptedAdvice,
+	delivery: AdviceDelivery,
+	stale: boolean,
+): string {
+	const labels = [advice.severity, delivery, ...(stale ? ["potentially stale"] : [])];
+	const guidance = stale
+		? "Peer guidance: verify this still applies, then weigh it rather than obeying blindly."
+		: "Peer guidance: weigh this rather than obeying blindly.";
+	return `[Advisor ${labels.join(" - ")}]\n${advice.note}\n\n${guidance}`;
 }
 
 export function createAdviseTool(

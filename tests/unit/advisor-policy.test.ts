@@ -3,19 +3,34 @@ import { SessionManager, type TurnEndEvent } from "@earendil-works/pi-coding-age
 import { describe, expect, it } from "vitest";
 
 import {
+	adviceDedupeKey,
 	boundAdvice,
+	BoundedAdviceDedupe,
+	BoundedKeyedByteFifo,
 	DEFAULT_ADVISOR_CONFIG,
 	estimateTokens,
+	formatAdviceForDelivery,
 	formatAdvisorEnableStatus,
 	HARD_LIMITS,
 	isContentFreeAdvice,
 	isMeaningfulExecutorTurn,
+	MAX_DEFERRED_DELIVERY_BYTES,
+	normalizeAdviceForDedupe,
 	normalizeAdvisorConfig,
 	PROPOSED_ADVISOR_CONFIG,
 	redactSecrets,
 	renderAdvisorDelta,
+	takeRenderedPrefix,
+	type AdviceDedupeIdentity,
 	type AdvisorRuntimeStatus,
 } from "../../src/index.js";
+
+function dedupeIdentity(
+	note: string,
+	severity: AdviceDedupeIdentity["severity"] = "concern",
+): AdviceDedupeIdentity {
+	return { note, severity };
+}
 
 function assistant(
 	content: AssistantMessage["content"],
@@ -56,6 +71,8 @@ function runtimeStatus(): AdvisorRuntimeStatus {
 		silentReviews: 0,
 		failedReviews: 0,
 		notesDelivered: 0,
+		activeNotesPending: 0,
+		deferredNotesPending: 0,
 		notesSuppressed: 0,
 		redactions: 0,
 		consecutiveFailures: 0,
@@ -200,6 +217,149 @@ describe("Slice 1 transcript filtering and redaction", () => {
 		expect(redacted.text).not.toContain("abc123");
 		expect(redacted.text).not.toContain("secret-json-value");
 		expect(redacted.text).not.toContain("url-password");
+	});
+
+	it("formats every severity with delivery and staleness labels", () => {
+		for (const severity of ["nit", "concern", "blocker"] as const) {
+			const advice = {
+				...boundAdvice("Check the rollback path.", DEFAULT_ADVISOR_CONFIG),
+				severity,
+			};
+			expect(formatAdviceForDelivery(advice, "active", false)).toContain(
+				`[Advisor ${severity} - active]`,
+			);
+			expect(formatAdviceForDelivery(advice, "deferred", true)).toContain(
+				`[Advisor ${severity} - deferred - potentially stale]`,
+			);
+		}
+	});
+
+	it("deduplicates only conservative prose variants and preserves code identity", () => {
+		expect(normalizeAdviceForDedupe("  VERIFY rollback punctuation... ")).toBe(
+			"verify rollback punctuation",
+		);
+		const dedupe = new BoundedAdviceDedupe(20);
+		expect(dedupe.add(dedupeIdentity("Verify rollback punctuation!"))).toBe(true);
+		expect(dedupe.add(dedupeIdentity("  VERIFY rollback punctuation... "))).toBe(false);
+
+		for (const [left, right] of [
+			["change < to >", "change > to <"],
+			["change x != y", "change x = y"],
+			["Use x / y", "Use x y"],
+			["Negate !flag", "Negate flag"],
+			["Add the missing ;", "Add the missing"],
+			["Change `User` to `user`.", "Change `user` to `User`."],
+			["Change ``User`` now.", "Change ``user`` now."],
+		] as const) {
+			expect(dedupe.add(dedupeIdentity(left))).toBe(true);
+			expect(dedupe.add(dedupeIdentity(right))).toBe(true);
+		}
+
+		expect(normalizeAdviceForDedupe("CHANGE `User` NOW!")).toBe("change `User` now");
+		expect(adviceDedupeKey(dedupeIdentity("Use `a  b` here."))).not.toBe(
+			adviceDedupeKey(dedupeIdentity("Use `a b` here.")),
+		);
+		expect(dedupe.add(dedupeIdentity("CHANGE `Account` NOW!"))).toBe(true);
+		expect(dedupe.add(dedupeIdentity("change `Account` now..."))).toBe(false);
+	});
+
+	it("avoids case and trailing-punctuation suppression for unmatched backticks", () => {
+		expect(normalizeAdviceForDedupe("  Review `User carefully... ")).toBe(
+			"Review `User carefully...",
+		);
+		const dedupe = new BoundedAdviceDedupe(4);
+		expect(dedupe.add(dedupeIdentity("Review `User carefully."))).toBe(true);
+		expect(dedupe.add(dedupeIdentity("Review `User carefully..."))).toBe(true);
+		expect(dedupe.add(dedupeIdentity("review `user carefully..."))).toBe(true);
+	});
+
+	it("includes severity in dedupe identity and retains FIFO insertion order", () => {
+		const dedupe = new BoundedAdviceDedupe(2);
+		expect(dedupe.add(dedupeIdentity("Verify rollback!", "nit"))).toBe(true);
+		expect(dedupe.add(dedupeIdentity("Check migrations"))).toBe(true);
+		expect(dedupe.add(dedupeIdentity("VERIFY rollback...", "nit"))).toBe(false);
+		expect(dedupe.add(dedupeIdentity("Verify rollback!", "blocker"))).toBe(true);
+		expect(dedupe.size).toBe(2);
+		expect(dedupe.add(dedupeIdentity("Verify rollback!", "nit"))).toBe(true);
+		expect(dedupe.delete(dedupeIdentity("Verify rollback!", "blocker"))).toBe(true);
+	});
+
+	it("bounds keyed FIFO admission by items and raw bytes without evicting older entries", () => {
+		const queue = new BoundedKeyedByteFifo<string>(2, 5);
+		expect(queue.enqueue("a", "one", 3)).toBe("accepted");
+		expect(queue.enqueue("a", "duplicate", 1)).toBe("duplicate");
+		expect(queue.enqueue("b", "two", 2)).toBe("accepted");
+		expect(queue.enqueue("c", "three", 1)).toBe("capacity");
+		expect(queue.values()).toEqual(["one", "two"]);
+		expect(queue.totalBytes).toBe(5);
+		expect(queue.shift()).toMatchObject({ key: "a", value: "one", bytes: 3 });
+		expect(queue.totalBytes).toBe(2);
+		expect(queue.enqueue("c", "three", 3)).toBe("accepted");
+		expect(queue.remove("b")).toMatchObject({ key: "b", value: "two", bytes: 2 });
+		expect(queue.values()).toEqual(["three"]);
+		expect(queue.totalBytes).toBe(3);
+	});
+
+	it("keeps one hard-bounded note below the deferred delivery batch limit", () => {
+		const config = structuredClone(DEFAULT_ADVISOR_CONFIG);
+		config.limits.maxAdviceCharacters = HARD_LIMITS.maxAdviceCharacters;
+		config.limits.maxAdviceTokens = HARD_LIMITS.maxAdviceTokens;
+		const advice = boundAdvice("😀".repeat(HARD_LIMITS.maxAdviceCharacters), config);
+		const formatted = formatAdviceForDelivery(advice, "deferred", true);
+		expect(Buffer.byteLength(formatted, "utf8")).toBeLessThanOrEqual(MAX_DEFERRED_DELIVERY_BYTES);
+	});
+
+	it("takes byte-bounded rendered FIFO prefixes and retains the remainder", () => {
+		const queue = new BoundedKeyedByteFifo<string>(4, 100);
+		for (const value of ["aa", "bb", "cc"]) {
+			expect(queue.enqueue(value, value, Buffer.byteLength(value, "utf8"))).toBe("accepted");
+		}
+		const first = takeRenderedPrefix(queue, 6, (value) => value);
+		expect(first.map(({ value }) => value)).toEqual(["aa", "bb"]);
+		expect(first.map(({ rendered }) => rendered).join("\n\n")).toBe("aa\n\nbb");
+		expect(queue.values()).toEqual(["cc"]);
+		const second = takeRenderedPrefix(queue, 6, (value) => value);
+		expect(second.map(({ value }) => value)).toEqual(["cc"]);
+		expect(queue.length).toBe(0);
+
+		const oversized = new BoundedKeyedByteFifo<string>(1, 100);
+		expect(oversized.enqueue("x", "1234567", 7)).toBe("accepted");
+		expect(() => takeRenderedPrefix(oversized, 6, (value) => value)).toThrow(
+			"exceeds the prefix byte bound",
+		);
+		expect(oversized.values()).toEqual(["1234567"]);
+		expect(oversized.totalBytes).toBe(7);
+		expect(oversized.has("x")).toBe(true);
+	});
+
+	it.each([
+		{
+			name: "renderer failure",
+			render: (value: string) => {
+				if (value === "bb") throw new Error("renderer failed");
+				return value;
+			},
+			error: "renderer failed",
+		},
+		{
+			name: "oversized later candidate",
+			render: (value: string) => (value === "bb" ? "1234567" : value),
+			error: "exceeds the prefix byte bound",
+		},
+	])("leaves FIFO state unchanged after $name", ({ render, error }) => {
+		const queue = new BoundedKeyedByteFifo<string>(4, 100);
+		for (const value of ["aa", "bb", "cc"]) {
+			expect(queue.enqueue(value, value, Buffer.byteLength(value, "utf8"))).toBe("accepted");
+		}
+
+		expect(() => takeRenderedPrefix(queue, 6, render)).toThrow(error);
+		expect(queue.values()).toEqual(["aa", "bb", "cc"]);
+		expect(queue.length).toBe(3);
+		expect(queue.totalBytes).toBe(6);
+		for (const key of ["aa", "bb", "cc"]) {
+			expect(queue.has(key)).toBe(true);
+			expect(queue.enqueue(key, "duplicate", 1)).toBe("duplicate");
+		}
 	});
 
 	it("skips aborted, empty, and Advisor-generated turns", () => {

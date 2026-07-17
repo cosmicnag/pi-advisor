@@ -2,10 +2,10 @@
 
 Pi Advisor provides automatic secondary review of a primary Pi agent session while keeping reviewer state separate from the primary conversation.
 
-## Slice 1 terminology status
+## Slice 2 Batch A terminology status
 
-Slice 1 implements Executor, Advisor, Advisor update, Cursor, Epoch, Meaningful Executor turn, Executor reasoning, Advisory note, Session activation, in-memory caller configuration, Fixed Advisor policy, User instructions, tagged Project instructions, Protected path, Protected-path exception, and Destructive-command guard boundaries.
-Re-prime, Memory suggestion, cross-update Deferred advice restoration, rich Advice cards, durable User configuration, durable Project configuration, and Persisted Advisor transcript remain reserved later-slice terms rather than available Slice 1 features.
+The implemented runtime provides Executor, Advisor, Advisor update, Cursor, Epoch, Meaningful Executor turn, Executor reasoning, Advisory note, in-session Deferred advice, Session activation, in-memory caller configuration, Fixed Advisor policy, User instructions, tagged Project instructions, Protected path, Protected-path exception, and Destructive-command guard boundaries.
+Re-prime, Memory suggestion, cross-exit Deferred advice restoration, rich Advice cards, durable User configuration, durable Project configuration, and Persisted Advisor transcript remain reserved later-slice terms.
 
 ## Language
 
@@ -44,6 +44,7 @@ _Avoid_: Hidden prompt, transcript, Advisory note
 
 **Advisory note**:
 One accepted, bounded, actionable observation created through a valid internal `advise` call, shown to the user, and delivered to the Executor as peer guidance.
+An active note remains package-owned and active-pending until Pi acknowledges its custom message; settlement recovers an unacknowledged note into Deferred advice.
 _Avoid_: Review result, hidden instruction, approval request, feedback blob
 
 **Memory suggestion**:
@@ -52,7 +53,10 @@ It never grants approval to the proposed memory.
 _Avoid_: Saved memory, approved memory, hidden autosave, Advisor-owned memory
 
 **Deferred advice**:
-An accepted Advisory note waiting for the next user-driven Executor turn and eligible for restoration only in the same session with compatible branch ancestry.
+An accepted, individually bounded Advisory note waiting in in-memory runtime state for the next user-driven Executor turn and cleared if the active session or branch changes first.
+The user prompt that triggers materialization is newer Executor input, so the emitted note is potentially stale even though Pi has not yet appended that prompt to branch state during `before_agent_start`.
+The pending FIFO has fixed, non-configurable limits of 4,096 notes and 1,000,000 raw note bytes, and each user-turn delivery contains at most 64 KiB of rendered content.
+Cross-exit restoration remains deferred to Slice 3.
 _Avoid_: Backlog, hidden instruction, cross-session message
 
 **Advice card**:
@@ -105,6 +109,7 @@ _Avoid_: Project exception, protection disablement, unrestricted access
 
 **User interruption**:
 A deliberate user action stopping the Executor that takes precedence over pending Advisor delivery.
+Pi 0.80.7 exposes no public abort cause, so Batch A conservatively treats every public abort signal or aborted stop reason as an interruption signal for in-flight advice.
 _Avoid_: Provider failure, automatic retry, compaction
 
 **Destructive-command guard**:
