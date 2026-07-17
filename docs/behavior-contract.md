@@ -3,8 +3,8 @@
 ## Status
 
 This document defines the intended public behavior of `@ribbons-digital/pi-advisor`.
-Slice 1 implements the safe automatic core with in-memory configuration, one nested Advisor, protected read-only tools, bounded updates and notes, single-flight draining, failure pauses, minimal delivery, commands, and a session flag.
-Durable configuration, richer delivery and presentation, cross-update lifecycle restoration, context compaction, transcript persistence, and Memory suggestions remain deferred to their separately approved slices.
+Slice 2 Batch A extends the safe automatic core with plain severity and delivery labels, in-session deferred preservation, normalized bounded cross-update dedupe, and staleness annotation.
+Durable configuration, custom rendering, immediate TUI-only late-advice cards, cross-exit lifecycle restoration, context compaction, transcript persistence, and Memory suggestions remain deferred to their separately approved slices.
 
 ## Roles
 
@@ -45,14 +45,15 @@ Re-prime snapshots and persisted records are not implemented in Slice 1.
 
 ## Delivery
 
-Active advice uses Pi's measured steering boundary and never claims to abort an in-flight tool.
-Idle or terminal advice waits for the next user-driven turn without triggering a new completion.
-Aborted Executor turns are not reviewed because Pi 0.80.7 does not expose a reliable public abort cause.
-Slice 1 does not implement cross-update deferred-advice restoration or a package-managed retention timer.
-Advice accepted after the Executor becomes idle is queued with Pi's `nextTurn` delivery and does not trigger a completion.
-An incompatible active-branch cursor invalidates in-flight review before delivery, while disablement and shutdown invalidate the runtime epoch and dispose nested work.
-Every accepted note is user-visible and is framed as guidance to weigh rather than obey blindly.
-It uses custom message type `pi-advisor-note`, severity `nit`, `concern`, or `blocker` with `concern` as the default, and details for review intent, active or deferred delivery, truncation, original post-redaction size, and creation time.
+Active advice uses Pi's measured steering boundary for every severity and never claims to abort an in-flight tool.
+Idle or terminal advice waits in bounded in-memory runtime state for the next user-driven turn without triggering a new completion.
+Pi 0.80.7 exposes no public abort cause, so every aborted Executor turn is excluded from review and forces advice already being reviewed to use deferred delivery.
+Pi 0.80.7 also exposes no public method to cancel an already queued `nextTurn` custom message after branch navigation, so Batch A uses the documented `before_agent_start` injection fallback for branch-safe deferred delivery.
+Batch A does not implement cross-exit deferred-advice restoration or a package-managed retention timer.
+An incompatible active-branch cursor invalidates in-flight review and clears in-memory deferred advice before delivery, while disablement and shutdown invalidate the runtime epoch and dispose nested work.
+Every delivered note is visible and is framed as guidance to weigh rather than obey blindly.
+It uses custom message type `pi-advisor-note`, severity `nit`, `concern`, or `blocker` with `concern` as the default, and a `notes` details array containing the bounded note, review intent, active or deferred delivery, optional staleness, truncation, original post-redaction size, and creation time.
+A one-note message also mirrors those fields at the top level for compatibility.
 
 ## Tools and protected paths
 
@@ -85,12 +86,18 @@ Fixed Advisor safety and protocol policy remains above caller instructions, tagg
 
 Only one Advisor update runs at a time.
 Updates arriving while Advisor is busy are coalesced within a bounded backlog.
+Ordinary notes are normalized with Unicode normalization, lowercasing, punctuation folding, and whitespace collapse before SHA-256 deduplication.
+The in-memory dedupe history holds 4,096 keys and evicts the oldest key in insertion order.
+A branch reset clears that branch-local dedupe history.
+Deferred advice removed before emission also removes its dedupe key so unseen advice cannot suppress a future note.
+If the Executor advances beyond the transcript window fixed immediately before Advisor submission, accepted advice is marked potentially stale and instructs the Executor to verify that it still applies.
 Every asynchronous review continuation is guarded by a runtime epoch and a captured active-branch window.
 Active-branch entry IDs, not message counts, anchor minimal cursor validation.
 Obvious tree-navigation or branch mismatches reset private Advisor context, while disablement and shutdown invalidate stale work.
 Slice 1 does not reconstruct equal-length branches or restore advice across updates.
 Update, pending-byte, context, turn, tool-call, note, session-token, and reported-cost governors remain enabled by default.
-Review cadence, re-prime, deferred-retention, Memory, and persistence settings are reserved and have no Slice 1 runtime effect.
+Review cadence, re-prime, deferred-retention, Memory, and persistence settings remain reserved and have no Batch A runtime effect.
+Batch A adds no user-configurable field, and its 4,096-key dedupe capacity is a fixed protocol bound.
 Provider, malformed internal tool, and governor failures are not retried, and failed update messages are removed from private Advisor context.
 A well-formed read-only tool error remains ordinary review feedback rather than failing the update by itself.
 If a turn or tool-call governor fires after one valid note has already been accepted, that one bounded note may still be delivered while the update counts as failed.

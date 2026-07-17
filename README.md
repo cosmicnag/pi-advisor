@@ -1,9 +1,9 @@
 # @ribbons-digital/pi-advisor
 
 `@ribbons-digital/pi-advisor` is an independent Pi extension for automatic, isolated secondary review of an Executor session.
-The Slice 1 core observes meaningful completed Executor turns in the background, stays silent when work is sound, and delivers only bounded actionable notes.
+The implemented core observes meaningful completed Executor turns in the background, stays silent when work is sound, and delivers only bounded actionable notes.
 
-> Slice 1 status: the safe automatic core is implemented with in-memory configuration only.
+> Slice 2 Batch A status: the safe automatic core now includes severity and delivery labels, in-session deferred preservation, normalized cross-update dedupe, and staleness annotation, with in-memory configuration only.
 > The installed default remains off and has no model selection until the durable WATCHDOG configuration and `/advisor configure` workflow arrive in a later approved slice.
 
 ## Not the same as rpiv-advisor
@@ -13,12 +13,18 @@ This package is designed for automatic background observation that does not depe
 Both packages register `/advisor`, and Pi 0.80.7 assigns `/advisor:1` and `/advisor:2` in extension load order when both are installed.
 Slice 1 does not add a collision warning, so users must identify the intended command from Pi's command list.
 
-## Slice 1 behavior
+## Implemented behavior through Slice 2 Batch A
 
 - One explicitly selected Advisor model, with no fallback to the Executor model.
 - Automatic review after meaningful completed Executor turns.
 - Silence when no material issue exists.
 - At most one bounded visible Advisory note per review update.
+- Plain model-visible nit, concern, and blocker labels with active, deferred, and potentially stale states.
+- Active advice reaches Pi's next steering boundary regardless of severity.
+- Terminal and interruption-time advice waits for the next user-driven turn without triggering completion.
+- A normalized 4,096-key in-memory FIFO suppresses duplicate ordinary review notes across updates on the active branch.
+  The suppressed-note status count combines content-free calls, extra valid calls from one update, and cross-update duplicates.
+- Advice produced after the Executor advances beyond the reviewed window is marked potentially stale and asks the Executor to verify it still applies.
 - Separate in-memory Advisor state that does not persist a transcript.
 - Protected `read`, `grep`, `find`, and `ls` tools, with no mutating Advisor tools.
 - Explicit update, pending-byte, context, token, cost, tool-call, and turn governors.
@@ -28,7 +34,7 @@ Slice 1 does not add a collision warning, so users must identify the intended co
 - Fail-safe inactive behavior when the configured model or credentials are unavailable.
 - No product telemetry.
 
-Cross-update deduplication, rich advice cards, lifecycle restoration, provider retry, context compaction, WATCHDOG files, transcript persistence, and Memory suggestions remain outside Slice 1.
+Rich advice cards and custom rendering, cross-exit lifecycle restoration, provider retry, context compaction, WATCHDOG files, transcript persistence, and Memory suggestions remain outside Batch A.
 
 The normative public contract is in [`docs/behavior-contract.md`](docs/behavior-contract.md).
 The measured OMP parity position is tracked in [`docs/omp-parity.md`](docs/omp-parity.md).
@@ -58,7 +64,7 @@ An approved release change must remove that guard before the manual trusted-publ
 
 - `/advisor on` enables review for the current session when the configured `provider/model` is available and authenticated.
 - `/advisor off` disables review, invalidates in-flight work, clears the bounded backlog, and disposes the nested session.
-- `/advisor status` reports activation, model, backlog, context, usage, review, note, pause, and last-failure state.
+- `/advisor status` reports activation, model, backlog, context, usage, review, delivered, deferred, suppressed, pause, and last-failure state.
 - `--advisor` requests activation for the current session in every Pi mode.
 - `defaultEnabled: true` applies only to TUI and RPC sessions, while JSON and print sessions require explicit activation.
 
@@ -82,8 +88,10 @@ export default createPiAdvisorExtension({ config });
 
 The model reference must use `provider/model` syntax and must resolve through Pi's model registry with valid credentials.
 Version 1 defaults to disabled, no model, `high` effort, all four read-only tools, empty review instructions, no additional protected paths, and no protected-path exceptions.
-The active Slice 1 fields are `defaultEnabled`, `model`, `effort`, `tools`, `instructions`, all `context` fields, the note, turn, tool-call, pending-byte, token, and cost limits, and both `security` path lists.
-`maxReprimeTokens`, review cadence, deferred-advice retention, `memorySuggestions`, `persistence`, `AdvisorProjectConfig`, and `CONFIG_VALIDATION_STRATEGY` are reserved contract fields and do not change Slice 1 runtime behavior.
+The active configuration fields are `defaultEnabled`, `model`, `effort`, `tools`, `instructions`, all `context` fields, the note, turn, tool-call, pending-byte, token, and cost limits, and both `security` path lists.
+Slice 2 Batch A adds no configuration field.
+Its 4,096-note in-memory dedupe capacity is a fixed protocol bound.
+`maxReprimeTokens`, review cadence, deferred-advice retention, `memorySuggestions`, `persistence`, `AdvisorProjectConfig`, and `CONFIG_VALIDATION_STRATEGY` remain reserved and do not change Batch A runtime behavior.
 `DEFAULT_ADVISOR_CONFIG` is deeply frozen; clone it before editing configuration.
 `PROPOSED_ADVISOR_CONFIG` remains a deprecated compatibility alias containing an independent mutable clone of the canonical defaults.
 Programmatic hooks are intended for embedding and tests: `onRuntime` exposes the instance, `onStatus` receives status snapshots, and `onWarning` receives pause warnings.
@@ -100,7 +108,7 @@ All Slice 1 modules are re-exported from the package root.
 | Extension       | Default Pi extension, `createPiAdvisorExtension`, `PiAdvisorExtensionOptions`                                                                                                          |
 | Runtime         | `AdvisorRuntime`, `AdvisorRuntimeHooks`, `AdvisorRuntimeStatus`, `AdvisorUsageTotals`, `formatAdvisorStatus`, `formatAdvisorEnableStatus`                                              |
 | Configuration   | `DEFAULT_ADVISOR_CONFIG`, deprecated `PROPOSED_ADVISOR_CONFIG`, `normalizeAdvisorConfig`, `HARD_LIMITS`, `READ_ONLY_TOOL_NAMES`, configuration types, and reserved validation metadata |
-| Advice          | `createAdviseTool`, `boundAdvice`, `isContentFreeAdvice`, and Advisory note types                                                                                                      |
+| Advice          | `createAdviseTool`, `boundAdvice`, normalization and bounded dedupe helpers, delivery formatting, and Advisory note types                                                              |
 | Protected tools | `ProtectedPathPolicy`, `createProtectedAdvisorTools`, `isAdvisorReadOnlyTool`, and `AdvisorToolContext`                                                                                |
 | Transcript      | `ADVISOR_CUSTOM_TYPE`, cursor helpers, meaningful-turn filtering, delta rendering, and transcript types                                                                                |
 | Redaction       | `redactSecrets`, `estimateTokens`, UTF-8 truncation helpers, and `RedactionResult`                                                                                                     |
@@ -126,7 +134,7 @@ Results returned by Advisor's allowed read-only tools, including allowed file co
 The protected `grep` tool uses `rg` when available; without `rg`, explicit literal searches use a bounded in-process fallback while regex searches report that they are unavailable.
 Protected-path checks cover direct and symlink-resolved access, but neither path protection nor redaction can guarantee that every secret is excluded.
 Automatic review creates additional provider usage and cost, bounded by configured session governors and the active package hard maxima for notes, turns, tool calls, and pending bytes.
-Advisor transcript persistence remains disabled and unimplemented in Slice 1.
+Advisor transcript persistence remains disabled and unimplemented in Slice 2 Batch A.
 
 ## Telemetry
 

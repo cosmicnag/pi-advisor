@@ -2,10 +2,10 @@
 
 Pi Advisor provides automatic secondary review of a primary Pi agent session while keeping reviewer state separate from the primary conversation.
 
-## Slice 1 terminology status
+## Slice 2 Batch A terminology status
 
-Slice 1 implements Executor, Advisor, Advisor update, Cursor, Epoch, Meaningful Executor turn, Executor reasoning, Advisory note, Session activation, in-memory caller configuration, Fixed Advisor policy, User instructions, tagged Project instructions, Protected path, Protected-path exception, and Destructive-command guard boundaries.
-Re-prime, Memory suggestion, cross-update Deferred advice restoration, rich Advice cards, durable User configuration, durable Project configuration, and Persisted Advisor transcript remain reserved later-slice terms rather than available Slice 1 features.
+The implemented runtime provides Executor, Advisor, Advisor update, Cursor, Epoch, Meaningful Executor turn, Executor reasoning, Advisory note, in-session Deferred advice, Session activation, in-memory caller configuration, Fixed Advisor policy, User instructions, tagged Project instructions, Protected path, Protected-path exception, and Destructive-command guard boundaries.
+Re-prime, Memory suggestion, cross-exit Deferred advice restoration, rich Advice cards, durable User configuration, durable Project configuration, and Persisted Advisor transcript remain reserved later-slice terms.
 
 ## Language
 
@@ -52,7 +52,8 @@ It never grants approval to the proposed memory.
 _Avoid_: Saved memory, approved memory, hidden autosave, Advisor-owned memory
 
 **Deferred advice**:
-An accepted Advisory note waiting for the next user-driven Executor turn and eligible for restoration only in the same session with compatible branch ancestry.
+An accepted Advisory note waiting in bounded runtime state for the next user-driven Executor turn and cleared if the active session or branch changes first.
+Cross-exit restoration remains deferred to Slice 3.
 _Avoid_: Backlog, hidden instruction, cross-session message
 
 **Advice card**:

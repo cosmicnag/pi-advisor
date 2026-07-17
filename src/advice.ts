@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -40,7 +42,7 @@ const CONTENT_FREE = new Set([
 ]);
 const TRUNCATION_MARKER = "\n[Advisory note truncated to configured limit]";
 
-function normalizedContent(input: string): string {
+export function normalizeAdviceForDedupe(input: string): string {
 	return input
 		.normalize("NFKC")
 		.toLocaleLowerCase("en-US")
@@ -49,8 +51,45 @@ function normalizedContent(input: string): string {
 		.trim();
 }
 
+export function adviceDedupeKey(note: string): string {
+	return createHash("sha256").update(normalizeAdviceForDedupe(note)).digest("hex");
+}
+
+export class BoundedAdviceDedupe {
+	private readonly keys = new Set<string>();
+
+	constructor(readonly capacity = 4_096) {
+		if (!Number.isInteger(capacity) || capacity < 1) {
+			throw new RangeError("Advice dedupe capacity must be a positive integer");
+		}
+	}
+
+	add(note: string): boolean {
+		const key = adviceDedupeKey(note);
+		if (this.keys.has(key)) return false;
+		this.keys.add(key);
+		if (this.keys.size > this.capacity) {
+			const oldest = this.keys.values().next().value;
+			if (oldest !== undefined) this.keys.delete(oldest);
+		}
+		return true;
+	}
+
+	delete(note: string): boolean {
+		return this.keys.delete(adviceDedupeKey(note));
+	}
+
+	clear(): void {
+		this.keys.clear();
+	}
+
+	get size(): number {
+		return this.keys.size;
+	}
+}
+
 export function isContentFreeAdvice(note: string): boolean {
-	return CONTENT_FREE.has(normalizedContent(note));
+	return CONTENT_FREE.has(normalizeAdviceForDedupe(note));
 }
 
 function truncateCharacters(
@@ -92,6 +131,20 @@ export function boundAdvice(note: string, config: AdvisorConfig): AcceptedAdvice
 		originalEstimatedTokens,
 		createdAt: Date.now(),
 	};
+}
+
+export type AdviceDelivery = "active" | "deferred";
+
+export function formatAdviceForDelivery(
+	advice: AcceptedAdvice,
+	delivery: AdviceDelivery,
+	stale: boolean,
+): string {
+	const labels = [advice.severity, delivery, ...(stale ? ["potentially stale"] : [])];
+	const guidance = stale
+		? "Peer guidance: verify this still applies, then weigh it rather than obeying blindly."
+		: "Peer guidance: weigh this rather than obeying blindly.";
+	return `[Advisor ${labels.join(" - ")}]\n${advice.note}\n\n${guidance}`;
 }
 
 export function createAdviseTool(

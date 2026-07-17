@@ -52,21 +52,25 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 	await expect.poll(predicate, { timeout: 5_000, interval: 10 }).toBe(true);
 }
 
-function acceptedAdvice(note: string, id = "advise-1") {
+function acceptedAdvice(
+	note: string,
+	id = "advise-1",
+	severity: "nit" | "concern" | "blocker" = "concern",
+) {
 	return {
 		content: [
 			{
 				type: "toolCall" as const,
 				id,
 				name: "advise",
-				arguments: { note, severity: "concern", intent: "review" },
+				arguments: { note, severity, intent: "review" },
 			},
 		],
 		stopReason: "toolUse" as const,
 	};
 }
 
-describe.sequential("Slice 1 delivery and safety behavior", () => {
+describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch A", () => {
 	it("delivers a normal accepted note once through active steer and skips the resulting Advisor-generated turn", async () => {
 		const primary = createPrimaryProvider([
 			{
@@ -131,7 +135,7 @@ describe.sequential("Slice 1 delivery and safety behavior", () => {
 		});
 		try {
 			await harness.session.prompt("finish first turn");
-			await waitFor(() => runtime?.getStatus().notesDelivered === 1);
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
 			expect(primary.requests).toHaveLength(1);
 			await harness.session.prompt("begin next user turn");
 			expect(primary.requests).toHaveLength(2);
@@ -199,7 +203,7 @@ describe.sequential("Slice 1 delivery and safety behavior", () => {
 		});
 		try {
 			await harness.session.prompt("produce oversized advice");
-			await waitFor(() => runtime?.getStatus().notesDelivered === 1);
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
 			if (primary.requests.length === 1) {
 				await harness.session.prompt("materialize deferred oversized advice");
 			}
@@ -732,8 +736,8 @@ describe.sequential("Slice 1 delivery and safety behavior", () => {
 		});
 		try {
 			await harness.session.prompt("request one note maximum");
-			await waitFor(() => runtime?.getStatus().notesDelivered === 1);
-			expect(runtime?.getStatus()).toMatchObject({ notesDelivered: 1, notesSuppressed: 1 });
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			expect(runtime?.getStatus()).toMatchObject({ notesDelivered: 0, notesSuppressed: 1 });
 			if (primary.requests.length === 1) await harness.session.prompt("materialize one note");
 			const primaryContext = JSON.stringify(primary.requests.at(-1)?.context);
 			expect(primaryContext).toContain("First material note.");
@@ -759,6 +763,279 @@ describe.sequential("Slice 1 delivery and safety behavior", () => {
 			await waitFor(() => runtime?.getStatus().silentReviews === 1);
 			expect(advisor.requests).toHaveLength(1);
 			expect(runtime?.getStatus()).toMatchObject({ failedReviews: 0, notesDelivered: 0 });
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("suppresses a normalized duplicate across Advisor updates", async () => {
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "first terminal answer" }] },
+			{ content: [{ type: "text", text: "second terminal answer" }] },
+			{ content: [{ type: "text", text: "third terminal answer" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			acceptedAdvice("Verify the rollback path!", "dedupe-1"),
+			acceptedAdvice("  VERIFY the rollback path... ", "dedupe-2"),
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("first reviewed turn");
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			await harness.session.prompt("second reviewed turn");
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 2);
+			expect(runtime?.getStatus()).toMatchObject({
+				notesDelivered: 1,
+				notesSuppressed: 1,
+			});
+			await harness.session.prompt("inspect duplicate outcome");
+			const context = JSON.stringify(primary.requests.at(-1)?.context);
+			expect(context.match(/Verify the rollback path/giu)).toHaveLength(1);
+			expect(context).not.toContain("VERIFY the rollback path");
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("marks advice stale when the Executor advances beyond the reviewed window", async () => {
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "first answer" }] },
+			{ content: [{ type: "text", text: "newer answer" }] },
+			{ content: [{ type: "text", text: "answer after stale advice" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			{ ...acceptedAdvice("Recheck the earlier assumption."), delayMs: 150 },
+			{ content: [] },
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("first turn starts review");
+			await waitFor(() => advisor.activeRequests === 1);
+			await harness.session.prompt("advance while review is running");
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			await harness.session.prompt("materialize stale advice");
+			const context = JSON.stringify(primary.requests.at(-1)?.context);
+			expect(context).toContain("potentially stale");
+			expect(context).toContain("verify this still applies");
+			const note = harness.sessionManager
+				.getEntries()
+				.find(
+					(entry): entry is CustomMessageEntry =>
+						entry.type === "custom_message" && entry.customType === "pi-advisor-note",
+				);
+			expect(note?.details).toMatchObject({ stale: true, delivery: "deferred" });
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("injects multiple deferred notes once in one bounded next-turn message", async () => {
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "first answer" }] },
+			{ content: [{ type: "text", text: "second answer" }] },
+			{ content: [{ type: "text", text: "answer after deferred batch" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			{ ...acceptedAdvice("First deferred issue.", "deferred-1"), delayMs: 150 },
+			acceptedAdvice("Second deferred issue.", "deferred-2", "nit"),
+			{ content: [] },
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("start first deferred review");
+			await waitFor(() => advisor.activeRequests === 1);
+			await harness.session.prompt("coalesce another reviewed turn");
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 2);
+			await harness.session.prompt("materialize deferred batch");
+			const context = JSON.stringify(primary.requests.at(-1)?.context);
+			expect(context).toContain("First deferred issue.");
+			expect(context).toContain("Second deferred issue.");
+			const notes = harness.sessionManager
+				.getEntries()
+				.filter(
+					(entry): entry is CustomMessageEntry =>
+						entry.type === "custom_message" && entry.customType === "pi-advisor-note",
+				);
+			expect(notes).toHaveLength(1);
+			expect(notes[0]?.details).toMatchObject({
+				notes: [{ note: "First deferred issue." }, { note: "Second deferred issue." }],
+			});
+			expect(runtime?.getStatus()).toMatchObject({
+				notesDelivered: 2,
+				deferredNotesPending: 0,
+			});
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("defers advice after any aborted Executor turn until the next user prompt", async () => {
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "first answer" }] },
+			{ delayMs: 10_000 },
+			{ content: [{ type: "text", text: "answer after interruption" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			{ ...acceptedAdvice("Inspect the interrupted work before continuing."), delayMs: 150 },
+			{ content: [] },
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("start review before interruption");
+			await waitFor(() => advisor.activeRequests === 1);
+			const interrupted = harness.session.prompt("interrupt this Executor turn");
+			await waitFor(() => primary.activeRequests === 1);
+			await harness.session.abort();
+			await interrupted;
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			expect(primary.requests).toHaveLength(2);
+			expect(JSON.stringify(harness.sessionManager.getEntries())).not.toContain(
+				"Inspect the interrupted work before continuing.",
+			);
+			await harness.session.prompt("resume after interruption");
+			const resumedContext = JSON.stringify(primary.requests[2]?.context);
+			expect(resumedContext).toContain("[Advisor concern - deferred - potentially stale]");
+			expect(resumedContext).toContain("verify this still applies");
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("clears deferred advice when the active branch changes", async () => {
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "branch answer" }] },
+			{ content: [{ type: "text", text: "alternate branch answer" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			acceptedAdvice("Advice for the abandoned branch only."),
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("create advice on original branch");
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			const firstEntry = harness.sessionManager.getBranch()[0];
+			if (firstEntry === undefined) throw new Error("Expected original branch entry");
+			await harness.session.navigateTree(firstEntry.id, { summarize: false });
+			expect(runtime?.getStatus()).toMatchObject({
+				branchResets: 1,
+				deferredNotesPending: 0,
+				notesDelivered: 0,
+			});
+			await harness.session.prompt("continue alternate branch");
+			expect(JSON.stringify(primary.requests.at(-1)?.context)).not.toContain(
+				"Advice for the abandoned branch only.",
+			);
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it.each(["nit", "blocker"] as const)(
+		"delivers an active %s at the same steering boundary",
+		async (severity) => {
+			const primary = createPrimaryProvider([
+				{
+					content: [{ type: "toolCall", id: `hold-${severity}`, name: "hold", arguments: {} }],
+					stopReason: "toolUse",
+				},
+				{ delayMs: 150, content: [{ type: "text", text: "Executor continued" }] },
+				{ content: [{ type: "text", text: "Executor weighed guidance" }] },
+			]);
+			const advisor = createAdvisorProvider([
+				acceptedAdvice(`Active ${severity} guidance.`, `active-${severity}`, severity),
+				{ content: [] },
+			]);
+			const hold = defineTool({
+				name: "hold",
+				label: "hold",
+				description: "Create a deterministic active Executor boundary.",
+				parameters: Type.Object({}),
+				execute: () =>
+					Promise.resolve({ content: [{ type: "text" as const, text: "held" }], details: {} }),
+			});
+			let runtime: AdvisorRuntime | undefined;
+			const harness = await createSessionHarness({
+				provider: primary,
+				advisorProvider: advisor,
+				extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+				customTools: [hold],
+				tools: ["hold"],
+				mode: "rpc",
+			});
+			try {
+				await harness.session.prompt(`start active ${severity}`);
+				await waitFor(
+					() => primary.requests.length === 3 && runtime?.getStatus().notesDelivered === 1,
+				);
+				expect(JSON.stringify(primary.requests[2]?.context)).toContain(
+					`[Advisor ${severity} - active]`,
+				);
+			} finally {
+				await harness.dispose();
+			}
+		},
+	);
+
+	it("delivers a deferred blocker without triggering a completion", async () => {
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "terminal answer" }] },
+			{ content: [{ type: "text", text: "next user answer" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			acceptedAdvice("Do not ship the invalid migration.", "late-blocker", "blocker"),
+			{ content: [] },
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("finish terminal answer");
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			expect(primary.requests).toHaveLength(1);
+			await harness.session.prompt("next user-driven turn");
+			expect(JSON.stringify(primary.requests[1]?.context)).toContain(
+				"[Advisor blocker - deferred]",
+			);
 		} finally {
 			await harness.dispose();
 		}

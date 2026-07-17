@@ -60,14 +60,18 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 		else if (defaultEnabled) await runtime.enable(ctx, "user-default");
 	});
 
-	pi.on("before_agent_start", (event) => {
+	pi.on("before_agent_start", (event, ctx) => {
 		const contextFiles = event.systemPromptOptions.contextFiles ?? [];
 		if (contextFiles.length > 0) runtime.captureContextFiles(contextFiles);
+		const message = runtime.takeDeferredAdvice(ctx);
+		return message === undefined ? undefined : { message };
 	});
 
 	pi.on("turn_end", (event, ctx) => {
 		void runtime.observeTurn(event, ctx);
 	});
+
+	pi.on("session_tree", (_event, ctx) => runtime.handleBranchChange(ctx));
 
 	pi.on("session_shutdown", async () => {
 		await runtime.shutdown();

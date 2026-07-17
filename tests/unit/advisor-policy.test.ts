@@ -4,8 +4,10 @@ import { describe, expect, it } from "vitest";
 
 import {
 	boundAdvice,
+	BoundedAdviceDedupe,
 	DEFAULT_ADVISOR_CONFIG,
 	estimateTokens,
+	formatAdviceForDelivery,
 	formatAdvisorEnableStatus,
 	HARD_LIMITS,
 	isContentFreeAdvice,
@@ -56,6 +58,7 @@ function runtimeStatus(): AdvisorRuntimeStatus {
 		silentReviews: 0,
 		failedReviews: 0,
 		notesDelivered: 0,
+		deferredNotesPending: 0,
 		notesSuppressed: 0,
 		redactions: 0,
 		consecutiveFailures: 0,
@@ -200,6 +203,33 @@ describe("Slice 1 transcript filtering and redaction", () => {
 		expect(redacted.text).not.toContain("abc123");
 		expect(redacted.text).not.toContain("secret-json-value");
 		expect(redacted.text).not.toContain("url-password");
+	});
+
+	it("formats every severity with delivery and staleness labels", () => {
+		for (const severity of ["nit", "concern", "blocker"] as const) {
+			const advice = {
+				...boundAdvice("Check the rollback path.", DEFAULT_ADVISOR_CONFIG),
+				severity,
+			};
+			expect(formatAdviceForDelivery(advice, "active", false)).toContain(
+				`[Advisor ${severity} - active]`,
+			);
+			expect(formatAdviceForDelivery(advice, "deferred", true)).toContain(
+				`[Advisor ${severity} - deferred - potentially stale]`,
+			);
+		}
+	});
+
+	it("deduplicates normalized notes and evicts the oldest key in insertion order", () => {
+		const dedupe = new BoundedAdviceDedupe(2);
+		expect(dedupe.add("Verify rollback punctuation!")).toBe(true);
+		expect(dedupe.add("  VERIFY rollback punctuation... ")).toBe(false);
+		expect(dedupe.add("Check migrations")).toBe(true);
+		expect(dedupe.add("Check backups")).toBe(true);
+		expect(dedupe.size).toBe(2);
+		expect(dedupe.add("Verify rollback punctuation!")).toBe(true);
+		expect(dedupe.delete("CHECK backups!")).toBe(true);
+		expect(dedupe.add("check backups")).toBe(true);
 	});
 
 	it("skips aborted, empty, and Advisor-generated turns", () => {
