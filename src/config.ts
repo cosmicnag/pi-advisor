@@ -3,6 +3,13 @@ export const ADVISOR_CONFIG_VERSION = 1 as const;
 export const READ_ONLY_TOOL_NAMES = ["read", "grep", "find", "ls"] as const;
 export type ReadOnlyToolName = (typeof READ_ONLY_TOOL_NAMES)[number];
 
+export type AdvisorEffort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+export interface AdvisorSessionActivation {
+	enabled: boolean;
+	source: "user-default" | "session-command" | "cli-flag";
+}
+
 export interface AdvisorContextConfig {
 	maxFraction: number;
 	reserveTokens: number;
@@ -32,11 +39,11 @@ export interface MemorySuggestionConfig {
 	maxProposedMemoryTokens: number;
 }
 
-export interface AdvisorConfig {
+export interface AdvisorUserConfig {
 	version: typeof ADVISOR_CONFIG_VERSION;
 	defaultEnabled: boolean;
 	model?: string;
-	effort: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+	effort: AdvisorEffort;
 	tools: ReadOnlyToolName[];
 	instructions: string;
 	context: AdvisorContextConfig;
@@ -51,12 +58,28 @@ export interface AdvisorConfig {
 	};
 }
 
-/**
- * Slice 0 measurement proposal.
- *
- * These values remain subject to explicit user approval before Slice 1.
- */
-export const PROPOSED_ADVISOR_CONFIG: AdvisorConfig = {
+export type AdvisorConfig = AdvisorUserConfig;
+
+export interface AdvisorProjectConfig {
+	instructions?: string;
+	tools?: ReadOnlyToolName[];
+	context?: Partial<AdvisorContextConfig>;
+	limits?: Partial<AdvisorLimitConfig>;
+	security?: {
+		additionalProtectedPaths?: string[];
+	};
+	memorySuggestions?: {
+		enabled?: false;
+	};
+}
+
+function deepFreeze<T>(value: T): T {
+	if (typeof value !== "object" || value === null || Object.isFrozen(value)) return value;
+	for (const nested of Object.values(value as Record<string, unknown>)) deepFreeze(nested);
+	return Object.freeze(value);
+}
+
+const CANONICAL_DEFAULT_ADVISOR_CONFIG: AdvisorConfig = deepFreeze({
 	version: ADVISOR_CONFIG_VERSION,
 	defaultEnabled: false,
 	effort: "high",
@@ -95,7 +118,16 @@ export const PROPOSED_ADVISOR_CONFIG: AdvisorConfig = {
 	persistence: {
 		transcript: false,
 	},
-};
+});
+
+export const DEFAULT_ADVISOR_CONFIG: AdvisorConfig = deepFreeze(
+	structuredClone(CANONICAL_DEFAULT_ADVISOR_CONFIG),
+);
+
+/** @deprecated Use DEFAULT_ADVISOR_CONFIG. */
+export const PROPOSED_ADVISOR_CONFIG: AdvisorConfig = structuredClone(
+	CANONICAL_DEFAULT_ADVISOR_CONFIG,
+);
 
 export const HARD_LIMITS = {
 	maxAdviceCharacters: 8_000,
@@ -107,6 +139,104 @@ export const HARD_LIMITS = {
 	maxPendingTranscriptBytes: 1_000_000,
 	maxReprimeTokens: 128_000,
 } as const;
+
+function finiteAtLeast(value: number, minimum: number, fallback: number): number {
+	return Number.isFinite(value) ? Math.max(minimum, value) : fallback;
+}
+
+function finiteClamped(value: number, minimum: number, maximum: number, fallback: number): number {
+	return Math.min(maximum, finiteAtLeast(value, minimum, fallback));
+}
+
+export function normalizeAdvisorConfig(input: AdvisorConfig): AdvisorConfig {
+	const defaults = CANONICAL_DEFAULT_ADVISOR_CONFIG;
+	const tools = input.tools.filter(
+		(tool, index, values) => READ_ONLY_TOOL_NAMES.includes(tool) && values.indexOf(tool) === index,
+	);
+	return {
+		...input,
+		version: ADVISOR_CONFIG_VERSION,
+		tools,
+		context: {
+			maxFraction: Math.min(
+				1,
+				finiteAtLeast(input.context.maxFraction, 0.01, defaults.context.maxFraction),
+			),
+			reserveTokens: finiteAtLeast(input.context.reserveTokens, 0, defaults.context.reserveTokens),
+			maxUpdateTokens: finiteAtLeast(
+				input.context.maxUpdateTokens,
+				1,
+				defaults.context.maxUpdateTokens,
+			),
+		},
+		limits: {
+			...input.limits,
+			maxAdviceCharacters: finiteClamped(
+				input.limits.maxAdviceCharacters,
+				1,
+				HARD_LIMITS.maxAdviceCharacters,
+				defaults.limits.maxAdviceCharacters,
+			),
+			maxAdviceTokens: finiteClamped(
+				input.limits.maxAdviceTokens,
+				1,
+				HARD_LIMITS.maxAdviceTokens,
+				defaults.limits.maxAdviceTokens,
+			),
+			maxAdvisorTurnsPerUpdate: finiteClamped(
+				input.limits.maxAdvisorTurnsPerUpdate,
+				1,
+				HARD_LIMITS.maxAdvisorTurnsPerUpdate,
+				defaults.limits.maxAdvisorTurnsPerUpdate,
+			),
+			maxToolCallsPerUpdate: finiteClamped(
+				input.limits.maxToolCallsPerUpdate,
+				0,
+				HARD_LIMITS.maxToolCallsPerUpdate,
+				defaults.limits.maxToolCallsPerUpdate,
+			),
+			maxPendingTranscriptBytes: finiteClamped(
+				input.limits.maxPendingTranscriptBytes,
+				1,
+				HARD_LIMITS.maxPendingTranscriptBytes,
+				defaults.limits.maxPendingTranscriptBytes,
+			),
+			maxReprimeTokens: finiteClamped(
+				input.limits.maxReprimeTokens,
+				1,
+				HARD_LIMITS.maxReprimeTokens,
+				defaults.limits.maxReprimeTokens,
+			),
+			minTurnsBetweenReviews: finiteAtLeast(
+				input.limits.minTurnsBetweenReviews,
+				1,
+				defaults.limits.minTurnsBetweenReviews,
+			),
+			minIntervalMs: finiteAtLeast(input.limits.minIntervalMs, 0, defaults.limits.minIntervalMs),
+			deferredAdviceRetentionHours: finiteAtLeast(
+				input.limits.deferredAdviceRetentionHours,
+				0,
+				defaults.limits.deferredAdviceRetentionHours,
+			),
+			sessionTokenSoftCap: finiteAtLeast(
+				input.limits.sessionTokenSoftCap,
+				1,
+				defaults.limits.sessionTokenSoftCap,
+			),
+			sessionCostSoftCapUsd: finiteAtLeast(
+				input.limits.sessionCostSoftCapUsd,
+				0,
+				defaults.limits.sessionCostSoftCapUsd,
+			),
+		},
+		security: {
+			additionalProtectedPaths: [...input.security.additionalProtectedPaths],
+			protectedPathExceptions: [...input.security.protectedPathExceptions],
+		},
+		memorySuggestions: { ...input.memorySuggestions },
+		persistence: { ...input.persistence },
+	};
+}
 
 export interface ConfigValidationStrategy {
 	format: "yaml";

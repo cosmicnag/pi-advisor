@@ -20,7 +20,7 @@ function runPi(args: string[], env: NodeJS.ProcessEnv, input?: string) {
 }
 
 describe("packed Pi package", () => {
-	it("installs through Pi and starts with no automatic Advisor runtime", () => {
+	it("installs through Pi with Advisor registered but inactive by default", () => {
 		const root = mkdtempSync(join(tmpdir(), "pi-advisor-packed-e2e-"));
 		const unpacked = join(root, "unpacked");
 		const agentDir = join(root, "agent");
@@ -81,7 +81,35 @@ describe("packed Pi package", () => {
 				pendingMessageCount: 0,
 			});
 			expect(commands?.success).toBe(true);
-			expect(JSON.stringify(commands?.data)).not.toMatch(/"name":"advisor(?::\d+)?"/);
+			const commandList = commands?.data?.commands;
+			expect(Array.isArray(commandList)).toBe(true);
+			const commandRecords: unknown[] = Array.isArray(commandList) ? commandList : [];
+			expect(
+				commandRecords.some((command) => {
+					if (typeof command !== "object" || command === null) return false;
+					const record = command as Record<string, unknown>;
+					return record.name === "advisor" && record.source === "extension";
+				}),
+			).toBe(true);
+
+			const explicit = runPi(
+				[
+					"--mode",
+					"rpc",
+					"--advisor",
+					"--no-session",
+					"--no-context-files",
+					"--no-skills",
+					"--no-prompt-templates",
+					"--no-themes",
+					"--no-tools",
+				],
+				env,
+				`${JSON.stringify({ id: "explicit-state", type: "get_state" })}\n`,
+			);
+			expect(explicit.status, explicit.stderr).toBe(0);
+			expect(explicit.stdout).toContain('"id":"explicit-state"');
+			expect(explicit.stdout).toContain('"messageCount":0');
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

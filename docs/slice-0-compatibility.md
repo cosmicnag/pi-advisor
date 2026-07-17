@@ -4,7 +4,7 @@
 
 The installed and public npm baseline is `@earendil-works/pi-coding-agent` 0.80.7.
 Development dependencies pin the Pi packages to 0.80.7.
-The proposed first compatibility range is `>=0.80.7 <0.81.0`, but release support remains limited to versions exercised by CI and E2E tests.
+The package peer range is `>=0.80.7 <0.81.0`, while release support remains limited to versions exercised by CI and E2E tests.
 
 ## Built-in tool inventory
 
@@ -19,8 +19,10 @@ Pi 0.80.7 configures these built-in tools:
 - `ls`
 
 The default active Executor set is `read`, `bash`, `edit`, and `write`.
-`grep`, `find`, and `ls` are configured but inactive by default, so a nested Advisor must explicitly activate its complete read-only allowlist.
-The initial Advisor allowlist remains `read`, `grep`, `find`, and `ls`.
+`grep`, `find`, and `ls` are configured but inactive by default.
+The Slice 1 nested session replaces and explicitly activates protected `read`, `grep`, `find`, and `ls` definitions plus the exclusive internal `advise` tool.
+Nested extensions, skills, prompt templates, themes, context files, compaction, provider retry, and persistent sessions are disabled.
+Startup fails inactive if the resulting nested tool or extension inventory violates that isolation boundary.
 Pi exposes `find`, not an OMP-style `glob` tool.
 
 ## Delivery measurements
@@ -30,49 +32,54 @@ It does not abort the in-flight tool.
 
 Idle `sendMessage` with `deliverAs: "nextTurn"` produces no additional model request.
 The custom message becomes model-visible when the next user prompt starts a turn.
-No fallback injection is required for Pi 0.80.7.
+Slice 1 uses these measured boundaries directly and adds no turn-triggering fallback.
+It does not implement package-managed deferred-advice expiry or cross-update restoration.
 
 ## Duplicate commands
 
 Two extensions registering `/advisor` become `/advisor:1` and `/advisor:2` in extension load order.
 The resolved names are available through `getCommands()` by `session_start` and remain available at `resources_discover`.
-A detector that checks both hooks can issue exactly one warning by retaining an extension-instance boolean.
 Factory-phase command discovery is not part of the supported evidence claim.
-The earliest measured reliable detection point is `session_start`.
+Slice 1 registers `/advisor` but does not consume this evidence to issue a collision warning.
 
 ## Branch and lifecycle measurements
 
 Session entry IDs remain stable in the append-only entry collection when the active leaf changes.
-Equal-length branches have different leaf and ancestry IDs, so counts cannot safely anchor an Advisor cursor.
+Equal-length branches have different leaf and ancestry IDs, so counts cannot safely anchor a complete Advisor cursor.
 `buildContextEntries()` applies compaction to the active branch while the original entry IDs remain queryable from the append-only tree.
 `session_tree` reports stable old and new leaf IDs after navigation.
 
+Slice 1 combines the expected index with the entry ID at that index for minimal mismatch detection.
+An obvious mismatch invalidates in-flight work, clears pending content, resets nested messages, and moves the cursor to the new tail without reconstructing or reviewing the replacement branch.
+Equal-length ancestry reconstruction and bounded re-prime remain deferred.
+
 Runtime session replacement emits `session_shutdown` for the old extension instance before `session_start` for the new instance.
 The replacement has a new session ID and new bound extension instance.
-A captured old raw session object must not be reused, and production code must retain session-scoped objects only behind epoch invalidation and shutdown cleanup.
+Slice 1 increments its epoch, aborts streaming nested work when possible, disposes the nested session, and creates no persistent Advisor transcript.
 Runtime disposal emits `session_shutdown` with reason `quit`.
 
 ## Abort measurement
 
 Public `turn_end` exposes assistant `stopReason: "aborted"` after `AgentSession.abort()`.
 The event contains no public cause distinguishing a deliberate user interruption from another abort source.
-The initial safe policy therefore treats every aborted primary run as user interruption and defers accepted advice.
+Slice 1 therefore excludes every aborted Executor turn from review.
+It does not add cause-aware deferred-advice restoration.
 
 ## Memory suggestion capability
 
-Capability detection inspects registered tool metadata and the active tool-name set only.
+The retained Slice 0 capability probe inspects registered tool metadata and the active tool-name set only.
 It never invokes the tool and imports no Memory Lane package.
-The detector distinguishes compatible, absent, inactive, malformed, and schema-incompatible states.
+The probe distinguishes compatible, absent, inactive, malformed, and schema-incompatible states.
 Compatibility requires a required string `text`, categories explicitly supporting `preference` and `project`, and a status explicitly supporting `pending`.
+The Slice 1 runtime does not call the probe and never emits Memory suggestions.
 
-## Critical activation checks
+## Slice 1 activation checks
 
-The Slice 0 capability check fails inactive when a required extension or context method is missing.
-The no-op package entry point creates no nested session or partial Advisor runtime.
-Production activation must run capability checks before constructing session-scoped background resources.
+Slice 1 validates explicit `provider/model` syntax, model-registry availability, credentials, nested extension count, and nested active tools before becoming active.
+A missing model, unavailable model, credential failure, nested-session construction failure, or isolation failure leaves Advisor inactive with no fallback.
+The generic Slice 0 critical-capability helper remains compatibility evidence and is not invoked by the Slice 1 runtime.
 
-## Compatibility proposal
+## Compatibility position
 
-Declare `>=0.80.7 <0.81.0` as the peer range while CI and release documentation identify 0.80.7 as the only initially tested version.
-Treat any missing critical capability as unsupported and inactive with an actionable status reason.
+Support `>=0.80.7 <0.81.0` as the peer range while CI and release documentation identify 0.80.7 as the only tested version.
 Do not emulate missing delivery, branch, lifecycle, or tool-inventory APIs with private imports or unsafe turn-triggering fallbacks.

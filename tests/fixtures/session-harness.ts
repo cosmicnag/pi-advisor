@@ -19,15 +19,20 @@ import { SCRIPTED_API, type ScriptedProvider } from "./scripted-provider.js";
 
 export interface SessionHarnessOptions {
 	provider: ScriptedProvider;
+	advisorProvider?: ScriptedProvider;
 	extensions?: InlineExtension[];
 	customTools?: ToolDefinition[];
 	sessionManager?: SessionManager;
 	tools?: string[];
+	mode?: "tui" | "rpc" | "json" | "print";
+	setup?(cwd: string, agentDir: string): Promise<void>;
 }
 
 export interface SessionHarness {
 	session: AgentSession;
 	sessionManager: SessionManager;
+	cwd: string;
+	agentDir: string;
 	dispose(): Promise<void>;
 }
 
@@ -41,15 +46,18 @@ export async function createSessionHarness(
 	const agentDir = join(root, "agent");
 	const sourceId = `pi-advisor-scripted-${String(harnessId++)}`;
 	let providerRegistered = false;
+	let advisorRegistered = false;
+	let modelRegistry: ModelRegistry | undefined;
 	let session: AgentSession | undefined;
 
 	try {
 		await mkdir(cwd, { recursive: true });
 		await mkdir(agentDir, { recursive: true });
+		await options.setup?.(cwd, agentDir);
 
 		const authStorage = AuthStorage.inMemory();
 		authStorage.setRuntimeApiKey(options.provider.model.provider, "scripted-key");
-		const modelRegistry = ModelRegistry.inMemory(authStorage);
+		modelRegistry = ModelRegistry.inMemory(authStorage);
 		registerApiProvider(
 			{
 				api: SCRIPTED_API,
@@ -59,6 +67,30 @@ export async function createSessionHarness(
 			sourceId,
 		);
 		providerRegistered = true;
+		if (options.advisorProvider !== undefined) {
+			const advisor = options.advisorProvider;
+			authStorage.setRuntimeApiKey(advisor.model.provider, "scripted-advisor-key");
+			modelRegistry.registerProvider(advisor.model.provider, {
+				baseUrl: advisor.model.baseUrl,
+				api: advisor.model.api,
+				apiKey: "scripted-advisor-key",
+				streamSimple: advisor.streamSimple,
+				models: [
+					{
+						id: advisor.model.id,
+						name: advisor.model.name,
+						api: advisor.model.api,
+						baseUrl: advisor.model.baseUrl,
+						reasoning: advisor.model.reasoning,
+						input: advisor.model.input,
+						cost: advisor.model.cost,
+						contextWindow: advisor.model.contextWindow,
+						maxTokens: advisor.model.maxTokens,
+					},
+				],
+			});
+			advisorRegistered = true;
+		}
 		const settingsManager = SettingsManager.inMemory({
 			compaction: { enabled: false },
 			retry: { enabled: false },
@@ -91,22 +123,30 @@ export async function createSessionHarness(
 			...(options.customTools === undefined ? {} : { customTools: options.customTools }),
 			...(options.tools === undefined ? {} : { tools: options.tools }),
 		}));
-		await session.bindExtensions({ mode: "json" });
+		await session.bindExtensions({ mode: options.mode ?? "json" });
 
 		let disposed = false;
 		return {
 			session,
 			sessionManager,
+			cwd,
+			agentDir,
 			async dispose() {
 				if (disposed) return;
 				disposed = true;
 				session?.dispose();
+				if (advisorRegistered && options.advisorProvider !== undefined) {
+					modelRegistry?.unregisterProvider(options.advisorProvider.model.provider);
+				}
 				unregisterApiProviders(sourceId);
 				await rm(root, { recursive: true, force: true });
 			},
 		};
 	} catch (error) {
 		session?.dispose();
+		if (advisorRegistered && options.advisorProvider !== undefined) {
+			modelRegistry?.unregisterProvider(options.advisorProvider.model.provider);
+		}
 		if (providerRegistered) unregisterApiProviders(sourceId);
 		await rm(root, { recursive: true, force: true });
 		throw error;
