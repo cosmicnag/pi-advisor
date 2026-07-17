@@ -94,6 +94,10 @@ export interface AdvisorRuntimeHooks {
 	onStatus?(status: AdvisorRuntimeStatus): void;
 }
 
+export interface DeferredAdviceMaterialization {
+	hasNewerExecutorInput: boolean;
+}
+
 interface CurrentRun {
 	epoch: number;
 	turns: number;
@@ -662,7 +666,10 @@ export class AdvisorRuntime {
 		return true;
 	}
 
-	takeDeferredAdvice(ctx: ExtensionContext):
+	takeDeferredAdvice(
+		ctx: ExtensionContext,
+		materialization: DeferredAdviceMaterialization,
+	):
 		| {
 				customType: string;
 				content: string;
@@ -685,13 +692,16 @@ export class AdvisorRuntime {
 			return undefined;
 		}
 
-		const batch = takeRenderedPrefix(this.pendingAdvice, MAX_DEFERRED_DELIVERY_BYTES, (pending) => {
-			const stale = pending.stale || branch.length > pending.branchWindow.expectedIndex;
-			return formatAdviceForDelivery(pending.advice, "deferred", stale);
-		});
+		const isStale = (pending: PendingAdvice): boolean =>
+			pending.stale ||
+			materialization.hasNewerExecutorInput ||
+			branch.length > pending.branchWindow.expectedIndex;
+		const batch = takeRenderedPrefix(this.pendingAdvice, MAX_DEFERRED_DELIVERY_BYTES, (pending) =>
+			formatAdviceForDelivery(pending.advice, "deferred", isStale(pending)),
+		);
 		const pending = batch.map(({ value, rendered }) => ({
 			...value,
-			stale: value.stale || branch.length > value.branchWindow.expectedIndex,
+			stale: isStale(value),
 			formatted: rendered,
 		}));
 		for (const { advice } of pending) this.adviceDedupe.add(advice);

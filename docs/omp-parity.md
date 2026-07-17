@@ -17,7 +17,7 @@
 | Active advice delivery                             | implemented            | Every severity uses Pi 0.80.7 steer at the next assistant boundary without aborting an in-flight tool                  |
 | Idle and terminal deferred advice                  | implemented            | Fixed item, raw-byte, and per-turn formatted-byte bounds preserve FIFO advice without triggering a completion          |
 | Cross-update dedupe                                | implemented            | A severity-scoped conservative-normalization 4,096-key FIFO preserves operators and case inside matched backtick spans |
-| Staleness annotation                               | implemented            | Advice is marked potentially stale when the branch advances during review or before deferred materialization           |
+| Staleness annotation                               | implemented            | Advice is potentially stale after branch advance or when the pending user prompt triggers deferred materialization     |
 | Hard interruption of an in-flight tool             | intentional difference | Pi steering reaches the next assistant boundary and does not abort the current tool                                    |
 | Executor backlog blocking until Advisor catches up | intentional difference | Slice 1 coalesces a bounded backlog but does not pause Executor                                                        |
 | Stable active-branch cursor                        | implemented            | Entry IDs and expected indexes detect obvious mismatches before delivery                                               |

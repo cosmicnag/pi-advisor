@@ -16,7 +16,7 @@ Issues #8, #9, and #10 remain ordered later work.
 | Terminal-answer preservation         | Late advice used `nextTurn` without triggering completion | Preserved without triggering completion and materialized only after the next user prompt                                                                                                                                                                                  |
 | User-interrupt preservation          | Aborted turns were excluded from review                   | Every public abort signal or aborted stop reason forces in-flight accepted advice to defer because Pi 0.80.7 exposes no public abort cause                                                                                                                                |
 | Cross-update dedupe                  | Not implemented                                           | Severity-scoped SHA-256 keys use NFKC and whitespace normalization, fold prose case and trailing prose punctuation, preserve matched backtick delimiters and code case, and conservatively avoid case folding when backticks are unmatched; history is a 4,096-entry FIFO |
-| Staleness                            | Not implemented                                           | Advice is potentially stale when the active branch advances beyond the fixed submitted window during review or before deferred materialization and includes a verification instruction                                                                                    |
+| Staleness                            | Not implemented                                           | Advice is potentially stale when the active branch advances beyond the fixed submitted window during review, before deferred materialization, or through the pending user prompt that triggers materialization, and includes a verification instruction                   |
 | Branch/session clearing              | In-flight work was invalidated                            | In-memory deferred advice and dedupe state are cleared on branch mismatch, disablement, shutdown, and session replacement                                                                                                                                                 |
 
 ## Scope boundaries
@@ -56,6 +56,7 @@ Manual advice-card theme verification is not part of Batch A because custom advi
 
 Direct Pi `nextTurn` queuing remains valid for no-trigger timing but cannot be cancelled through a public Pi 0.80.7 API after branch navigation.
 Batch A therefore holds individually bounded notes in memory and uses `before_agent_start` injection to preserve the measured next-user-turn behavior while meeting branch-clearing requirements.
+Pi calls that hook before persisting its current user prompt, so Batch A passes explicit pending-input state into deferred materialization and marks the emitted advice potentially stale.
 Pi 0.80.7 does not expose a public abort cause, so the runtime intentionally treats every abort as an interruption for delivery safety.
 The in-memory deferred collection has no separate configuration field.
 It is bounded by fixed item and raw-note-byte limits, and each primary-context injection has a separate fixed formatted-byte limit.

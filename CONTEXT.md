@@ -53,6 +53,7 @@ _Avoid_: Saved memory, approved memory, hidden autosave, Advisor-owned memory
 
 **Deferred advice**:
 An accepted, individually bounded Advisory note waiting in in-memory runtime state for the next user-driven Executor turn and cleared if the active session or branch changes first.
+The user prompt that triggers materialization is newer Executor input, so the emitted note is potentially stale even though Pi has not yet appended that prompt to branch state during `before_agent_start`.
 The pending FIFO has fixed, non-configurable limits of 4,096 notes and 1,000,000 raw note bytes, and each user-turn delivery contains at most 64 KiB of rendered content.
 Cross-exit restoration remains deferred to Slice 3.
 _Avoid_: Backlog, hidden instruction, cross-session message

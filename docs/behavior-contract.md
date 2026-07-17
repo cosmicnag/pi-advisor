@@ -100,6 +100,7 @@ A branch reset clears that branch-local dedupe history.
 Deferred advice removed before emission also removes its dedupe key so unseen advice cannot suppress a future note.
 If the Executor advances beyond the transcript window fixed for Advisor submission, accepted advice is marked potentially stale and instructs the Executor to verify that it still applies.
 Deferred advice recomputes staleness against its captured branch window when it materializes.
+Pi invokes `before_agent_start` before appending that event's current user prompt to branch state, so the runtime receives explicit notice of that pending newer Executor input and marks every deferred note emitted alongside it potentially stale.
 Every asynchronous review continuation is guarded by a runtime epoch and a captured active-branch window.
 Active-branch entry IDs, not message counts, anchor minimal cursor validation.
 Obvious tree-navigation or branch mismatches reset private Advisor context, while disablement and shutdown invalidate stale work.

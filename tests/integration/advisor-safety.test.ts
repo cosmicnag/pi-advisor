@@ -997,10 +997,10 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
 			await harness.session.prompt("materialize blocker escalation");
 			expect(JSON.stringify(primary.requests[1]?.context)).toContain(
-				"[Advisor concern - deferred]",
+				"[Advisor concern - deferred - potentially stale]",
 			);
 			expect(JSON.stringify(primary.requests[2]?.context)).toContain(
-				"[Advisor blocker - deferred]",
+				"[Advisor blocker - deferred - potentially stale]",
 			);
 			expect(runtime?.getStatus()).toMatchObject({
 				notesDelivered: 2,
@@ -1050,6 +1050,58 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			expect(note?.details).toMatchObject({ stale: true, delivery: "deferred" });
 		} finally {
 			advisorBarrier.release();
+			await harness.dispose();
+		}
+	});
+
+	it("marks current deferred advice stale when the next user prompt materializes it", async () => {
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "reviewed answer" }] },
+			{ content: [{ type: "text", text: "answer after deferred advice" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			acceptedAdvice("Recheck this against the next user request."),
+			{ content: [] },
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("create current deferred advice");
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			if (runtime === undefined) throw new Error("Expected Advisor runtime");
+			const branchBeforePrompt = harness.sessionManager.getBranch();
+			const pendingAdvice = Reflect.get(runtime, "pendingAdvice") as BoundedKeyedByteFifo<{
+				advice: AcceptedAdvice;
+				stale: boolean;
+				branchWindow: { expectedIndex: number };
+			}>;
+			expect(pendingAdvice.values()).toMatchObject([
+				{ stale: false, branchWindow: { expectedIndex: branchBeforePrompt.length } },
+			]);
+
+			await harness.session.prompt("materialize with newer Executor input");
+
+			const context = JSON.stringify(primary.requests[1]?.context);
+			expect(context).toContain("[Advisor concern - deferred - potentially stale]");
+			expect(context).toContain("verify this still applies");
+			const note = harness.sessionManager
+				.getEntries()
+				.find(
+					(entry): entry is CustomMessageEntry =>
+						entry.type === "custom_message" && entry.customType === "pi-advisor-note",
+				);
+			expect(note?.details).toMatchObject({ stale: true, delivery: "deferred" });
+			expect(runtime.getStatus()).toMatchObject({
+				notesDelivered: 1,
+				deferredNotesPending: 0,
+			});
+		} finally {
 			await harness.dispose();
 		}
 	});
@@ -1509,7 +1561,7 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			expect(primary.requests).toHaveLength(1);
 			await harness.session.prompt("next user-driven turn");
 			expect(JSON.stringify(primary.requests[1]?.context)).toContain(
-				"[Advisor blocker - deferred]",
+				"[Advisor blocker - deferred - potentially stale]",
 			);
 		} finally {
 			await harness.dispose();

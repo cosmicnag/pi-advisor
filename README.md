@@ -29,6 +29,7 @@ Slice 1 does not add a collision warning, so users must identify the intended co
 - Deferred advice is bounded to 4,096 notes and 1,000,000 raw note bytes.
   Each user-driven turn receives at most a 64 KiB FIFO prefix, with remaining notes retained for later turns.
 - Advice produced after the Executor advances beyond the reviewed window is marked potentially stale and asks the Executor to verify it still applies.
+  Deferred advice emitted from `before_agent_start` is also potentially stale because the current user prompt is newer Executor input that Pi has not yet appended to branch state.
 - Separate in-memory Advisor state that does not persist a transcript.
 - Protected `read`, `grep`, `find`, and `ls` tools, with no mutating Advisor tools.
 - Explicit update, pending-byte, context, token, cost, tool-call, and turn governors.
@@ -113,7 +114,7 @@ All current modules are re-exported from the package root.
 | Surface         | Exports                                                                                                                                                                                |
 | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Extension       | Default Pi extension, `createPiAdvisorExtension`, `PiAdvisorExtensionOptions`                                                                                                          |
-| Runtime         | `AdvisorRuntime`, `AdvisorRuntimeHooks`, `AdvisorRuntimeStatus`, `AdvisorUsageTotals`, `formatAdvisorStatus`, `formatAdvisorEnableStatus`                                              |
+| Runtime         | `AdvisorRuntime`, `AdvisorRuntimeHooks`, `AdvisorRuntimeStatus`, `AdvisorUsageTotals`, `DeferredAdviceMaterialization`, `formatAdvisorStatus`, `formatAdvisorEnableStatus`             |
 | Configuration   | `DEFAULT_ADVISOR_CONFIG`, deprecated `PROPOSED_ADVISOR_CONFIG`, `normalizeAdvisorConfig`, `HARD_LIMITS`, `READ_ONLY_TOOL_NAMES`, configuration types, and reserved validation metadata |
 | Advice          | `createAdviseTool`, `boundAdvice`, policy-specific normalizers, severity-scoped dedupe helpers, delivery formatting, and advice types                                                  |
 | Delivery        | Fixed delivery bounds, `BoundedKeyedByteFifo`, `takeRenderedPrefix`, and queue types                                                                                                   |
