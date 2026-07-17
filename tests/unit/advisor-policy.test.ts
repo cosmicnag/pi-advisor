@@ -223,8 +223,8 @@ describe("Slice 1 transcript filtering and redaction", () => {
 	it("deduplicates normalized notes and evicts the oldest key in insertion order", () => {
 		const dedupe = new BoundedAdviceDedupe(2);
 		expect(dedupe.add("Verify rollback punctuation!")).toBe(true);
-		expect(dedupe.add("  VERIFY rollback punctuation... ")).toBe(false);
 		expect(dedupe.add("Check migrations")).toBe(true);
+		expect(dedupe.add("  VERIFY rollback punctuation... ")).toBe(false);
 		expect(dedupe.add("Check backups")).toBe(true);
 		expect(dedupe.size).toBe(2);
 		expect(dedupe.add("Verify rollback punctuation!")).toBe(true);

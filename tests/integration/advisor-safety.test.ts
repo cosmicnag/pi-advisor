@@ -331,16 +331,27 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 		}
 	});
 
-	it("preserves the newest Executor delta when trusted project context is oversized", async () => {
+	it("preserves the newest Executor delta and clears removed project context", async () => {
 		const primary = createPrimaryProvider([
 			{ content: [{ type: "text", text: "NEWEST-EXECUTOR-CONTENT" }] },
+			{ content: [{ type: "text", text: "CONTENT-AFTER-INSTRUCTIONS-REMOVED" }] },
 		]);
-		const advisor = createAdvisorProvider([{ content: [] }]);
+		const advisor = createAdvisorProvider([{ content: [] }, { content: [] }]);
+		let projectFiles = [{ path: "AGENTS.md", content: "P".repeat(2_000) }];
+		const projectContextExtension: InlineExtension = {
+			name: "project-context-fixture",
+			factory: (pi) => {
+				pi.on("before_agent_start", (event) => {
+					event.systemPromptOptions.contextFiles = projectFiles;
+				});
+			},
+		};
 		let runtime: AdvisorRuntime | undefined;
 		const harness = await createSessionHarness({
 			provider: primary,
 			advisorProvider: advisor,
 			extensions: [
+				projectContextExtension,
 				extensionFor(
 					configFor(advisor, (config) => {
 						config.context.maxUpdateTokens = 100;
@@ -352,12 +363,18 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			mode: "rpc",
 		});
 		try {
-			runtime?.captureContextFiles([{ path: "AGENTS.md", content: "P".repeat(2_000) }]);
 			await harness.session.prompt("newest user content");
-			await waitFor(() => advisor.requests.length === 1);
-			const request = JSON.stringify(advisor.requests[0]?.context);
-			expect(request).toContain("NEWEST-EXECUTOR-CONTENT");
-			expect(request).toContain("Project instructions truncated");
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 1);
+			const firstUpdate = JSON.stringify(advisor.requests[0]?.context.messages.at(-1));
+			expect(firstUpdate).toContain("NEWEST-EXECUTOR-CONTENT");
+			expect(firstUpdate).toContain("Project instructions truncated");
+
+			projectFiles = [];
+			await harness.session.prompt("instructions removed");
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 2);
+			const secondUpdate = JSON.stringify(advisor.requests[1]?.context.messages.at(-1));
+			expect(secondUpdate).toContain("CONTENT-AFTER-INSTRUCTIONS-REMOVED");
+			expect(secondUpdate).not.toContain("project-instruction");
 		} finally {
 			await harness.dispose();
 		}
