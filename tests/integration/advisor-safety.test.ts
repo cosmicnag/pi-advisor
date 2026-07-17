@@ -52,6 +52,14 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 	await expect.poll(predicate, { timeout: 5_000, interval: 10 }).toBe(true);
 }
 
+function createBarrier(): { promise: Promise<void>; release: () => void } {
+	let release: () => void = () => undefined;
+	const promise = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	return { promise, release };
+}
+
 function acceptedAdvice(
 	note: string,
 	id = "advise-1",
@@ -805,13 +813,14 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 	});
 
 	it("marks advice stale when the Executor advances beyond the reviewed window", async () => {
+		const advisorBarrier = createBarrier();
 		const primary = createPrimaryProvider([
 			{ content: [{ type: "text", text: "first answer" }] },
 			{ content: [{ type: "text", text: "newer answer" }] },
 			{ content: [{ type: "text", text: "answer after stale advice" }] },
 		]);
 		const advisor = createAdvisorProvider([
-			{ ...acceptedAdvice("Recheck the earlier assumption."), delayMs: 150 },
+			{ ...acceptedAdvice("Recheck the earlier assumption."), waitFor: advisorBarrier.promise },
 			{ content: [] },
 		]);
 		let runtime: AdvisorRuntime | undefined;
@@ -826,6 +835,8 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			await harness.session.prompt("first turn starts review");
 			await waitFor(() => advisor.activeRequests === 1);
 			await harness.session.prompt("advance while review is running");
+			expect(primary.requests).toHaveLength(2);
+			advisorBarrier.release();
 			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
 			await harness.session.prompt("materialize stale advice");
 			const context = JSON.stringify(primary.requests.at(-1)?.context);
@@ -839,18 +850,23 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 				);
 			expect(note?.details).toMatchObject({ stale: true, delivery: "deferred" });
 		} finally {
+			advisorBarrier.release();
 			await harness.dispose();
 		}
 	});
 
 	it("injects multiple deferred notes once in one bounded next-turn message", async () => {
+		const advisorBarrier = createBarrier();
 		const primary = createPrimaryProvider([
 			{ content: [{ type: "text", text: "first answer" }] },
 			{ content: [{ type: "text", text: "second answer" }] },
 			{ content: [{ type: "text", text: "answer after deferred batch" }] },
 		]);
 		const advisor = createAdvisorProvider([
-			{ ...acceptedAdvice("First deferred issue.", "deferred-1"), delayMs: 150 },
+			{
+				...acceptedAdvice("First deferred issue.", "deferred-1"),
+				waitFor: advisorBarrier.promise,
+			},
 			acceptedAdvice("Second deferred issue.", "deferred-2", "nit"),
 			{ content: [] },
 		]);
@@ -866,6 +882,8 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			await harness.session.prompt("start first deferred review");
 			await waitFor(() => advisor.activeRequests === 1);
 			await harness.session.prompt("coalesce another reviewed turn");
+			expect(primary.requests).toHaveLength(2);
+			advisorBarrier.release();
 			await waitFor(() => runtime?.getStatus().deferredNotesPending === 2);
 			await harness.session.prompt("materialize deferred batch");
 			const context = JSON.stringify(primary.requests.at(-1)?.context);
@@ -886,18 +904,23 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 				deferredNotesPending: 0,
 			});
 		} finally {
+			advisorBarrier.release();
 			await harness.dispose();
 		}
 	});
 
 	it("defers advice after any aborted Executor turn until the next user prompt", async () => {
+		const advisorBarrier = createBarrier();
 		const primary = createPrimaryProvider([
 			{ content: [{ type: "text", text: "first answer" }] },
 			{ delayMs: 10_000 },
 			{ content: [{ type: "text", text: "answer after interruption" }] },
 		]);
 		const advisor = createAdvisorProvider([
-			{ ...acceptedAdvice("Inspect the interrupted work before continuing."), delayMs: 150 },
+			{
+				...acceptedAdvice("Inspect the interrupted work before continuing."),
+				waitFor: advisorBarrier.promise,
+			},
 			{ content: [] },
 		]);
 		let runtime: AdvisorRuntime | undefined;
@@ -915,6 +938,7 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			await waitFor(() => primary.activeRequests === 1);
 			await harness.session.abort();
 			await interrupted;
+			advisorBarrier.release();
 			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
 			expect(primary.requests).toHaveLength(2);
 			expect(JSON.stringify(harness.sessionManager.getEntries())).not.toContain(
@@ -925,19 +949,28 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			expect(resumedContext).toContain("[Advisor concern - deferred - potentially stale]");
 			expect(resumedContext).toContain("verify this still applies");
 		} finally {
+			advisorBarrier.release();
 			await harness.dispose();
 		}
 	});
 
 	it("keeps an aborted turn's in-flight review deferred when the next turn starts first", async () => {
+		const advisorBarrier = createBarrier();
+		const nextTurnBarrier = createBarrier();
 		const primary = createPrimaryProvider([
 			{ content: [{ type: "text", text: "first answer" }] },
 			{ delayMs: 10_000 },
-			{ delayMs: 300, content: [{ type: "text", text: "answer before late review" }] },
+			{
+				waitFor: nextTurnBarrier.promise,
+				content: [{ type: "text", text: "answer before late review" }],
+			},
 			{ content: [{ type: "text", text: "answer after deferred review" }] },
 		]);
 		const advisor = createAdvisorProvider([
-			{ ...acceptedAdvice("Preserve this interrupted review."), delayMs: 150 },
+			{
+				...acceptedAdvice("Preserve this interrupted review."),
+				waitFor: advisorBarrier.promise,
+			},
 			{ content: [] },
 		]);
 		let runtime: AdvisorRuntime | undefined;
@@ -958,16 +991,21 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			expect(advisor.activeRequests).toBe(1);
 			const nextTurn = harness.session.prompt("start next turn before review finishes");
 			await waitFor(() => primary.activeRequests === 1);
+			expect(primary.requests).toHaveLength(3);
+			advisorBarrier.release();
 			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
 			expect(JSON.stringify(primary.requests[2]?.context)).not.toContain(
 				"Preserve this interrupted review.",
 			);
+			nextTurnBarrier.release();
 			await nextTurn;
 			await harness.session.prompt("materialize interrupted review");
 			expect(JSON.stringify(primary.requests[3]?.context)).toContain(
 				"Preserve this interrupted review.",
 			);
 		} finally {
+			advisorBarrier.release();
+			nextTurnBarrier.release();
 			await harness.dispose();
 		}
 	});
@@ -1003,6 +1041,54 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			expect(JSON.stringify(primary.requests.at(-1)?.context)).not.toContain(
 				"Advice for the abandoned branch only.",
 			);
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("invalidates deferred advice and dedupe on explicit forward navigation", async () => {
+		const branchAdvice = "Revalidate the branch-local migration.";
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "original descendant answer" }] },
+			{ content: [{ type: "text", text: "alternate descendant answer" }] },
+			{ content: [{ type: "text", text: "continued original descendant" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			{ content: [] },
+			acceptedAdvice(branchAdvice, "alternate-branch-advice"),
+			acceptedAdvice(branchAdvice, "original-branch-advice"),
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("create original descendant");
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 1);
+			const originalBranch = harness.sessionManager.getBranch();
+			const ancestor = originalBranch[0];
+			const originalLeaf = originalBranch.at(-1);
+			if (ancestor === undefined || originalLeaf === undefined) {
+				throw new Error("Expected original branch entries");
+			}
+			await harness.session.navigateTree(ancestor.id, { summarize: false });
+			await harness.session.prompt("create alternate descendant advice");
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+
+			await harness.session.navigateTree(originalLeaf.id, { summarize: false });
+			expect(runtime?.getStatus()).toMatchObject({
+				branchResets: 2,
+				deferredNotesPending: 0,
+				notesDelivered: 0,
+			});
+			await harness.session.prompt("continue original descendant");
+			expect(JSON.stringify(primary.requests[2]?.context)).not.toContain(branchAdvice);
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			expect(runtime?.getStatus().notesSuppressed).toBe(0);
 		} finally {
 			await harness.dispose();
 		}

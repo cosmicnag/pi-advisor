@@ -672,7 +672,13 @@ export class AdvisorRuntime {
 
 	async handleBranchChange(ctx: ExtensionContext): Promise<void> {
 		const branch = ctx.sessionManager.getBranch();
-		if (!cursorMatches(branch, this.cursor)) await this.resetForBranchMismatch(branch);
+		const nextCursor = cursorAtTail(branch);
+		if (
+			nextCursor.expectedIndex !== this.cursor.expectedIndex ||
+			nextCursor.lastEntryId !== this.cursor.lastEntryId
+		) {
+			await this.resetForBranchMismatch(branch);
+		}
 	}
 
 	private recordFailure(reason: string): void {

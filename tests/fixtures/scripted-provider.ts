@@ -30,6 +30,7 @@ export type ScriptedContent =
 export interface ScriptedResponse {
 	content?: ScriptedContent[];
 	delayMs?: number;
+	waitFor?: Promise<void>;
 	stopReason?: StopReason;
 	errorMessage?: string;
 	usage?: ScriptedUsage;
@@ -105,6 +106,25 @@ function wait(delayMs: number, signal: AbortSignal | undefined): Promise<void> {
 	});
 }
 
+async function waitForBarrier(
+	barrier: Promise<void>,
+	signal: AbortSignal | undefined,
+): Promise<void> {
+	if (signal?.aborted) {
+		throw new DOMException("Scripted request aborted", "AbortError");
+	}
+	let abort: (() => void) | undefined;
+	const aborted = new Promise<never>((_resolve, reject) => {
+		abort = () => reject(new DOMException("Scripted request aborted", "AbortError"));
+		signal?.addEventListener("abort", abort, { once: true });
+	});
+	try {
+		await Promise.race([barrier, aborted]);
+	} finally {
+		if (abort !== undefined) signal?.removeEventListener("abort", abort);
+	}
+}
+
 export class ScriptedProvider {
 	readonly model: Model<Api>;
 	readonly requests: ObservedRequest[] = [];
@@ -114,7 +134,10 @@ export class ScriptedProvider {
 	private responseIndex = 0;
 
 	constructor(options: ScriptedProviderOptions) {
-		this.responses = structuredClone(options.responses);
+		this.responses = options.responses.map((response) => ({
+			...response,
+			...(response.content === undefined ? {} : { content: structuredClone(response.content) }),
+		}));
 		this.model = {
 			id: options.modelId,
 			name: options.modelId,
@@ -172,6 +195,7 @@ export class ScriptedProvider {
 		try {
 			if (response === undefined) throw new Error("Scripted provider response queue exhausted");
 			await wait(response.delayMs ?? 0, signal);
+			if (response.waitFor !== undefined) await waitForBarrier(response.waitFor, signal);
 			if (response.errorMessage !== undefined) throw new Error(response.errorMessage);
 
 			for (const block of response.content ?? []) {
