@@ -8,6 +8,7 @@ import {
 	escapeXmlText,
 	formatAdviceForDelivery,
 	formatAdvisorDiagnosticsDump,
+	formatAdvisorFooterStatus,
 	HARD_LIMITS,
 	MAX_ADVISOR_DUMP_BYTES,
 	MAX_DEFERRED_DELIVERY_BYTES,
@@ -107,7 +108,19 @@ function runtimeStatus(): AdvisorRuntimeStatus {
 	};
 }
 
-describe("Advisor presentation and diagnostics through Slice 3A", () => {
+describe("Advisor presentation and diagnostics through Slice 5", () => {
+	it("renders a compact active, queued, paused, or hidden footer status", () => {
+		const status = runtimeStatus();
+		expect(formatAdvisorFooterStatus(status)).toBe("Advisor active");
+		expect(
+			formatAdvisorFooterStatus({ ...status, backlog: true, pendingTranscriptBytes: 2048 }),
+		).toBe("Advisor active · 2048 B queued");
+		expect(formatAdvisorFooterStatus({ ...status, active: false, paused: true })).toBe(
+			"Advisor paused",
+		);
+		expect(formatAdvisorFooterStatus({ ...status, enabled: false, active: false })).toBeUndefined();
+	});
+
 	it("escapes XML text, attributes, and invalid XML control characters", () => {
 		expect(escapeXmlText(`A & B < C > D\u0000 "quoted"`)).toBe(
 			`A &amp; B &lt; C &gt; D\uFFFD "quoted"`,

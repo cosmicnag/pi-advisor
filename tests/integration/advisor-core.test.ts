@@ -95,6 +95,28 @@ describe.sequential("Slice 1 automatic Advisor core", () => {
 		}
 	});
 
+	it("reports the configured model while Advisor is disabled", async () => {
+		const primary = createPrimaryProvider([]);
+		let runtime: AdvisorRuntime | undefined;
+		const config = structuredClone(DEFAULT_ADVISOR_CONFIG);
+		config.model = "configured-provider/configured-model";
+		const harness = await createSessionHarness({
+			provider: primary,
+			extensions: [advisorExtension(config, (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			expect(runtime?.getStatus()).toMatchObject({
+				enabled: false,
+				active: false,
+				model: "configured-provider/configured-model",
+			});
+		} finally {
+			await harness.dispose();
+		}
+	});
+
 	it("keeps a missing configured model inactive without constructing a fallback session", async () => {
 		const primary = createPrimaryProvider([{ content: [{ type: "text", text: "answer" }] }]);
 		let runtime: AdvisorRuntime | undefined;

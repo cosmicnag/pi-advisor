@@ -124,6 +124,56 @@ describe.sequential("Slice 5A runtime configuration apply", () => {
 		}
 	});
 
+	it("updates configured model status while the disabled runtime remains inactive", async () => {
+		const primary = createPrimaryProvider([]);
+		const initial = structuredClone(DEFAULT_ADVISOR_CONFIG);
+		initial.model = "fixture/old-advisor";
+		let runtime: AdvisorRuntime | undefined;
+		let hostContext: ExtensionContext | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			extensions: [
+				{
+					name: "configuration-context-probe",
+					factory: (pi) => {
+						pi.on("session_start", (_event, ctx) => {
+							hostContext = ctx;
+						});
+					},
+				},
+				{
+					name: "pi-advisor-under-test",
+					factory: createPiAdvisorExtension({
+						config: initial,
+						hooks: { onRuntime: (value) => (runtime = value) },
+					}),
+				},
+			],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			if (runtime === undefined || hostContext === undefined) {
+				throw new Error("Expected initialized Advisor runtime and host context");
+			}
+			expect(runtime.getStatus()).toMatchObject({
+				enabled: false,
+				active: false,
+				model: "fixture/old-advisor",
+			});
+			const next = structuredClone(initial);
+			next.model = "fixture/new-advisor";
+			await runtime.applyConfiguration(next, hostContext);
+			expect(runtime.getStatus()).toMatchObject({
+				enabled: false,
+				active: false,
+				model: "fixture/new-advisor",
+			});
+		} finally {
+			await harness.dispose();
+		}
+	});
+
 	it("rebuilds a paused runtime only when preserved usage fits the new soft caps", async () => {
 		const primary = createPrimaryProvider([
 			{ content: [{ type: "text", text: "first primary answer" }] },
