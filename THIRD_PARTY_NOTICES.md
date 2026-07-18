@@ -5,13 +5,13 @@ Pi Advisor is an independent project and is not affiliated with, endorsed by, or
 ## OMP
 
 Pi Advisor is independently implemented and takes product inspiration from OMP's automatic Advisor design.
-No OMP source code or prompt text is included in this package through Slice 5.
+No OMP source code or prompt text is included in this release.
 If a future release directly adapts material, its applicable copyright and license notice must be added here and retained in the adapted source.
 
 ## @juicesharp/rpiv-advisor
 
 `@juicesharp/rpiv-advisor` informed product comparison and coexistence analysis.
-No `@juicesharp/rpiv-advisor` source code is included in this package through Slice 5.
+No `@juicesharp/rpiv-advisor` source code is included in this release.
 If a future release directly adapts an implementation pattern, its applicable copyright and license notice must be added here and retained in the adapted source.
 
 ## Pi

@@ -49,7 +49,7 @@ describe("packed Pi package", () => {
 				}),
 			) as PackResult;
 			const paths = pack.files.map((file) => file.path);
-			expect(pack).toMatchObject({ name: "@ribbons-digital/pi-advisor", version: "0.0.0" });
+			expect(pack).toMatchObject({ name: "@ribbons-digital/pi-advisor", version: "0.1.0" });
 			expect(paths).toContain("src/index.ts");
 			expect(paths).toContain("docs/configuration.md");
 			expect(paths).toContain("LICENSE");
@@ -247,6 +247,48 @@ describe("packed Pi package", () => {
 			expect(explicit.status, explicit.stderr).toBe(0);
 			expect(explicit.stdout).toContain('"id":"explicit-state"');
 			expect(explicit.stdout).toContain('"messageCount":0');
+
+			// The package is unpublished and this E2E is intentionally offline, so the local
+			// package source exercises Pi's update and removal lifecycle. The release-surface
+			// contract separately pins the documented unversioned npm source and commands.
+			const update = runPi(["update", "--extensions"], root, env);
+			expect(update.status, update.stderr).toBe(0);
+
+			const remove = runPi(["remove", installedPackageDir], root, env);
+			expect(remove.status, remove.stderr).toBe(0);
+
+			const removedRpc = runPi(
+				[
+					"--mode",
+					"rpc",
+					"--no-session",
+					"--no-context-files",
+					"--no-skills",
+					"--no-prompt-templates",
+					"--no-themes",
+					"--no-tools",
+				],
+				root,
+				env,
+				`${JSON.stringify({ id: "removed-commands", type: "get_commands" })}\n`,
+			);
+			expect(removedRpc.status, removedRpc.stderr).toBe(0);
+			const removedRecords = removedRpc.stdout
+				.trim()
+				.split("\n")
+				.filter(Boolean)
+				.map((line) => JSON.parse(line) as { id?: string; data?: { commands?: unknown[] } });
+			const removedCommands = removedRecords.find((record) => record.id === "removed-commands")
+				?.data?.commands;
+			expect(Array.isArray(removedCommands)).toBe(true);
+			expect(
+				removedCommands?.some(
+					(command) =>
+						typeof command === "object" &&
+						command !== null &&
+						(command as Record<string, unknown>).name === "advisor",
+				),
+			).toBe(false);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

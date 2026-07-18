@@ -71,9 +71,8 @@ const required = [
 	"THIRD_PARTY_NOTICES.md",
 	"package.json",
 	"src/index.ts",
-	"docs/behavior-contract.md",
 	"docs/configuration.md",
-	"docs/omp-parity.md",
+	"docs/security.md",
 ];
 for (const path of required) {
 	if (!paths.includes(path)) throw new Error(`Missing packed file: ${path}`);
@@ -83,6 +82,7 @@ const forbidden = paths.filter(
 	(path) =>
 		path === "CONTEXT.md" ||
 		path.startsWith("docs/internal/") ||
+		path.startsWith("docs/slice-") ||
 		path.startsWith("tests/") ||
 		path.startsWith("scripts/") ||
 		path.startsWith(".github/"),
