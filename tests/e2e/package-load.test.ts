@@ -96,11 +96,10 @@ describe("packed Pi package", () => {
 					2,
 				)}\n`,
 			);
-			execFileSync(
-				"pnpm",
-				["install", "--offline", "--ignore-workspace", "--config.auto-install-peers=false"],
-				{ cwd: installDir, encoding: "utf8" },
-			);
+			execFileSync("pnpm", ["install", "--ignore-workspace", "--config.auto-install-peers=false"], {
+				cwd: installDir,
+				encoding: "utf8",
+			});
 			const installedPackageDir = join(
 				installDir,
 				"node_modules",
