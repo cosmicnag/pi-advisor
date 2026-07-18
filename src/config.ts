@@ -233,7 +233,36 @@ export function normalizeAdvisorConfig(input: AdvisorConfig): AdvisorConfig {
 			additionalProtectedPaths: [...input.security.additionalProtectedPaths],
 			protectedPathExceptions: [...input.security.protectedPathExceptions],
 		},
-		memorySuggestions: { ...input.memorySuggestions },
+		memorySuggestions: {
+			enabled: input.memorySuggestions.enabled,
+			minTurnsBetweenSuggestions: finiteAtLeast(
+				input.memorySuggestions.minTurnsBetweenSuggestions,
+				0,
+				defaults.memorySuggestions.minTurnsBetweenSuggestions,
+			),
+			minIntervalMs: finiteAtLeast(
+				input.memorySuggestions.minIntervalMs,
+				0,
+				defaults.memorySuggestions.minIntervalMs,
+			),
+			sessionSuggestionCap: finiteAtLeast(
+				input.memorySuggestions.sessionSuggestionCap,
+				0,
+				defaults.memorySuggestions.sessionSuggestionCap,
+			),
+			maxProposedMemoryCharacters: finiteClamped(
+				input.memorySuggestions.maxProposedMemoryCharacters,
+				1,
+				HARD_LIMITS.maxProposedMemoryCharacters,
+				defaults.memorySuggestions.maxProposedMemoryCharacters,
+			),
+			maxProposedMemoryTokens: finiteClamped(
+				input.memorySuggestions.maxProposedMemoryTokens,
+				1,
+				HARD_LIMITS.maxProposedMemoryTokens,
+				defaults.memorySuggestions.maxProposedMemoryTokens,
+			),
+		},
 		persistence: { ...input.persistence },
 	};
 }

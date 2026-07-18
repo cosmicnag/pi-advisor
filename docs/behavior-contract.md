@@ -3,8 +3,8 @@
 ## Status
 
 This document defines the intended public behavior of `@ribbons-digital/pi-advisor`.
-Slice 2 Batch B extends the safe automatic core with themed advice cards, immediate TUI-only late-advice entries, XML-safe model-visible delivery, bounded redacted diagnostics, and explicit delivery-failure accounting.
-Durable configuration, cross-exit lifecycle restoration, context compaction, transcript persistence, and Memory suggestions remain deferred to their separately approved slices.
+Slice 2 Batch C extends the safe automatic core with optional compatible Memory suggestions, strict proposal policy and governors, distinct rendering, and delivery-time capability rechecks.
+Durable configuration, cross-exit lifecycle restoration, context compaction, and transcript persistence remain deferred to their separately approved slices.
 
 ## Roles
 
@@ -30,7 +30,7 @@ A follow-up containing an Advisory note but no new Executor user message is trea
 Silence is the successful normal result when no material issue exists.
 At most one Advisory note is accepted from one Advisor update.
 Normalized content-free approval phrases are suppressed, while an oversized material note is redacted, truncated to both configured note bounds with a marker as space permits, and tagged with truncation metadata.
-Memory suggestions are not considered in Slice 1.
+Batch C considers Memory suggestions only when the compatible capability and strict policy gates are active.
 
 ## Isolation and context
 
@@ -81,10 +81,34 @@ Read-only access and redaction cannot guarantee complete secret protection, and 
 
 ## Memory suggestions
 
-Memory suggestions are unavailable in Slice 1, even if the Executor exposes a compatible `memory_suggest` tool.
-Advisor never calls `memory_save` or `memory_suggest`, imports Memory Lane, writes Memory Lane storage, or approves memory.
-The retained Slice 0 capability probe and reserved configuration fields do not activate runtime integration.
-Any future Memory suggestion behavior requires a separately approved implementation.
+Memory suggestions are optional and capability-oriented.
+Pi Advisor inspects Pi's active public tool inventory without invoking a tool or importing Memory Lane.
+The capability is available only when an active tool named `memory_suggest` has an object schema with required string `text`, explicit `preference` and `project` category support, and explicit `pending` status support.
+Absent, inactive, malformed, incompatible, or inspection-failing capability remains silent in ordinary use and does not degrade ordinary review.
+`/advisor status` and explicit redacted diagnostics expose the bounded capability state and reason.
+
+A Memory suggestion requires structured `memory-suggestion` intent, proposed text, `preference` or `project` category, and one allowed basis.
+Allowed bases are gate milestone, human correction, durable preference, workflow change, repeated mistake, project procedure, and project constraint.
+Memory suggestions prohibit severity and proactive personal category.
+The Advisor policy excludes transient details, speculation, unverified conclusions, ordinary successful steps, one-off uncorrected mistakes, sensitive content, and current-turn-only guidance.
+A repeated-mistake rationale must identify two distinct observed occurrences.
+Ordinary material advice replaces a provisional Memory suggestion from the same update, and a provisional Memory suggestion is discarded if that update fails or is governed.
+
+Proposed memory text is independently checked for secret redaction, character size, and estimated token size.
+Redaction-altered or oversized proposed text suppresses the whole suggestion and is never truncated, delivered, or persisted.
+Successful `memory_save` or `memory_suggest` outcomes in the current observed update suppress an exactly normalized duplicate proposal.
+Cross-update dedupe uses intent, normalized proposed text, category, and basis rather than rationale wording.
+The in-memory release defaults require eight meaningful turns and ten minutes between accepted suggestions, cap one session at five, and bound proposed text to 1,000 characters and approximately 256 estimated tokens.
+The hard proposed-text maxima are 4,000 characters and approximately 1,024 estimated tokens.
+
+Accepted Memory suggestions reuse ordinary active and deferred queues and never trigger an extra completion.
+Their model-visible wrapper tells the Executor to verify or revise the proposal, then call `memory_suggest` with chosen text, category, and explicit `status: "pending"` without another confirmation.
+The pending memory review remains the human approval gate.
+The Executor may revise text or category and briefly explains a decline.
+Delivery rechecks capability compatibility.
+Capability loss changes the card and model-visible wrapper to `could-not-queue`, removes actionable submission guidance, and tells the Executor not to attempt the unavailable call.
+
+Pi Advisor never calls `memory_save` or `memory_suggest`, imports Memory Lane, writes Memory Lane storage, approves a memory, or infers Memory Lane's eventual queued, skipped, failed, or persistence outcome.
 
 ## Configuration ownership
 
@@ -115,8 +139,9 @@ Active-branch entry IDs, not message counts, anchor minimal cursor validation.
 Obvious tree-navigation or branch mismatches reset private Advisor context, while disablement and shutdown invalidate stale work.
 Batch A does not reconstruct equal-length branches or restore advice across process or session exits.
 Update, pending-byte, context, turn, tool-call, note, session-token, and reported-cost governors remain enabled by default.
-Review cadence, re-prime, deferred-retention, Memory, and persistence settings remain reserved and have no Batch B runtime effect.
-In particular, `deferredAdviceRetentionHours` does not expire in-memory Batch B advice and remains reserved for cross-exit lifecycle work.
+Review cadence, re-prime, deferred-retention, and persistence settings remain reserved and have no Batch C runtime effect.
+Memory suggestion cadence, session cap, and proposed-text bounds are active in Batch C.
+In particular, `deferredAdviceRetentionHours` does not expire in-memory Batch C advice and remains reserved for cross-exit lifecycle work.
 Batches A and B add no user-configurable field.
 Its 4,096-key dedupe history, 4,096-note and 1,000,000-byte deferred queue, and 64 KiB delivery batch are fixed protocol bounds.
 Provider, malformed internal tool, governor, and delivery failures are not retried, and failed update messages are removed from private Advisor context.

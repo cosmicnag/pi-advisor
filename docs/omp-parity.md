@@ -2,7 +2,7 @@
 
 ## Status labels
 
-- `implemented` means the safe automatic core through Slice 2 Batch B provides the bounded behavior described in the evidence column.
+- `implemented` means the safe automatic core through Slice 2 Batch C provides the bounded behavior described in the evidence column.
 - `measured only` means Slice 0 established Pi 0.80.7 behavior but the current runtime does not add a product workflow around it.
 - `intentional difference` means public Pi APIs or product boundaries require a documented divergence.
 - `deferred` means the capability requires a separately approved later batch or slice.
@@ -40,7 +40,7 @@
 | Fullscreen multi-pane configuration                | deferred               | Batch B provides `/advisor on`, `off`, `status`, and bounded `dump`, but no fullscreen configuration                   |
 | Mutating Advisor tools                             | deferred               | Requires a separate advanced security specification                                                                    |
 | Destructive-command interception                   | out of scope           | Must be a separate extension independent of Advisor activation                                                         |
-| Memory Lane integration                            | deferred               | Slice 1 performs no Memory calls or suggestions                                                                        |
+| Optional Memory suggestion handoff                 | implemented            | Detects compatible active capability, delivers bounded pending-submission guidance, and never calls Memory Lane        |
 | Product telemetry                                  | intentional difference | Pi Advisor sends none                                                                                                  |
 
 ## rpiv-advisor coexistence

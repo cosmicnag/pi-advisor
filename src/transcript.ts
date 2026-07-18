@@ -5,6 +5,7 @@ import type {
 	TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
 
+import { normalizeMemoryTextForDedupe } from "./advice.js";
 import { redactSecrets, truncateUtf8TailBytes } from "./redaction.js";
 
 export const ADVISOR_CUSTOM_TYPE = "pi-advisor-note";
@@ -109,6 +110,34 @@ export function isMeaningfulExecutorTurn(event: TurnEndEvent, entries: SessionEn
 	if (hasAdvisorNote && !hasExecutorUserMessage) return false;
 	const assistantContent = contentText(event.message.content).trim();
 	return assistantContent.length > 0 || event.toolResults.length > 0;
+}
+
+export function successfulMemoryToolTexts(entries: SessionEntry[]): Set<string> {
+	const calls = new Map<string, string>();
+	const successful = new Set<string>();
+	for (const entry of entries) {
+		if (!isMessageEntry(entry)) continue;
+		const message = entry.message;
+		if (message.role === "assistant") {
+			for (const content of message.content) {
+				if (
+					content.type !== "toolCall" ||
+					(content.name !== "memory_save" && content.name !== "memory_suggest")
+				) {
+					continue;
+				}
+				const text = (content.arguments as Record<string, unknown>).text;
+				if (typeof text === "string" && text.trim().length > 0) {
+					calls.set(content.id, normalizeMemoryTextForDedupe(text));
+				}
+			}
+			continue;
+		}
+		if (message.role !== "toolResult" || message.isError) continue;
+		const text = calls.get(message.toolCallId);
+		if (text !== undefined) successful.add(text);
+	}
+	return successful;
 }
 
 export function renderAdvisorDelta(

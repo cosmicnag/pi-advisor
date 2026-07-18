@@ -9,20 +9,58 @@ import { escapeXmlAttribute, escapeXmlText } from "./presentation.js";
 import { estimateTokens, redactSecrets } from "./redaction.js";
 
 export type AdviceSeverity = "nit" | "concern" | "blocker";
+export type MemorySuggestionCategory = "preference" | "project";
+export type MemorySuggestionBasis =
+	| "gate-milestone"
+	| "human-correction"
+	| "durable-preference"
+	| "workflow-change"
+	| "repeated-mistake"
+	| "project-procedure"
+	| "project-constraint";
 
-export interface AcceptedAdvice {
+interface AcceptedAdviceBase {
 	note: string;
-	severity: AdviceSeverity;
 	truncated: boolean;
 	originalCharacters: number;
 	originalEstimatedTokens: number;
 	createdAt: number;
 }
 
+export interface AcceptedReviewAdvice extends AcceptedAdviceBase {
+	intent: "review";
+	severity: AdviceSeverity;
+}
+
+export interface AcceptedMemorySuggestion extends AcceptedAdviceBase {
+	intent: "memory-suggestion";
+	memory: {
+		text: string;
+		category: MemorySuggestionCategory;
+		basis: MemorySuggestionBasis;
+	};
+}
+
+export type AcceptedAdvice = AcceptedReviewAdvice | AcceptedMemorySuggestion;
+
+export interface MemorySuggestionPolicyContext {
+	enabled: boolean;
+	capabilityAvailable: boolean;
+	turnNumber: number;
+	now: number;
+	admittedCount: number;
+	lastDeliveredTurn?: number;
+	lastDeliveredAt?: number;
+	successfulMemoryTexts: ReadonlySet<string>;
+}
+
 export interface AdviceCollector {
 	accepted?: AcceptedAdvice;
 	validCalls: number;
 	suppressedCalls: number;
+	memoryPolicySuppressedCalls: number;
+	memoryLimitSuppressedCalls: number;
+	memoryPolicy?: MemorySuggestionPolicyContext;
 }
 
 const CONTENT_FREE = new Set([
@@ -42,6 +80,15 @@ const CONTENT_FREE = new Set([
 	"on track",
 ]);
 const TRUNCATION_MARKER = "\n[Advisory note truncated to configured limit]";
+const MEMORY_SUGGESTION_BASES = [
+	"gate-milestone",
+	"human-correction",
+	"durable-preference",
+	"workflow-change",
+	"repeated-mistake",
+	"project-procedure",
+	"project-constraint",
+] as const;
 
 export function normalizeContentFreeAdvice(input: string): string {
 	return input
@@ -98,14 +145,24 @@ export function normalizeAdviceForDedupe(input: string): string {
 		.trim();
 }
 
-export type AdviceDedupeIdentity = Pick<AcceptedAdvice, "note" | "severity">;
+export function normalizeMemoryTextForDedupe(input: string): string {
+	return normalizeAdviceForDedupe(input);
+}
+
+export type AdviceDedupeIdentity =
+	| (Pick<AcceptedReviewAdvice, "note" | "severity"> & { intent?: "review" })
+	| Pick<AcceptedMemorySuggestion, "intent" | "memory">;
 
 export function adviceDedupeKey(advice: AdviceDedupeIdentity): string {
-	const identity = JSON.stringify([
-		"review",
-		advice.severity,
-		normalizeAdviceForDedupe(advice.note),
-	]);
+	const identity =
+		advice.intent === "memory-suggestion"
+			? JSON.stringify([
+					"memory-suggestion",
+					advice.memory.category,
+					advice.memory.basis,
+					normalizeMemoryTextForDedupe(advice.memory.text),
+				])
+			: JSON.stringify(["review", advice.severity, normalizeAdviceForDedupe(advice.note)]);
 	return createHash("sha256").update(identity).digest("hex");
 }
 
@@ -171,7 +228,7 @@ function truncateCharacters(
 	return `${output.join("")}${markerText}`;
 }
 
-export function boundAdvice(note: string, config: AdvisorConfig): AcceptedAdvice {
+function boundNote(note: string, config: AdvisorConfig): AcceptedAdviceBase {
 	const safeNote = redactSecrets(note).text;
 	const originalCharacters = Array.from(safeNote).length;
 	const originalEstimatedTokens = estimateTokens(safeNote);
@@ -183,7 +240,6 @@ export function boundAdvice(note: string, config: AdvisorConfig): AcceptedAdvice
 	const truncated = originalCharacters > maxCharacters || originalEstimatedTokens > maxTokens;
 	return {
 		note: truncated ? truncateCharacters(safeNote, maxCharacters, maxTokens * 4) : safeNote,
-		severity: "concern",
 		truncated,
 		originalCharacters,
 		originalEstimatedTokens,
@@ -191,13 +247,104 @@ export function boundAdvice(note: string, config: AdvisorConfig): AcceptedAdvice
 	};
 }
 
+export function boundAdvice(note: string, config: AdvisorConfig): AcceptedReviewAdvice {
+	return { ...boundNote(note, config), intent: "review", severity: "concern" };
+}
+
+function suppressMemory(collector: AdviceCollector, kind: "policy" | "limit"): void {
+	collector.suppressedCalls++;
+	if (kind === "policy") collector.memoryPolicySuppressedCalls++;
+	else collector.memoryLimitSuppressedCalls++;
+}
+
+function acceptMemorySuggestion(
+	input: {
+		note: string;
+		memory: AcceptedMemorySuggestion["memory"];
+	},
+	config: AdvisorConfig,
+	collector: AdviceCollector,
+): AcceptedMemorySuggestion | undefined {
+	const policy = collector.memoryPolicy;
+	if (
+		policy === undefined ||
+		!policy.enabled ||
+		!policy.capabilityAvailable ||
+		input.note.trim().length === 0 ||
+		input.memory.text.trim().length === 0 ||
+		isContentFreeAdvice(input.note)
+	) {
+		suppressMemory(collector, "policy");
+		return undefined;
+	}
+
+	const redactedNote = redactSecrets(input.note);
+	const redactedMemory = redactSecrets(input.memory.text);
+	if (redactedNote.redactions > 0 || redactedMemory.redactions > 0) {
+		suppressMemory(collector, "policy");
+		return undefined;
+	}
+	const proposedCharacters = Array.from(input.memory.text).length;
+	const proposedTokens = estimateTokens(input.memory.text);
+	const maximumCharacters = Math.min(
+		config.memorySuggestions.maxProposedMemoryCharacters,
+		HARD_LIMITS.maxProposedMemoryCharacters,
+	);
+	const maximumTokens = Math.min(
+		config.memorySuggestions.maxProposedMemoryTokens,
+		HARD_LIMITS.maxProposedMemoryTokens,
+	);
+	if (proposedCharacters > maximumCharacters || proposedTokens > maximumTokens) {
+		suppressMemory(collector, "policy");
+		return undefined;
+	}
+	const normalizedText = normalizeMemoryTextForDedupe(input.memory.text);
+	if (policy.successfulMemoryTexts.has(normalizedText)) {
+		suppressMemory(collector, "policy");
+		return undefined;
+	}
+	if (
+		policy.admittedCount >= config.memorySuggestions.sessionSuggestionCap ||
+		(policy.lastDeliveredTurn !== undefined &&
+			policy.turnNumber - policy.lastDeliveredTurn <
+				config.memorySuggestions.minTurnsBetweenSuggestions) ||
+		(policy.lastDeliveredAt !== undefined &&
+			policy.now - policy.lastDeliveredAt < config.memorySuggestions.minIntervalMs)
+	) {
+		suppressMemory(collector, "limit");
+		return undefined;
+	}
+	return {
+		...boundNote(input.note, config),
+		intent: "memory-suggestion",
+		memory: { ...input.memory },
+	};
+}
+
 export type AdviceDelivery = "active" | "deferred";
+export type MemorySuggestionQueueState = "could-not-queue";
 
 export function formatAdviceForDelivery(
 	advice: AcceptedAdvice,
 	delivery: AdviceDelivery,
 	stale: boolean,
+	queueState?: MemorySuggestionQueueState,
 ): string {
+	if (advice.intent === "memory-suggestion") {
+		const attributes = [
+			`intent="${escapeXmlAttribute(advice.intent)}"`,
+			`category="${escapeXmlAttribute(advice.memory.category)}"`,
+			`basis="${escapeXmlAttribute(advice.memory.basis)}"`,
+			`delivery="${escapeXmlAttribute(delivery)}"`,
+			`stale="${escapeXmlAttribute(String(stale))}"`,
+			...(queueState === undefined ? [] : [`queue-state="${escapeXmlAttribute(queueState)}"`]),
+		];
+		const guidance =
+			queueState === "could-not-queue"
+				? "The compatible memory_suggest capability is no longer available. Do not attempt this tool call. Briefly tell the user the proposal could not be queued."
+				: `${stale ? "First verify that this still applies. " : ""}Verify or revise the proposed durable memory, then call memory_suggest with the chosen text, category, and status "pending" without asking for another confirmation. If the proposal is unsuitable, briefly explain why to the user.`;
+		return `<advisor-note ${attributes.join(" ")}>\n<rationale>${escapeXmlText(advice.note)}</rationale>\n<proposed-memory>${escapeXmlText(advice.memory.text)}</proposed-memory>\n<guidance>${escapeXmlText(guidance)}</guidance>\n</advisor-note>`;
+	}
 	const guidance = stale
 		? "Verify this still applies, then weigh it rather than obeying blindly."
 		: "Weigh this rather than obeying blindly.";
@@ -218,21 +365,58 @@ export function createAdviseTool(
 		name: "advise",
 		label: "advise",
 		description:
-			"Record at most one concise material review note. Do not call this tool when the Executor is on track.",
-		parameters: Type.Object(
-			{
-				note: Type.String({ minLength: 1 }),
-				severity: Type.Optional(StringEnum(["nit", "concern", "blocker"] as const)),
-				intent: Type.Optional(StringEnum(["review"] as const)),
-			},
-			{ additionalProperties: false },
-		),
+			"Record at most one concise material review note or eligible durable Memory suggestion. Do not call this tool when the Executor is on track.",
+		parameters: Type.Union([
+			Type.Object(
+				{
+					note: Type.String({ minLength: 1 }),
+					severity: Type.Optional(StringEnum(["nit", "concern", "blocker"] as const)),
+					intent: Type.Optional(StringEnum(["review"] as const)),
+				},
+				{ additionalProperties: false },
+			),
+			Type.Object(
+				{
+					note: Type.String({ minLength: 1 }),
+					intent: StringEnum(["memory-suggestion"] as const),
+					memory: Type.Object(
+						{
+							text: Type.String({ minLength: 1 }),
+							category: StringEnum(["preference", "project"] as const),
+							basis: StringEnum(MEMORY_SUGGESTION_BASES),
+						},
+						{ additionalProperties: false },
+					),
+				},
+				{ additionalProperties: false },
+			),
+		]),
 		execute(_id, params) {
 			collector.validCalls++;
-			const input = params as { note: string; severity?: AdviceSeverity; intent?: "review" };
-			if (collector.accepted !== undefined || isContentFreeAdvice(input.note)) {
+			const input = params as
+				| { note: string; severity?: AdviceSeverity; intent?: "review" }
+				| {
+						note: string;
+						intent: "memory-suggestion";
+						memory: AcceptedMemorySuggestion["memory"];
+				  };
+			if (input.intent === "memory-suggestion") {
+				if (collector.accepted?.intent === "review") {
+					suppressMemory(collector, "policy");
+				} else if (collector.accepted !== undefined) {
+					collector.suppressedCalls++;
+				} else {
+					const accepted = acceptMemorySuggestion(input, config, collector);
+					if (accepted !== undefined) collector.accepted = accepted;
+				}
+			} else if (isContentFreeAdvice(input.note)) {
+				collector.suppressedCalls++;
+			} else if (collector.accepted?.intent === "review") {
 				collector.suppressedCalls++;
 			} else {
+				if (collector.accepted?.intent === "memory-suggestion") {
+					suppressMemory(collector, "policy");
+				}
 				collector.accepted = {
 					...boundAdvice(input.note, config),
 					severity: input.severity ?? "concern",

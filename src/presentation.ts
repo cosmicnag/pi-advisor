@@ -1,16 +1,20 @@
 import type { CustomEntry, MessageRenderer, Theme } from "@earendil-works/pi-coding-agent";
 import { Box, Container, Spacer, Text, type Component } from "@earendil-works/pi-tui";
 
-import type { AdviceDelivery, AdviceSeverity } from "./advice.js";
+import type {
+	AdviceDelivery,
+	AdviceSeverity,
+	MemorySuggestionBasis,
+	MemorySuggestionCategory,
+	MemorySuggestionQueueState,
+} from "./advice.js";
 import { HARD_LIMITS } from "./config.js";
 import { MAX_DEFERRED_DELIVERY_BYTES, MAX_PENDING_ADVICE_ITEMS } from "./delivery.js";
 
 export const ADVISOR_LATE_ENTRY_TYPE = "pi-advisor-late-note";
 
-export interface AdvicePresentationNote {
-	intent: "review";
+interface AdvicePresentationBase {
 	note: string;
-	severity: AdviceSeverity;
 	delivery: AdviceDelivery;
 	stale?: boolean;
 	truncated: boolean;
@@ -21,8 +25,28 @@ export interface AdvicePresentationNote {
 	displayedInEntry?: boolean;
 }
 
-export interface AdviceMessageDetails extends Partial<AdvicePresentationNote> {
+export interface ReviewAdvicePresentationNote extends AdvicePresentationBase {
+	intent: "review";
+	severity: AdviceSeverity;
+}
+
+export interface MemorySuggestionPresentationNote extends AdvicePresentationBase {
+	intent: "memory-suggestion";
+	memory: {
+		text: string;
+		category: MemorySuggestionCategory;
+		basis: MemorySuggestionBasis;
+	};
+	queueState?: MemorySuggestionQueueState;
+}
+
+export type AdvicePresentationNote =
+	| ReviewAdvicePresentationNote
+	| MemorySuggestionPresentationNote;
+
+export interface AdviceMessageDetails {
 	notes: AdvicePresentationNote[];
+	[key: string]: unknown;
 }
 
 export interface LateAdviceEntryData {
@@ -76,6 +100,22 @@ function isAdviceDelivery(value: unknown): value is AdviceDelivery {
 	return value === "active" || value === "deferred";
 }
 
+function isMemoryCategory(value: unknown): value is MemorySuggestionCategory {
+	return value === "preference" || value === "project";
+}
+
+function isMemoryBasis(value: unknown): value is MemorySuggestionBasis {
+	return (
+		value === "gate-milestone" ||
+		value === "human-correction" ||
+		value === "durable-preference" ||
+		value === "workflow-change" ||
+		value === "repeated-mistake" ||
+		value === "project-procedure" ||
+		value === "project-constraint"
+	);
+}
+
 function isFiniteNonNegative(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
@@ -84,20 +124,14 @@ function isRenderableTimestamp(value: unknown): value is number {
 	return isFiniteNonNegative(value) && value <= 8_640_000_000_000_000;
 }
 
-function noteFitsPresentationBound(value: unknown): value is string {
-	if (typeof value !== "string" || value.length > HARD_LIMITS.maxAdviceCharacters * 2) {
-		return false;
-	}
-	return Array.from(value).length <= HARD_LIMITS.maxAdviceCharacters;
+function textFitsBound(value: unknown, maximumCharacters: number): value is string {
+	if (typeof value !== "string" || value.length > maximumCharacters * 2) return false;
+	return Array.from(value).length <= maximumCharacters;
 }
 
-function parsePresentationNote(value: unknown): AdvicePresentationNote | undefined {
-	if (typeof value !== "object" || value === null) return undefined;
-	const note = value as Record<string, unknown>;
+function parsePresentationBase(note: Record<string, unknown>): AdvicePresentationBase | undefined {
 	if (
-		note.intent !== "review" ||
-		!noteFitsPresentationBound(note.note) ||
-		!isAdviceSeverity(note.severity) ||
+		!textFitsBound(note.note, HARD_LIMITS.maxAdviceCharacters) ||
 		!isAdviceDelivery(note.delivery) ||
 		typeof note.truncated !== "boolean" ||
 		!isFiniteNonNegative(note.originalCharacters) ||
@@ -107,9 +141,7 @@ function parsePresentationNote(value: unknown): AdvicePresentationNote | undefin
 		return undefined;
 	}
 	return {
-		intent: "review",
 		note: note.note,
-		severity: note.severity,
 		delivery: note.delivery,
 		...(note.stale === true ? { stale: true } : {}),
 		truncated: note.truncated,
@@ -120,6 +152,38 @@ function parsePresentationNote(value: unknown): AdvicePresentationNote | undefin
 			? { deliveryId: note.deliveryId }
 			: {}),
 		...(note.displayedInEntry === true ? { displayedInEntry: true } : {}),
+	};
+}
+
+function parsePresentationNote(value: unknown): AdvicePresentationNote | undefined {
+	if (typeof value !== "object" || value === null) return undefined;
+	const note = value as Record<string, unknown>;
+	const base = parsePresentationBase(note);
+	if (base === undefined) return undefined;
+	if (note.intent === "review" && isAdviceSeverity(note.severity)) {
+		return { ...base, intent: "review", severity: note.severity };
+	}
+	if (
+		note.intent !== "memory-suggestion" ||
+		typeof note.memory !== "object" ||
+		note.memory === null
+	) {
+		return undefined;
+	}
+	const memory = note.memory as Record<string, unknown>;
+	if (
+		!textFitsBound(memory.text, HARD_LIMITS.maxProposedMemoryCharacters) ||
+		!isMemoryCategory(memory.category) ||
+		!isMemoryBasis(memory.basis) ||
+		(note.queueState !== undefined && note.queueState !== "could-not-queue")
+	) {
+		return undefined;
+	}
+	return {
+		...base,
+		intent: "memory-suggestion",
+		memory: { text: memory.text, category: memory.category, basis: memory.basis },
+		...(note.queueState === "could-not-queue" ? { queueState: note.queueState } : {}),
 	};
 }
 
@@ -170,18 +234,29 @@ export function renderAdviceCards(
 	const container = new Container();
 	for (const [index, note] of notes.entries()) {
 		if (index > 0) container.addChild(new Spacer(1));
-		const color = severityColor(note.severity);
+		const color = note.intent === "review" ? severityColor(note.severity) : "accent";
 		const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
-		const heading = `${theme.fg(color, theme.bold("Advisor"))} ${theme.fg(
-			color,
-			note.severity.toUpperCase(),
-		)}`;
+		const label =
+			note.intent === "review"
+				? note.severity.toUpperCase()
+				: note.queueState === "could-not-queue"
+					? "MEMORY SUGGESTION - COULD NOT QUEUE"
+					: "MEMORY SUGGESTION";
+		const heading = `${theme.fg(color, theme.bold("Advisor"))} ${theme.fg(color, label)}`;
 		box.addChild(new Text(heading, 0, 0));
 		box.addChild(new Spacer(1));
 		box.addChild(new Text(theme.fg("customMessageText", sanitizeTerminalText(note.note)), 0, 0));
+		if (note.intent === "memory-suggestion") {
+			box.addChild(new Spacer(1));
+			box.addChild(new Text(theme.fg("muted", "Proposed memory"), 0, 0));
+			box.addChild(
+				new Text(theme.fg("customMessageText", sanitizeTerminalText(note.memory.text)), 0, 0),
+			);
+		}
 		const metadata = [
 			formatDeliveryLabel(note.delivery),
 			formatAge(note.createdAt, now),
+			...(note.intent === "memory-suggestion" ? [note.memory.category, note.memory.basis] : []),
 			...(note.stale ? ["potentially stale"] : []),
 		];
 		box.addChild(new Spacer(1));

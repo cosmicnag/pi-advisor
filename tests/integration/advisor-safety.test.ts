@@ -408,6 +408,7 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			if (runtime === undefined) throw new Error("Expected Advisor runtime");
 			const activeRuntime = runtime;
 			const advice: AcceptedAdvice = {
+				intent: "review",
 				note: "Acknowledge this direct append.",
 				severity: "concern",
 				truncated: false,
@@ -687,6 +688,7 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 				branchWindow: { expectedIndex: number };
 			}>;
 			const seededAdvice: AcceptedAdvice = {
+				intent: "review",
 				note: "Existing queued note.",
 				severity: "concern",
 				truncated: false,
