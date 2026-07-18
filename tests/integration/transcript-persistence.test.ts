@@ -1,3 +1,6 @@
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
 import { SessionManager, type InlineExtension } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 
@@ -5,6 +8,7 @@ import {
 	ADVISOR_TRANSCRIPT_ENTRY_TYPE,
 	createPiAdvisorExtension,
 	DEFAULT_ADVISOR_CONFIG,
+	MAX_PERSISTED_TRANSCRIPT_RECORD_BYTES,
 	parsePersistedAdvisorTranscriptRecord,
 	type AdvisorConfig,
 	type AdvisorRuntime,
@@ -192,7 +196,7 @@ describe.sequential("Slice 4B optional transcript persistence", () => {
 						type: "toolCall",
 						id: "persistence-read",
 						name: "read",
-						arguments: { path: "does-not-exist.txt" },
+						arguments: { path: "large-persisted-result.txt" },
 					},
 				],
 				stopReason: "toolUse",
@@ -223,6 +227,12 @@ describe.sequential("Slice 4B optional transcript persistence", () => {
 			extensions: [extensionFor(configFor(advisor, true), (value) => (runtime = value))],
 			tools: [],
 			mode: "rpc",
+			setup: async (cwd) => {
+				await writeFile(
+					join(cwd, "large-persisted-result.txt"),
+					`API_KEY=persisted-tool-secret-value\n${"large tool result line\n".repeat(8_000)}`,
+				);
+			},
 		});
 		try {
 			await harness.session.prompt("persist a bounded review");
@@ -239,6 +249,16 @@ describe.sequential("Slice 4B optional transcript persistence", () => {
 			});
 			expect(records.every((record) => record !== undefined)).toBe(true);
 			const serialized = JSON.stringify(records);
+			const persistedToolResult = records.find((record) => record?.kind === "advisor-tool-result");
+			expect(persistedToolResult?.kind).toBe("advisor-tool-result");
+			if (persistedToolResult?.kind !== "advisor-tool-result") {
+				throw new Error("Expected persisted Advisor tool result");
+			}
+			expect(persistedToolResult.text).toContain("[REDACTED]");
+			expect(persistedToolResult.text).not.toContain("persisted-tool-secret-value");
+			expect(Buffer.byteLength(JSON.stringify(persistedToolResult), "utf8")).toBeLessThanOrEqual(
+				MAX_PERSISTED_TRANSCRIPT_RECORD_BYTES,
+			);
 			expect(serialized).toContain('"kind":"update"');
 			expect(serialized).toContain('"kind":"advisor-tool-call"');
 			expect(serialized).toContain('"kind":"advisor-tool-result"');

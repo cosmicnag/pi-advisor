@@ -2,8 +2,8 @@
 
 ## Status labels
 
-- `implemented` means the completed Slice 4A safe automatic core provides the bounded behavior described in the evidence column.
-- `partial` means the approved Batch A portion is implemented while a named later batch owns the remaining capability.
+- `implemented` means the completed Slice 4 safe automatic core provides the bounded behavior described in the evidence column.
+- `partial` means a named later slice owns the remaining capability.
 - `measured only` means Slice 0 established Pi 0.80.7 behavior but the current runtime does not add a product workflow around it.
 - `intentional difference` means public Pi APIs or product boundaries require a documented divergence.
 - `deferred` means the capability requires a separately approved later batch or slice.

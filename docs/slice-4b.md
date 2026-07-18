@@ -63,7 +63,7 @@ Private Advisor responses, compaction prompts and summaries, transcript records,
 ## Verification
 
 - `pnpm exec vitest run tests/unit/advisor-policy.test.ts tests/integration/context-policy.test.ts tests/integration/retry-resilience.test.ts --reporter=dot` - passed 43 focused policy, long-context, re-prime, retry, suppression, and accounting tests across 3 files.
-- `pnpm verify` - passed typecheck, lint, formatting, and 165 unit, contract, and integration tests across 18 files.
+- `pnpm verify` - passed typecheck, lint, formatting, and 167 unit, contract, and integration tests across 18 files after lifecycle persistence follow-up fixes.
 - `pnpm test:e2e` - passed the packed Pi installation and default-inactive package scenario.
 - `pnpm pack:validate` - passed with 30 package files validated.
 - `git diff --check` - passed with no whitespace errors.
@@ -81,5 +81,5 @@ Redaction reduces secret exposure but cannot guarantee detection of every sensit
 
 ## Review status
 
-Direct Opus 4.8 review is owned by the parent session after this implementation handoff.
-No PR is opened by this worker.
+Direct Opus 4.8 review reached consensus after the lifecycle persistence follow-up fixes.
+CodeRabbit findings were resolved, CI passed, and PR #33 merged as `ff62c2e`.
