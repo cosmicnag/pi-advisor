@@ -2,10 +2,9 @@
 
 Pi Advisor provides automatic secondary review of a primary Pi agent session while keeping reviewer state separate from the primary conversation.
 
-## Slice 4 terminology status
+## Slice 5A terminology status
 
-The implemented runtime provides Executor, Advisor, Advisor update, Advisor retry, active-branch Cursor, Epoch, Meaningful Executor turn, Executor reasoning, Advisory note, Memory suggestion, retained Deferred advice, compatible resume, lifecycle-only persisted state, Re-prime, optional Persisted Advisor transcript, Advice card, Session activation, in-memory caller configuration, Fixed Advisor policy, User instructions, tagged Project instructions, Protected path, Protected-path exception, and Destructive-command guard boundaries.
-Durable User configuration and durable Project configuration remain reserved later-slice terms.
+The implemented runtime provides Executor, Advisor, Advisor update, Advisor retry, active-branch Cursor, Epoch, Meaningful Executor turn, Executor reasoning, Advisory note, Memory suggestion, retained Deferred advice, compatible resume, lifecycle-only persisted state, Re-prime, optional Persisted Advisor transcript, Advice card, Session activation, durable User configuration, trusted Project configuration, Fixed Advisor policy, User instructions, tagged Project instructions, Protected path, Protected-path exception, and Destructive-command guard boundaries.
 
 ## Language
 
@@ -77,17 +76,17 @@ _Avoid_: Enabled setting, project activation
 
 **User default activation**:
 A default controlling whether new TUI and RPC sessions begin with Advisor active while JSON and print automation remain opt-in.
-Slice 1 accepts it from trusted in-memory caller configuration, while a durable user-owned preference remains deferred.
+Slice 5A loads it from durable User configuration and applies it only to TUI and RPC sessions.
 _Avoid_: Global activation, automatic project activation, automation default
 
 **User configuration**:
 Reserved durable user-owned policy controlling the Advisor model, effort, activation default, spending, cadence, and persistence.
-Slice 1 accepts only an equivalent complete in-memory object from a trusted programmatic caller.
+Slice 5A loads it from `~/.pi/agent/WATCHDOG.yml`, while an equivalent trusted programmatic object remains the fallback when no User file exists.
 _Avoid_: Global config, unrestricted base config
 
 **Project configuration**:
 Reserved trusted repository-specific specialization that may add instructions or reduce tools and limits but cannot control activation, model choice, spending increases, or persistence.
-Slice 1 tags Pi-provided project context for review but does not load or merge Project configuration.
+Slice 5A loads Project WATCHDOG configuration only when Pi reports active project trust and merges it through the narrow-only ownership boundary.
 _Avoid_: Project activation, repository default, project spending policy
 
 **Fixed Advisor policy**:
@@ -112,7 +111,7 @@ _Avoid_: Ignored file, hidden file, redacted output
 
 **Protected-path exception**:
 A narrow trusted-caller rule that deliberately permits Advisor access to one otherwise protected target.
-A durable User configuration owner remains deferred.
+Only durable User configuration may create this exception.
 _Avoid_: Project exception, protection disablement, unrestricted access
 
 **User interruption**:
@@ -129,7 +128,7 @@ _Avoid_: Advisor blocker, Advisory note enforcement, Advisor tool interruption
 
 **Developer**: Does Project configuration turn the Advisor on when I open this repository?
 
-**Domain expert**: No. Slice 1 does not load Project configuration, and any future Project configuration may customize review but cannot activate it.
+**Domain expert**: No. Trusted Project configuration may customize or narrow review but cannot activate it.
 
 **Developer**: What enters the Executor's context after an Advisor update?
 

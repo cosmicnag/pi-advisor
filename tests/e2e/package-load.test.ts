@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -20,7 +20,7 @@ function runPi(args: string[], env: NodeJS.ProcessEnv, input?: string) {
 }
 
 describe("packed Pi package", () => {
-	it("installs through Pi with Advisor registered but inactive by default", () => {
+	it("installs through Pi and applies WATCHDOG activation only in approved run modes", () => {
 		const root = mkdtempSync(join(tmpdir(), "pi-advisor-packed-e2e-"));
 		const unpacked = join(root, "unpacked");
 		const agentDir = join(root, "agent");
@@ -92,6 +92,68 @@ describe("packed Pi package", () => {
 				}),
 			).toBe(true);
 
+			writeFileSync(
+				join(agentDir, "WATCHDOG.yml"),
+				"version: 1\ndefaultEnabled: true\nmodel: missing/provider\neffort: low\n",
+			);
+			const persistedRpc = runPi(
+				[
+					"--mode",
+					"rpc",
+					"--no-session",
+					"--no-context-files",
+					"--no-skills",
+					"--no-prompt-templates",
+					"--no-themes",
+					"--no-tools",
+				],
+				env,
+				`${JSON.stringify({ id: "persisted-status", type: "prompt", message: "/advisor status" })}\n`,
+			);
+			expect(persistedRpc.status, persistedRpc.stderr).toBe(0);
+			expect(persistedRpc.stdout).toContain("Effort: low");
+			expect(persistedRpc.stdout).toContain(
+				"Configured Advisor model missing/provider is unavailable. No fallback was selected.",
+			);
+
+			const persistedJson = runPi(
+				[
+					"--mode",
+					"json",
+					"--no-session",
+					"--no-context-files",
+					"--no-skills",
+					"--no-prompt-templates",
+					"--no-themes",
+					"--no-tools",
+					"-p",
+					"/advisor status",
+				],
+				env,
+			);
+			expect(persistedJson.status, persistedJson.stderr).toBe(0);
+			expect(persistedJson.stdout).not.toContain("No fallback was selected");
+
+			writeFileSync(join(agentDir, "WATCHDOG.yml"), "version: [malformed\n");
+			const malformed = runPi(
+				[
+					"--mode",
+					"rpc",
+					"--no-session",
+					"--no-context-files",
+					"--no-skills",
+					"--no-prompt-templates",
+					"--no-themes",
+					"--no-tools",
+				],
+				env,
+				`${JSON.stringify({ id: "malformed-status", type: "prompt", message: "/advisor status" })}\n`,
+			);
+			expect(malformed.status, malformed.stderr).toBe(0);
+			expect(malformed.stdout).toContain("contains malformed YAML and was ignored");
+			expect(malformed.stdout).not.toContain("No fallback was selected");
+
+			rmSync(join(agentDir, "WATCHDOG.yml"));
 			const explicit = runPi(
 				[
 					"--mode",
