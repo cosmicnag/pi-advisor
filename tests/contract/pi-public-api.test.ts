@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
 	AgentSession,
+	calculateContextTokens,
 	createAgentSession,
 	DefaultResourceLoader,
+	estimateTokens,
 	ModelRegistry,
 	SessionManager,
 	type ExtensionAPI,
@@ -74,6 +76,8 @@ function expectMethod(target: object, name: string): void {
 describe("pinned Pi 0.80.7 public API contract", () => {
 	it("exports the required SDK constructors and methods", () => {
 		expect(createAgentSession).toBeTypeOf("function");
+		expect(calculateContextTokens).toBeTypeOf("function");
+		expect(estimateTokens).toBeTypeOf("function");
 		expect(DefaultResourceLoader).toBeTypeOf("function");
 		expectMethod(SessionManager, "inMemory");
 		expectMethod(SessionManager.prototype, "getBranch");
@@ -82,6 +86,7 @@ describe("pinned Pi 0.80.7 public API contract", () => {
 		expectMethod(AgentSession.prototype, "prompt");
 		expectMethod(AgentSession.prototype, "subscribe");
 		expectMethod(AgentSession.prototype, "compact");
+		expectMethod(AgentSession.prototype, "abortCompaction");
 		expectMethod(AgentSession.prototype, "abort");
 		expectMethod(AgentSession.prototype, "dispose");
 		expectMethod(ModelRegistry.prototype, "find");

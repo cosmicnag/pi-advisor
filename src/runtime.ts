@@ -1,8 +1,10 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import {
+	calculateContextTokens,
 	createAgentSession,
 	DefaultResourceLoader,
+	estimateTokens as estimatePiMessageTokens,
 	getAgentDir,
 	SessionManager,
 	SettingsManager,
@@ -42,7 +44,7 @@ import {
 	type LateAdviceEntryData,
 } from "./presentation.js";
 import {
-	estimateTokens,
+	estimateTokens as estimateTextTokens,
 	redactSecrets,
 	truncateUtf8Bytes,
 	truncateUtf8TailBytes,
@@ -127,6 +129,66 @@ export interface AdvisorUsageTotals {
 	costUsd: number;
 }
 
+export interface AdvisorContextEstimate {
+	tokens: number;
+	usageTokens: number;
+	trailingEstimateTokens: number;
+	source: "usage-plus-estimate" | "estimate-only";
+}
+
+function validAssistantUsage(message: AgentMessage): message is AssistantMessage {
+	return (
+		message.role === "assistant" &&
+		message.stopReason !== "aborted" &&
+		message.stopReason !== "error" &&
+		calculateContextTokens(message.usage) > 0
+	);
+}
+
+/** Estimate the next Advisor request using Pi's public usage and token-estimation APIs. */
+export function estimateAdvisorContext(
+	messages: readonly AgentMessage[],
+	pendingUpdate: string,
+	systemPrompt: string,
+	allowUsageAnchor = true,
+): AdvisorContextEstimate {
+	const pendingMessage: AgentMessage = {
+		role: "user",
+		content: pendingUpdate,
+		timestamp: Date.now(),
+	};
+	if (allowUsageAnchor) {
+		for (let index = messages.length - 1; index >= 0; index--) {
+			const message = messages[index];
+			if (message === undefined || !validAssistantUsage(message)) continue;
+			let trailingEstimateTokens = estimatePiMessageTokens(pendingMessage);
+			for (let trailing = index + 1; trailing < messages.length; trailing++) {
+				const trailingMessage = messages[trailing];
+				if (trailingMessage !== undefined) {
+					trailingEstimateTokens += estimatePiMessageTokens(trailingMessage);
+				}
+			}
+			const usageTokens = calculateContextTokens(message.usage);
+			return {
+				tokens: usageTokens + trailingEstimateTokens,
+				usageTokens,
+				trailingEstimateTokens,
+				source: "usage-plus-estimate",
+			};
+		}
+	}
+	const trailingEstimateTokens =
+		estimateTextTokens(systemPrompt) +
+		estimatePiMessageTokens(pendingMessage) +
+		messages.reduce((total, message) => total + estimatePiMessageTokens(message), 0);
+	return {
+		tokens: trailingEstimateTokens,
+		usageTokens: 0,
+		trailingEstimateTokens,
+		source: "estimate-only",
+	};
+}
+
 export interface AdvisorRuntimeStatus {
 	enabled: boolean;
 	active: boolean;
@@ -144,6 +206,11 @@ export interface AdvisorRuntimeStatus {
 	retryAttempts: number;
 	contextEstimateTokens: number;
 	contextLimitTokens: number;
+	contextUsageTokens: number;
+	contextTrailingEstimateTokens: number;
+	contextEstimateSource: AdvisorContextEstimate["source"];
+	compactionsCompleted: number;
+	compactionFailures: number;
 	usage: AdvisorUsageTotals;
 	reviewsCompleted: number;
 	silentReviews: number;
@@ -269,6 +336,11 @@ export function formatAdvisorDiagnosticsDump(
 		retryAttempts: status.retryAttempts,
 		contextEstimateTokens: status.contextEstimateTokens,
 		contextLimitTokens: status.contextLimitTokens,
+		contextUsageTokens: status.contextUsageTokens,
+		contextTrailingEstimateTokens: status.contextTrailingEstimateTokens,
+		contextEstimateSource: status.contextEstimateSource,
+		compactionsCompleted: status.compactionsCompleted,
+		compactionFailures: status.compactionFailures,
 		usage: status.usage,
 		reviewsCompleted: status.reviewsCompleted,
 		silentReviews: status.silentReviews,
@@ -371,6 +443,13 @@ function formatProjectContext(
 	};
 }
 
+function advisorContextLimit(model: Model<Api>, config: AdvisorConfig): number {
+	return Math.max(
+		0,
+		Math.floor(model.contextWindow * config.context.maxFraction) - config.context.reserveTokens,
+	);
+}
+
 function buildAdvisorSystemPrompt(config: AdvisorConfig): string {
 	return `You are Advisor, an isolated secondary reviewer for a Pi Executor session.
 Review each bounded update for one material correctness, safety, scope, or verification issue.
@@ -397,8 +476,12 @@ export class AdvisorRuntime {
 	private sessionInitialized = false;
 	private cursor: AdvisorCursor = { expectedIndex: 0 };
 	private pendingUpdate?: QueuedAdvisorUpdate;
+	private throttledUpdate?: QueuedAdvisorUpdate;
 	private lifecycleResetEpoch?: number;
 	private meaningfulTurnCount = 0;
+	private lastReviewSubmittedTurn?: number;
+	private lastReviewSubmittedAt?: number;
+	private usageAnchorInvalidated = false;
 	private memorySuggestionAdmissions = 0;
 	private lastMemorySuggestionTurn?: number;
 	private lastMemorySuggestionAt?: number;
@@ -446,6 +529,11 @@ export class AdvisorRuntime {
 			retryAttempts: 0,
 			contextEstimateTokens: 0,
 			contextLimitTokens: 0,
+			contextUsageTokens: 0,
+			contextTrailingEstimateTokens: 0,
+			contextEstimateSource: "estimate-only",
+			compactionsCompleted: 0,
+			compactionFailures: 0,
 			usage: emptyUsage(),
 			reviewsCompleted: 0,
 			silentReviews: 0,
@@ -720,6 +808,8 @@ export class AdvisorRuntime {
 		delete this.status.inactiveReason;
 		if (resetBudget) {
 			this.status.usage = emptyUsage();
+			delete this.lastReviewSubmittedTurn;
+			delete this.lastReviewSubmittedAt;
 			this.status.paused = false;
 			delete this.status.pauseReason;
 			this.status.consecutiveFailures = 0;
@@ -779,18 +869,26 @@ export class AdvisorRuntime {
 		this.model = model;
 		this.status.active = true;
 		this.status.model = `${model.provider}/${model.id}`;
-		this.status.contextLimitTokens = Math.max(
-			0,
-			Math.floor(model.contextWindow * this.config.context.maxFraction) -
-				this.config.context.reserveTokens,
-		);
+		this.status.contextLimitTokens = advisorContextLimit(model, this.config);
 		this.publishStatus();
 	}
 
 	private async createNestedSession(ctx: ExtensionContext, model: Model<Api>): Promise<void> {
 		await this.disposeNestedSession();
+		const contextLimitTokens = advisorContextLimit(model, this.config);
+		const compactionReserveTokens = Math.max(
+			1,
+			Math.min(
+				this.config.context.reserveTokens || model.maxTokens,
+				model.maxTokens > 0 ? model.maxTokens : this.config.context.reserveTokens || 1,
+			),
+		);
 		const settingsManager = SettingsManager.inMemory({
-			compaction: { enabled: false },
+			compaction: {
+				enabled: false,
+				reserveTokens: compactionReserveTokens,
+				keepRecentTokens: Math.max(1, Math.floor(contextLimitTokens / 2)),
+			},
 			retry: {
 				enabled: false,
 				provider: { maxRetries: 0 },
@@ -890,6 +988,35 @@ export class AdvisorRuntime {
 		);
 	}
 
+	private reviewCadenceEligible(turnNumber: number, now: number): boolean {
+		const turnsEligible =
+			this.lastReviewSubmittedTurn === undefined ||
+			turnNumber - this.lastReviewSubmittedTurn >= this.config.limits.minTurnsBetweenReviews;
+		const timeEligible =
+			this.lastReviewSubmittedAt === undefined ||
+			now - this.lastReviewSubmittedAt >= this.config.limits.minIntervalMs;
+		return turnsEligible && timeEligible;
+	}
+
+	private scheduleCadencedUpdate(update: QueuedAdvisorUpdate): void {
+		if (this.draining) {
+			this.enqueue(update);
+			return;
+		}
+		this.throttledUpdate = this.coalescePending(this.throttledUpdate, update);
+		const now = Date.now();
+		if (!this.reviewCadenceEligible(update.turnNumber, now)) {
+			this.updateBacklogStatus();
+			return;
+		}
+		const submitted = this.throttledUpdate;
+		delete this.throttledUpdate;
+		this.lastReviewSubmittedTurn = update.turnNumber;
+		this.lastReviewSubmittedAt = now;
+		this.updateBacklogStatus();
+		this.enqueue(submitted);
+	}
+
 	async observeTurn(event: TurnEndEvent, ctx: ExtensionContext): Promise<void> {
 		delete this.lifecycleResetEpoch;
 		if (event.message.role === "assistant" && event.message.stopReason === "aborted") {
@@ -913,7 +1040,7 @@ export class AdvisorRuntime {
 		this.status.redactions += rendered.redactions;
 		if (rendered.text.trim().length === 0) return;
 		this.meaningfulTurnCount++;
-		this.enqueue({
+		this.scheduleCadencedUpdate({
 			text: rendered.text,
 			window: cursorAtTail(branch),
 			turnNumber: this.meaningfulTurnCount,
@@ -981,6 +1108,16 @@ export class AdvisorRuntime {
 				await this.runUpdate(update);
 				update = this.pendingUpdate;
 				delete this.pendingUpdate;
+				if (update !== undefined) {
+					const now = Date.now();
+					if (this.reviewCadenceEligible(update.turnNumber, now)) {
+						this.lastReviewSubmittedTurn = update.turnNumber;
+						this.lastReviewSubmittedAt = now;
+					} else {
+						this.throttledUpdate = this.coalescePending(this.throttledUpdate, update);
+						update = undefined;
+					}
+				}
 				this.updateBacklogStatus();
 			}
 		} finally {
@@ -1055,6 +1192,60 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		this.extractStaleNestedQueue(session);
 	}
 
+	private updateContextEstimate(estimate: AdvisorContextEstimate): void {
+		this.status.contextEstimateTokens = estimate.tokens;
+		this.status.contextUsageTokens = estimate.usageTokens;
+		this.status.contextTrailingEstimateTokens = estimate.trailingEstimateTokens;
+		this.status.contextEstimateSource = estimate.source;
+	}
+
+	private estimateNextAdvisorContext(
+		session: AgentSession,
+		submittedPrompt: string,
+		allowUsageAnchor = !this.usageAnchorInvalidated,
+	): AdvisorContextEstimate {
+		return estimateAdvisorContext(
+			session.messages,
+			submittedPrompt,
+			buildAdvisorSystemPrompt(this.config),
+			allowUsageAnchor,
+		);
+	}
+
+	private async maintainContextPolicy(
+		session: AgentSession,
+		submittedPrompt: string,
+	): Promise<boolean> {
+		let estimate = this.estimateNextAdvisorContext(session, submittedPrompt);
+		this.updateContextEstimate(estimate);
+		if (estimate.tokens <= this.status.contextLimitTokens) return true;
+
+		const epoch = this.status.epoch;
+		try {
+			await session.compact(
+				"Preserve current task goals, explicit constraints, unresolved risks, key decisions, and planted requirements needed to review the next Executor update.",
+			);
+		} catch (error) {
+			if (epoch !== this.status.epoch || this.session !== session || this.disposed) return false;
+			this.status.compactionFailures++;
+			this.status.lastFailure = `Advisor context compaction failed: ${boundedReason(error)}`;
+			this.pause("Advisor context fraction or response reserve reached");
+			return false;
+		}
+		if (epoch !== this.status.epoch || this.session !== session || this.disposed) return false;
+
+		this.usageAnchorInvalidated = true;
+		this.status.compactionsCompleted++;
+		estimate = this.estimateNextAdvisorContext(session, submittedPrompt, false);
+		this.updateContextEstimate(estimate);
+		if (estimate.tokens <= this.status.contextLimitTokens) return true;
+
+		this.status.lastFailure =
+			"Advisor context remains over policy after compaction; bounded re-prime fallback is deferred to Slice 4B";
+		this.pause("Advisor context fraction or response reserve reached");
+		return false;
+	}
+
 	private async waitForRetry(epoch: number): Promise<boolean> {
 		this.status.retryPending = true;
 		this.status.retryDelayMs = ADVISOR_RETRY_DELAY_MS;
@@ -1083,13 +1274,8 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			this.config.memorySuggestions.enabled && capability.state === "available"
 				? `${this.memorySuggestionPolicyInstructions()}\n\n${boundedUpdate}`
 				: boundedUpdate;
-		const contextEstimate =
-			estimateTokens(JSON.stringify(session.messages)) + estimateTokens(submittedUpdate);
-		this.status.contextEstimateTokens = contextEstimate;
-		if (contextEstimate > this.status.contextLimitTokens) {
-			this.pause("Advisor context fraction or response reserve reached");
-			return;
-		}
+		const submittedPrompt = `<advisor-update>\n${submittedUpdate}\n</advisor-update>`;
+		if (!(await this.maintainContextPolicy(session, submittedPrompt))) return;
 		const epoch = this.status.epoch;
 		for (let attempt = 0; attempt <= MAX_ADVISOR_RETRIES_PER_UPDATE; attempt++) {
 			this.resetCollectorForAttempt(update, capability);
@@ -1104,7 +1290,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			this.currentRun = run;
 			let thrownFailure: string | undefined;
 			try {
-				await session.prompt(`<advisor-update>\n${submittedUpdate}\n</advisor-update>`, {
+				await session.prompt(submittedPrompt, {
 					expandPromptTemplates: false,
 					source: "extension",
 				});
@@ -1132,6 +1318,9 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				thrownFailure ?? run.governorFailure ?? run.toolFailure ?? run.providerFailure;
 			const accepted = this.getAcceptedAdvice();
 			if (failure === undefined) {
+				if (session.messages.slice(messagesBeforeAttempt.length).some(validAssistantUsage)) {
+					this.usageAnchorInvalidated = false;
+				}
 				let delivered: boolean;
 				try {
 					delivered =
@@ -1561,6 +1750,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		this.status.retryPending = false;
 		this.status.retryDelayMs = 0;
 		delete this.pendingUpdate;
+		delete this.throttledUpdate;
 		this.warn(`${reason}. Automatic Advisor review is paused.`);
 	}
 
@@ -1587,23 +1777,28 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		this.status.retryPending = false;
 		this.status.retryDelayMs = 0;
 		delete this.pendingUpdate;
+		delete this.throttledUpdate;
+		delete this.lastReviewSubmittedTurn;
+		delete this.lastReviewSubmittedAt;
 		this.pendingAdvice.clear();
 		this.activeAdvice.clear();
 		this.status.activeNotesPending = 0;
 		this.refreshDeferredAdviceStatus();
 		this.adviceDedupe.clear();
 		const session = this.session;
-		if (session?.isStreaming) {
-			try {
-				await session.abort();
-			} catch {
-				// Disposal and invalidation remain authoritative.
-			}
-		}
 		if (session !== undefined) {
+			session.abortCompaction();
+			if (session.isStreaming) {
+				try {
+					await session.abort();
+				} catch {
+					// Disposal and invalidation remain authoritative.
+				}
+			}
 			this.extractStaleNestedQueue(session);
 			session.state.messages = [];
 			session.sessionManager.resetLeaf();
+			this.usageAnchorInvalidated = false;
 		}
 		this.cursor = cursorAtTail(branch);
 		this.updateBacklogStatus();
@@ -1621,6 +1816,9 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		this.status.retryDelayMs = 0;
 		delete this.status.pauseReason;
 		delete this.pendingUpdate;
+		delete this.throttledUpdate;
+		delete this.lastReviewSubmittedTurn;
+		delete this.lastReviewSubmittedAt;
 		this.pendingAdvice.clear();
 		this.activeAdvice.clear();
 		this.status.activeNotesPending = 0;
@@ -1640,6 +1838,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		this.status.retryPending = false;
 		this.status.retryDelayMs = 0;
 		delete this.pendingUpdate;
+		delete this.throttledUpdate;
 		this.persistState();
 		this.pendingAdvice.clear();
 		this.activeAdvice.clear();
@@ -1659,6 +1858,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		const session = this.session;
 		delete this.session;
 		if (session === undefined) return;
+		session.abortCompaction();
 		if (session.isStreaming) {
 			try {
 				await session.abort();
@@ -1670,9 +1870,10 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 	}
 
 	private updateBacklogStatus(): void {
+		const pending = this.pendingUpdate ?? this.throttledUpdate;
 		const bytes =
-			Buffer.byteLength(this.pendingUpdate?.text ?? "", "utf8") +
-			utf8TextSetBytes(this.pendingUpdate?.successfulMemoryTexts ?? new Set());
+			Buffer.byteLength(pending?.text ?? "", "utf8") +
+			utf8TextSetBytes(pending?.successfulMemoryTexts ?? new Set());
 		this.status.pendingTranscriptBytes = bytes;
 		this.status.backlog = bytes > 0 || this.status.retryPending;
 		this.status.maxPendingTranscriptBytesObserved = Math.max(
@@ -1714,7 +1915,8 @@ export function formatAdvisorStatus(status: AdvisorRuntimeStatus): string {
 		`Model: ${status.model ?? "not configured"}`,
 		`Effort: ${status.effort}`,
 		`Backlog: ${String(status.pendingTranscriptBytes)} bytes${status.retryPending ? `, retry pending for ${String(status.retryDelayMs)} ms` : ""}`,
-		`Context estimate: ${String(status.contextEstimateTokens)}/${String(status.contextLimitTokens)} tokens`,
+		`Context estimate: ${String(status.contextEstimateTokens)}/${String(status.contextLimitTokens)} tokens (${String(status.contextUsageTokens)} reported + ${String(status.contextTrailingEstimateTokens)} estimated, ${status.contextEstimateSource})`,
+		`Context compaction: ${String(status.compactionsCompleted)} completed, ${String(status.compactionFailures)} failed`,
 		`Session tokens: ${String(status.usage.total)}`,
 		`Session cost: $${status.usage.costUsd.toFixed(4)}`,
 		`Reviews: ${String(status.reviewsCompleted)} completed, ${String(status.silentReviews)} silent, ${String(status.failedReviews)} failed`,

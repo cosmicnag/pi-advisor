@@ -2,7 +2,8 @@
 
 ## Status labels
 
-- `implemented` means the completed Slice 3B safe automatic core provides the bounded behavior described in the evidence column.
+- `implemented` means the completed Slice 4A safe automatic core provides the bounded behavior described in the evidence column.
+- `partial` means the approved Batch A portion is implemented while a named later batch owns the remaining capability.
 - `measured only` means Slice 0 established Pi 0.80.7 behavior but the current runtime does not add a product workflow around it.
 - `intentional difference` means public Pi APIs or product boundaries require a documented divergence.
 - `deferred` means the capability requires a separately approved later batch or slice.
@@ -39,7 +40,9 @@
 | Read-only Advisor tools                            | implemented            | Activates only protected `read`, `grep`, `find`, and `ls`, plus exclusive internal `advise`                              |
 | Protected sensitive paths                          | implemented            | Checks normalized requests and canonical targets and filters traversal results                                           |
 | Private Advisor transcript persistence             | deferred               | Optional full transcripts stay disabled; bounded lifecycle-only Pi custom entries persist independently                  |
-| Context compaction and bounded re-prime            | deferred               | The current runtime pauses at the context governor and does not compact or re-prime                                      |
+| Context compaction and bounded re-prime            | partial                | Public nested compaction and post-compaction recalculation are implemented; bounded re-prime invocation remains Batch B  |
+| Reduced ordinary review cadence                    | implemented            | Configured turn and elapsed-time gates retain one bounded coalesced update until both gates are eligible                 |
+| Usage-aware context estimation                     | implemented            | Latest successful provider usage anchors context, while public Pi estimation bounds trailing or post-compaction content  |
 | Multiple Advisors                                  | deferred               | Requires production evidence and separate approval                                                                       |
 | Context-model promotion                            | deferred               | No equivalent public Pi policy primitive is assumed                                                                      |
 | Fullscreen multi-pane configuration                | deferred               | Current commands provide `/advisor on`, `off`, `status`, and bounded `dump`, but no fullscreen configuration             |

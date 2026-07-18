@@ -3,8 +3,8 @@
 ## Status
 
 This document defines the intended public behavior of `@ribbons-digital/pi-advisor`.
-Slice 3B extends the safe automatic core with clean provider retry, bounded retry delay, pause-state recovery, expanded backlog and failure status, and stale nested-queue extraction.
-Durable configuration, Advisor context compaction and re-prime, and optional full transcript persistence remain deferred to their separately approved slices.
+Slice 4A extends the safe automatic core with usage-anchored context estimation, active ordinary review cadence, per-tool-result serialization bounds, public nested-session compaction, and post-compaction recalculation.
+Bounded re-prime invocation, complete Slice 4 status accounting, durable configuration, and optional full transcript persistence remain deferred to their separately approved batches or slices.
 
 ## Roles
 
@@ -40,8 +40,10 @@ Executor user and assistant messages, exposed reasoning, tool calls and results,
 Image payloads are omitted.
 Executor reasoning is included only when Pi or the provider exposes it, after redaction and bounding.
 Executor and Advisor reasoning is never persisted by Pi Advisor.
-Advisor updates, coalesced pending deltas, protected tool results, and accepted notes are bounded.
-Re-prime snapshots and optional full Advisor transcript records are not implemented in Slice 3B.
+Advisor updates, coalesced or cadence-held pending deltas, protected tool results, and accepted notes are bounded.
+Each serialized tool result is redacted before independent 2,000-line, 64 KiB, configured update-token, and final update bounds are applied.
+Slice 4A exposes the same redacted bounded current-branch serializer for future re-prime snapshots, but Batch B owns re-prime invocation and unsafe-snapshot handling.
+Optional full Advisor transcript records are not implemented in Slice 4A.
 Lifecycle-only custom entries persist outside model context independently of optional transcript persistence.
 
 ## Delivery
@@ -148,7 +150,13 @@ The cursor validator distinguishes transcript shrink from an equal-length ancest
 Entry identity remains authoritative when no lifecycle hint is observed.
 Compatible resume restores only state whose Pi session ID and cursor match the active branch.
 Update, pending-byte, context, turn, tool-call, note, session-token, and reported-cost governors remain enabled by default.
-Review cadence, re-prime, and optional full transcript persistence remain reserved and have no Slice 3B runtime effect.
+Ordinary review cadence uses the configured minimum meaningful-turn distance and elapsed interval.
+Skipped updates are redacted, bounded, and coalesced until both cadence gates are eligible rather than discarded.
+Before every Advisor submission, context estimation uses the latest successful provider usage when available and Pi's public token estimator for trailing messages and the incoming bounded update.
+When no valid usage anchor exists, including immediately after compaction, the whole private context is estimated with Pi's public estimator plus a bounded system-prompt heuristic.
+If the configured context fraction and response reserve would be exceeded, Slice 4A calls the nested `AgentSession.compact()` public API and recalculates policy from the compacted messages before submission.
+Compaction failure or a still-over-policy recalculation pauses Advisor once because bounded re-prime fallback belongs to Batch B.
+Optional full transcript persistence remains reserved and has no Slice 4A runtime effect.
 Memory suggestion cadence, session cap, proposed-text bounds, and cross-exit cadence and cap restoration are active.
 `deferredAdviceRetentionHours` applies during cross-exit restoration but does not expire a live in-memory queue.
 Slice 3B adds no user-configurable field.
@@ -168,7 +176,8 @@ Status exposes whether retry delay or coalesced transcript work is pending, queu
 Only the discard count is retained; queued message content is not added to status, diagnostics, persistence, or model context.
 Programmatic status and warning observers are isolated so observer exceptions cannot alter review outcomes, counters, queue admission, built-in UI warning publication, or later status publication.
 The custom message and entry renderers use current theme colors, sanitize terminal control characters, render age and delivery metadata, and keep every line within the supplied terminal width.
-Exceeding the context limit or reaching a session token or reported-cost cap pauses only Advisor and never interrupts Executor.
+Exceeding the context limit after attempted maintenance, failing compaction before Batch B re-prime exists, or reaching a session token or reported-cost cap pauses only Advisor and never interrupts Executor.
+Status distinguishes reported context usage from trailing estimates and reports completed and failed nested compactions.
 
 ## Lifecycle persistence
 

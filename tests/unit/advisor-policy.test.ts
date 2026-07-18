@@ -8,18 +8,22 @@ import {
 	BoundedAdviceDedupe,
 	BoundedKeyedByteFifo,
 	DEFAULT_ADVISOR_CONFIG,
+	estimateAdvisorContext,
 	estimateTokens,
 	formatAdviceForDelivery,
 	formatAdvisorEnableStatus,
 	HARD_LIMITS,
 	isContentFreeAdvice,
 	isMeaningfulExecutorTurn,
+	MAX_ADVISOR_TOOL_RESULT_BYTES,
+	MAX_ADVISOR_TOOL_RESULT_LINES,
 	MAX_DEFERRED_DELIVERY_BYTES,
 	normalizeAdviceForDedupe,
 	normalizeAdvisorConfig,
 	PROPOSED_ADVISOR_CONFIG,
 	redactSecrets,
 	renderAdvisorDelta,
+	renderAdvisorReprimeSnapshot,
 	successfulMemoryToolTexts,
 	takeRenderedPrefix,
 	type AdviceDedupeIdentity,
@@ -70,6 +74,11 @@ function runtimeStatus(): AdvisorRuntimeStatus {
 		retryAttempts: 0,
 		contextEstimateTokens: 0,
 		contextLimitTokens: 10_000,
+		contextUsageTokens: 0,
+		contextTrailingEstimateTokens: 0,
+		contextEstimateSource: "estimate-only",
+		compactionsCompleted: 0,
+		compactionFailures: 0,
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, costUsd: 0 },
 		reviewsCompleted: 0,
 		silentReviews: 0,
@@ -207,6 +216,78 @@ describe("Slice 1 configuration and emission policy", () => {
 		expect(result.note).not.toContain(discarded);
 		expect(Array.from(result.note).length).toBeLessThanOrEqual(80);
 		expect(result.originalCharacters).toBeGreaterThan(Array.from(result.note).length);
+	});
+});
+
+describe("Slice 4A usage estimation and bounded transcript serialization", () => {
+	it("anchors context to the latest exact successful usage and estimates only trailing content", () => {
+		const exact = assistant([{ type: "text", text: "prior private response" }]);
+		exact.usage = {
+			input: 80,
+			output: 20,
+			cacheRead: 10,
+			cacheWrite: 5,
+			totalTokens: 115,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		const messages = [
+			{ role: "user" as const, content: "older content", timestamp: 1 },
+			exact,
+			{
+				role: "toolResult" as const,
+				toolCallId: "read-1",
+				toolName: "read",
+				content: [{ type: "text" as const, text: "trailing tool result" }],
+				isError: false,
+				timestamp: 2,
+			},
+		];
+		const estimate = estimateAdvisorContext(messages, "next bounded update", "system policy");
+		expect(estimate).toMatchObject({
+			usageTokens: 115,
+			source: "usage-plus-estimate",
+		});
+		expect(estimate.trailingEstimateTokens).toBeGreaterThan(0);
+		expect(estimate.tokens).toBe(115 + estimate.trailingEstimateTokens);
+
+		const heuristic = estimateAdvisorContext(
+			messages,
+			"next bounded update",
+			"system policy",
+			false,
+		);
+		expect(heuristic.source).toBe("estimate-only");
+		expect(heuristic.usageTokens).toBe(0);
+	});
+
+	it("redacts and independently bounds each large tool result before update and re-prime bounds", () => {
+		const manager = SessionManager.inMemory();
+		manager.appendMessage({ role: "user", content: "keep this request", timestamp: 1 });
+		manager.appendMessage({
+			role: "toolResult",
+			toolCallId: "large-result",
+			toolName: "read",
+			content: [
+				{
+					type: "text",
+					text: `API_KEY=tool-result-secret\n${Array.from(
+						{ length: MAX_ADVISOR_TOOL_RESULT_LINES + 50 },
+						(_, index) => `line-${String(index)}`,
+					).join("\n")}${"z".repeat(MAX_ADVISOR_TOOL_RESULT_BYTES)}`,
+				},
+			],
+			isError: false,
+			timestamp: 2,
+		});
+		const rendered = renderAdvisorDelta(manager.getBranch(), 24_000);
+		expect(rendered.text).toContain("[Tool result truncated to per-result limit]");
+		expect(rendered.text).toContain("[REDACTED]");
+		expect(rendered.text).not.toContain("tool-result-secret");
+		expect(Buffer.byteLength(rendered.text, "utf8")).toBeLessThanOrEqual(24_000 * 4);
+
+		const reprime = renderAdvisorReprimeSnapshot(manager.getBranch(), 16);
+		expect(Buffer.byteLength(reprime.text, "utf8")).toBeLessThanOrEqual(64);
+		expect(reprime.text).not.toContain("tool-result-secret");
 	});
 });
 
