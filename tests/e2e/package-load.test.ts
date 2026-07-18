@@ -1,18 +1,24 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 interface PackResult {
+	name: string;
+	version: string;
 	filename: string;
 	files: { path: string }[];
 }
 
-function runPi(args: string[], env: NodeJS.ProcessEnv, input?: string) {
-	return spawnSync("pnpm", ["exec", "pi", ...args], {
-		cwd: process.cwd(),
+const projectRoot = process.cwd();
+const piExecutable = join(projectRoot, "node_modules", ".bin", "pi");
+
+function runPi(args: string[], cwd: string, env: NodeJS.ProcessEnv, input?: string) {
+	return spawnSync(piExecutable, args, {
+		cwd,
 		env,
 		encoding: "utf8",
 		input,
@@ -23,8 +29,11 @@ describe("packed Pi package", () => {
 	it("installs through Pi and applies WATCHDOG activation only in approved run modes", () => {
 		const root = mkdtempSync(join(tmpdir(), "pi-advisor-packed-e2e-"));
 		const unpacked = join(root, "unpacked");
+		const installDir = join(root, "install");
 		const agentDir = join(root, "agent");
+		const archive = join(root, "pi-advisor-package.tgz");
 		mkdirSync(unpacked, { recursive: true });
+		mkdirSync(installDir, { recursive: true });
 		mkdirSync(agentDir, { recursive: true });
 		const env = {
 			...process.env,
@@ -34,18 +43,79 @@ describe("packed Pi package", () => {
 
 		try {
 			const pack = JSON.parse(
-				execFileSync("pnpm", ["pack", "--json"], { cwd: process.cwd(), encoding: "utf8" }),
+				execFileSync("pnpm", ["pack", "--out", archive, "--json"], {
+					cwd: projectRoot,
+					encoding: "utf8",
+				}),
 			) as PackResult;
 			const paths = pack.files.map((file) => file.path);
+			expect(pack).toMatchObject({ name: "@ribbons-digital/pi-advisor", version: "0.0.0" });
 			expect(paths).toContain("src/index.ts");
+			expect(paths).toContain("docs/configuration.md");
+			expect(paths).toContain("LICENSE");
+			expect(paths).toContain("THIRD_PARTY_NOTICES.md");
 			expect(paths.some((path) => path === "CONTEXT.md" || path.startsWith("docs/internal/"))).toBe(
 				false,
 			);
 
-			const archive = resolve(pack.filename);
+			expect(resolve(pack.filename)).toBe(resolve(archive));
 			execFileSync("tar", ["-xzf", archive, "-C", unpacked]);
-			const packageDir = join(unpacked, "package");
-			const install = runPi(["install", packageDir, "--approve"], env);
+			const packedPackageDir = join(unpacked, "package");
+			const packedManifest = JSON.parse(
+				execFileSync(
+					"node",
+					[
+						"-e",
+						"process.stdout.write(JSON.stringify(require(process.argv[1])))",
+						join(packedPackageDir, "package.json"),
+					],
+					{
+						encoding: "utf8",
+					},
+				),
+			) as {
+				private?: boolean;
+				dependencies?: Record<string, string>;
+				pi?: { extensions?: string[] };
+				publishConfig?: object;
+			};
+			expect(packedManifest.private).not.toBe(true);
+			expect(packedManifest.dependencies).toMatchObject({ typebox: "1.1.38", yaml: "^2.9.0" });
+			expect(packedManifest.pi?.extensions).toEqual(["./src/index.ts"]);
+			expect(packedManifest.publishConfig).toMatchObject({ access: "public", provenance: true });
+
+			writeFileSync(
+				join(installDir, "package.json"),
+				`${JSON.stringify(
+					{
+						private: true,
+						packageManager: "pnpm@10.0.0",
+						dependencies: { "@ribbons-digital/pi-advisor": `file:${archive}` },
+					},
+					null,
+					2,
+				)}\n`,
+			);
+			execFileSync("pnpm", ["install", "--ignore-workspace", "--config.auto-install-peers=false"], {
+				cwd: installDir,
+				encoding: "utf8",
+			});
+			const installedPackageDir = join(
+				installDir,
+				"node_modules",
+				"@ribbons-digital",
+				"pi-advisor",
+			);
+			const installedRequire = createRequire(
+				join(realpathSync(installedPackageDir), "package.json"),
+			);
+			for (const dependency of ["typebox", "yaml"]) {
+				const dependencyEntry = installedRequire.resolve(dependency);
+				expect(existsSync(dependencyEntry)).toBe(true);
+				expect(dependencyEntry).not.toContain(projectRoot);
+			}
+
+			const install = runPi(["install", installedPackageDir, "--approve"], root, env);
 			expect(install.status, install.stderr).toBe(0);
 
 			const rpc = runPi(
@@ -59,6 +129,7 @@ describe("packed Pi package", () => {
 					"--no-themes",
 					"--no-tools",
 				],
+				root,
 				env,
 				`${JSON.stringify({ id: "state", type: "get_state" })}\n${JSON.stringify({ id: "commands", type: "get_commands" })}\n`,
 			);
@@ -107,6 +178,7 @@ describe("packed Pi package", () => {
 					"--no-themes",
 					"--no-tools",
 				],
+				root,
 				env,
 				`${JSON.stringify({ id: "persisted-status", type: "prompt", message: "/advisor status" })}\n`,
 			);
@@ -129,6 +201,7 @@ describe("packed Pi package", () => {
 					"-p",
 					"/advisor status",
 				],
+				root,
 				env,
 			);
 			expect(persistedJson.status, persistedJson.stderr).toBe(0);
@@ -146,6 +219,7 @@ describe("packed Pi package", () => {
 					"--no-themes",
 					"--no-tools",
 				],
+				root,
 				env,
 				`${JSON.stringify({ id: "malformed-status", type: "prompt", message: "/advisor status" })}\n`,
 			);
@@ -166,6 +240,7 @@ describe("packed Pi package", () => {
 					"--no-themes",
 					"--no-tools",
 				],
+				root,
 				env,
 				`${JSON.stringify({ id: "explicit-state", type: "get_state" })}\n`,
 			);

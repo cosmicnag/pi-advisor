@@ -5,7 +5,7 @@
 This document defines the intended public behavior of `@ribbons-digital/pi-advisor`.
 Slice 4A extends the safe automatic core with usage-anchored context estimation, active ordinary review cadence, per-tool-result serialization bounds, public nested-session compaction, and post-compaction recalculation.
 Slice 4B adds bounded current-branch re-prime fallback, unsafe-snapshot pause behavior, complete public-API accounting, optional private transcript records, and repeated long-session coverage.
-Slice 5A adds versioned durable WATCHDOG loading, trusted Project narrowing, bounded Markdown instructions, atomic User saves, immediate configuration rebuild, explicit external-edit reload behavior, and model and reasoning selection.
+Slice 5 adds versioned durable WATCHDOG loading, trusted Project narrowing, bounded Markdown instructions, atomic User saves, immediate configuration rebuild, explicit external-edit reload behavior, model and reasoning selection, approved read-only tool selection, multiline User-instruction editing, a complete configuration reference, coexistence warning, and publishable package metadata.
 
 ## Roles
 
@@ -139,8 +139,9 @@ Fixed Advisor safety and protocol policy remains above User instructions, tagged
 Freeform instructions cannot replace code-enforced tools, protected paths, emission, bounds, context, cost, delivery, lifecycle, or `advise` behavior, although trusted Project text retains residual model prompt-injection risk.
 When formatted Pi-supplied project context changes, the nested Advisor conversation is cleared before its next review so removed instructions do not remain in historical provider messages.
 
-`/advisor` and `/advisor configure` use Pi-native dialog selectors in TUI or RPC clients for an available authenticated model and the approved reasoning levels.
-After confirmation, User YAML is written through a same-directory temporary file and atomic rename.
+`/advisor` and `/advisor configure` use Pi-native dialogs in TUI or RPC clients for an available authenticated model, approved reasoning level, any subset of `read`, `grep`, `find`, and `ls`, and multiline User instructions.
+The workflow works without an active nested Advisor runtime and points non-dialog clients to `docs/configuration.md`.
+After one confirmation, User YAML is written through a same-directory temporary file and atomic rename.
 A save failure keeps the prior runtime and valid file active.
 A successful apply increments the runtime epoch, invalidates pending output, rebuilds the nested runtime and tool policy, preserves delivered-note and aggregate usage totals, and prepares a bounded current-branch re-prime for the next review update.
 External WATCHDOG edits are not watched and remain unapplied until `/reload` or another confirmed configure apply.

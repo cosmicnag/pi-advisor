@@ -12,9 +12,15 @@ permissions:
   contents: read
   id-token: write
 
+concurrency:
+  group: npm-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
 jobs:
   publish:
-    environment: npm-release
+    environment:
+      name: npm-release
+      url: https://www.npmjs.com/package/@ribbons-digital/pi-advisor
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -41,11 +47,15 @@ jobs:
             throw new Error(`Requested tag ${process.env.RELEASE_TAG} does not match ${expectedTag}`);
           }
           if (manifest.private) {
-            throw new Error('package.json must be explicitly changed from private before an approved release');
+            throw new Error('package.json is not publishable');
+          }
+          if (manifest.publishConfig?.access !== 'public' || manifest.publishConfig?.provenance !== true) {
+            throw new Error('package publishConfig must require public access and provenance');
           }
           NODE
           test "$(git describe --tags --exact-match)" = "$RELEASE_TAG"
+          test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$(git rev-parse HEAD)"
       - name: Prepare and validate the exact publish tarball
         run: pnpm pack:prepare
       - name: Publish the validated tarball with npm trusted publishing provenance
-        run: pnpm publish ./pi-advisor-package.tgz --access public --provenance --no-git-checks
+        run: pnpm exec npm publish ./pi-advisor-package.tgz --access public --provenance

@@ -6,10 +6,14 @@ import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+	configureAdvisor,
 	DEFAULT_ADVISOR_CONFIG,
+	hasAdvisorCommandCollision,
 	loadAdvisorConfiguration,
 	MAX_WATCHDOG_MARKDOWN_BYTES,
+	pickAdvisorInteractiveConfiguration,
 	pickAdvisorModelAndEffort,
+	pickAdvisorTools,
 	saveUserConfigurationAtomic,
 } from "../../src/index.js";
 
@@ -30,6 +34,11 @@ afterEach(async () => {
 });
 
 describe("WATCHDOG configuration", () => {
+	it("detects Pi-assigned coexistence command suffixes without false positives", () => {
+		expect(hasAdvisorCommandCollision([{ name: "advisor:1" }, { name: "advisor:2" }])).toBe(true);
+		expect(hasAdvisorCommandCollision([{ name: "advisor" }, { name: "other" }])).toBe(false);
+	});
+
 	it("offers only available registry models and approved reasoning levels", async () => {
 		const select = vi
 			.fn<ExtensionCommandContext["ui"]["select"]>()
@@ -55,6 +64,103 @@ describe("WATCHDOG configuration", () => {
 			"xhigh",
 			"max",
 		]);
+	});
+
+	it("selects only approved read-only tools and edits instructions", async () => {
+		const select = vi
+			.fn<ExtensionCommandContext["ui"]["select"]>()
+			.mockResolvedValueOnce("[x] grep - search file contents")
+			.mockResolvedValueOnce("[ ] ls - list directories")
+			.mockResolvedValueOnce("Done - use 3 read-only tools");
+		const tools = await pickAdvisorTools(
+			{ ui: { select } as unknown as ExtensionCommandContext["ui"] },
+			["read", "grep", "find"],
+		);
+		expect(tools).toEqual(["read", "find", "ls"]);
+		expect(
+			select.mock.calls.flatMap((call) => call[1]).some((choice) => choice.includes("bash")),
+		).toBe(false);
+
+		const configureSelect = vi
+			.fn<ExtensionCommandContext["ui"]["select"]>()
+			.mockResolvedValueOnce("fixture/advisor")
+			.mockResolvedValueOnce("high")
+			.mockResolvedValueOnce("Done - use 4 read-only tools");
+		const editor = vi.fn().mockResolvedValue("Focus on migration safety.");
+		const configured = await pickAdvisorInteractiveConfiguration(
+			{
+				modelRegistry: {
+					getAvailable: () => [{ provider: "fixture", id: "advisor" }],
+				} as ExtensionCommandContext["modelRegistry"],
+				ui: {
+					select: configureSelect,
+					editor,
+					notify: vi.fn(),
+				} as unknown as ExtensionCommandContext["ui"],
+			},
+			structuredClone(DEFAULT_ADVISOR_CONFIG),
+		);
+		expect(configured).toMatchObject({
+			model: "fixture/advisor",
+			effort: "high",
+			tools: ["read", "grep", "find", "ls"],
+			instructions: "Focus on migration safety.",
+		});
+		expect(editor).toHaveBeenCalledWith(expect.stringContaining("fixed safety policy"), "");
+	});
+
+	it("completes configuration and atomic apply without a live nested Advisor runtime", async () => {
+		const { agentDir, cwd } = await fixture();
+		const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		const select = vi
+			.fn<ExtensionCommandContext["ui"]["select"]>()
+			.mockResolvedValueOnce("fixture/advisor")
+			.mockResolvedValueOnce("low")
+			.mockResolvedValueOnce("[x] ls - list directories")
+			.mockResolvedValueOnce("Done - use 3 read-only tools");
+		const notify = vi.fn();
+		const applyConfiguration = vi.fn().mockResolvedValue(undefined);
+		const ctx = {
+			hasUI: true,
+			cwd,
+			isProjectTrusted: () => false,
+			modelRegistry: {
+				getAvailable: () => [{ provider: "fixture", id: "advisor" }],
+			},
+			ui: {
+				select,
+				editor: vi.fn().mockResolvedValue("Review public API compatibility."),
+				confirm: vi.fn().mockResolvedValue(true),
+				notify,
+			},
+		} as unknown as ExtensionCommandContext;
+		try {
+			await configureAdvisor(
+				ctx,
+				{ applyConfiguration } as unknown as Parameters<typeof configureAdvisor>[1],
+				structuredClone(DEFAULT_ADVISOR_CONFIG),
+			);
+			const saved = await readFile(join(agentDir, "WATCHDOG.yml"), "utf8");
+			expect(saved).toContain("model: fixture/advisor");
+			expect(saved).toContain("effort: low");
+			expect(saved).toContain("Review public API compatibility.");
+			expect(saved).not.toContain("  - ls");
+			expect(applyConfiguration).toHaveBeenCalledOnce();
+			expect(applyConfiguration.mock.calls[0]?.[0]).toMatchObject({
+				model: "fixture/advisor",
+				effort: "low",
+				tools: ["read", "grep", "find"],
+				instructions: "Review public API compatibility.",
+			});
+			expect(notify).toHaveBeenLastCalledWith(
+				expect.stringContaining("docs/configuration.md"),
+				"info",
+			);
+		} finally {
+			if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		}
 	});
 
 	it("loads a versioned partial User schema over approved defaults", async () => {
@@ -239,6 +345,37 @@ describe("WATCHDOG configuration", () => {
 			);
 		},
 	);
+
+	it("adds User and trusted Project protected paths while preserving User-only exact exceptions", async () => {
+		const { agentDir, cwd } = await fixture();
+		await writeFile(
+			join(agentDir, "WATCHDOG.yml"),
+			[
+				"version: 1",
+				"security:",
+				"  additionalProtectedPaths: [user-private]",
+				"  protectedPathExceptions: [user-private/allowed.txt]",
+			].join("\n"),
+		);
+		await writeFile(
+			join(cwd, ".pi", "WATCHDOG.yml"),
+			[
+				"version: 1",
+				"security:",
+				"  additionalProtectedPaths: [project-private]",
+				"  protectedPathExceptions: [project-private/stolen.txt]",
+			].join("\n"),
+		);
+
+		const loaded = await loadAdvisorConfiguration({ agentDir, cwd, projectTrusted: true });
+		expect(loaded.effectiveConfig.security).toEqual({
+			additionalProtectedPaths: ["user-private", "project-private"],
+			protectedPathExceptions: ["user-private/allowed.txt"],
+		});
+		expect(loaded.warnings.map((warning) => warning.path)).toContain(
+			"security.protectedPathExceptions",
+		);
+	});
 
 	it("redacts and bounds WATCHDOG markdown before use", async () => {
 		const { agentDir, cwd } = await fixture();
