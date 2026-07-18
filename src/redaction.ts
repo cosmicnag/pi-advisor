@@ -11,9 +11,9 @@ const PATTERNS: RegExp[] = [
 	/\b(?:sk|pk|api|key|token)-[A-Za-z0-9_-]{12,}\b/g,
 	/\b(?:ghp|github_pat|glpat|xox[baprs]|AKIA|ASIA)[A-Za-z0-9_-]{8,}\b/g,
 	/(["']?(?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret)["']?\s*[:=]\s*)(["'])((?:\\.|(?!\2)[^\\\r\n])*)\2/gi,
-	/(\b[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS)\s*=\s*)(["'])((?:\\.|(?!\2)[^\\\r\n])*)\2/g,
+	/(\b(?:[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS)|KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS)\s*=\s*)(["'])((?:\\.|(?!\2)[^\\\r\n])*)\2/g,
 	/(["']?(?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret)["']?\s*[:=]\s*)[^\s,"';}]{4,}/gi,
-	/(\b[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS)\s*=\s*)[^\s]+/g,
+	/(\b(?:[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS)|KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS)\s*=\s*)[^\s]+/g,
 	/(https?:\/\/[^\s/:]+:)[^@\s]+@/gi,
 ];
 

@@ -3,8 +3,8 @@
 ## Status
 
 This document defines the intended public behavior of `@ribbons-digital/pi-advisor`.
-Slice 2 Batch A extends the safe automatic core with plain severity and delivery labels, in-session deferred preservation, normalized bounded cross-update dedupe, and staleness annotation.
-Durable configuration, custom rendering, immediate TUI-only late-advice cards, cross-exit lifecycle restoration, context compaction, transcript persistence, and Memory suggestions remain deferred to their separately approved slices.
+Slice 2 Batch B extends the safe automatic core with themed advice cards, immediate TUI-only late-advice entries, XML-safe model-visible delivery, bounded redacted diagnostics, and explicit delivery-failure accounting.
+Durable configuration, cross-exit lifecycle restoration, context compaction, transcript persistence, and Memory suggestions remain deferred to their separately approved slices.
 
 ## Roles
 
@@ -57,12 +57,16 @@ Pi 0.80.7 also exposes no public method to cancel an already queued `nextTurn` c
 Batch A does not implement cross-exit deferred-advice restoration or a package-managed retention timer.
 An incompatible active-branch cursor invalidates in-flight review and clears in-memory deferred advice before delivery, while disablement and shutdown invalidate the runtime epoch and dispose nested work.
 Every delivered note is visible and is framed as guidance to weigh rather than obey blindly.
-It uses custom message type `pi-advisor-note` and plain `[Advisor severity - delivery - optional staleness]` text labels.
+It uses custom message type `pi-advisor-note` and XML-safe `<advisor-note>` content with intent, severity, delivery, and stale attributes.
+Note and guidance text escape XML markup characters and replace characters that XML 1.0 cannot represent.
 Severity is `nit`, `concern`, or `blocker`, with `concern` as the default.
 A `notes` details array contains the bounded note, review intent, active or deferred delivery, optional staleness, truncation, original post-redaction size, creation time, and an opaque attempt-scoped delivery ID for active acknowledgement.
 Dedupe identity remains separate so a stale acknowledgement cannot confirm a later attempt with the same advice.
-Each user-driven turn receives the largest FIFO prefix whose final rendered custom-message content fits 64 KiB in UTF-8, including every advice label, guidance wrapper, and inter-note separator but excluding non-model-visible details metadata.
+Each user-driven turn receives the largest FIFO prefix whose final rendered custom-message content fits 64 KiB in UTF-8, including every XML note, guidance wrapper, and inter-note separator but excluding non-model-visible details metadata.
 No note is split, remaining notes wait for later user turns, and a one-note message mirrors its fields at the top level for compatibility.
+In TUI mode, advice accepted after the Executor is idle is appended immediately as custom entry type `pi-advisor-late-note` and rendered without entering model context.
+The pending note records that visible presentation so its next-turn model-visible custom message uses `display: false`; RPC, JSON, and print modes never append this TUI-only entry.
+An unacknowledged active TUI delivery recovered at settlement uses the same late-entry path when Pi is idle.
 
 ## Tools and protected paths
 
@@ -111,15 +115,18 @@ Active-branch entry IDs, not message counts, anchor minimal cursor validation.
 Obvious tree-navigation or branch mismatches reset private Advisor context, while disablement and shutdown invalidate stale work.
 Batch A does not reconstruct equal-length branches or restore advice across process or session exits.
 Update, pending-byte, context, turn, tool-call, note, session-token, and reported-cost governors remain enabled by default.
-Review cadence, re-prime, deferred-retention, Memory, and persistence settings remain reserved and have no Batch A runtime effect.
-In particular, `deferredAdviceRetentionHours` does not expire in-memory Batch A advice and remains reserved for cross-exit lifecycle work.
-Batch A adds no user-configurable field.
+Review cadence, re-prime, deferred-retention, Memory, and persistence settings remain reserved and have no Batch B runtime effect.
+In particular, `deferredAdviceRetentionHours` does not expire in-memory Batch B advice and remains reserved for cross-exit lifecycle work.
+Batches A and B add no user-configurable field.
 Its 4,096-key dedupe history, 4,096-note and 1,000,000-byte deferred queue, and 64 KiB delivery batch are fixed protocol bounds.
-Provider, malformed internal tool, and governor failures are not retried, and failed update messages are removed from private Advisor context.
+Provider, malformed internal tool, governor, and delivery failures are not retried, and failed update messages are removed from private Advisor context.
+Active message-send failures count as both one failed review and one delivery failure, remove the active-pending copy, and retain only a bounded redacted reason.
+A failed TUI late-entry append counts once but leaves next-turn delivery available and does not retry the entry append.
 A well-formed read-only tool error remains ordinary review feedback rather than failing the update by itself.
 If a turn or tool-call governor fires after one valid note has already been accepted, that one bounded note may still be delivered while the update counts as failed.
 Three consecutive failed updates pause Advisor and produce one pause warning, while a successful review resets the consecutive-failure count.
 Programmatic status and warning observers are isolated so observer exceptions cannot alter review outcomes, counters, queue admission, built-in UI warning publication, or later status publication.
+The custom message and entry renderers use current theme colors, sanitize terminal control characters, render age and delivery metadata, and keep every line within the supplied terminal width.
 Exceeding the context limit or reaching a session token or reported-cost cap pauses only Advisor and never interrupts Executor.
 
 ## Privacy and telemetry
@@ -128,8 +135,8 @@ Private Advisor transcript persistence is unimplemented and cannot be enabled in
 Any future enabled persistence must exclude Executor and Advisor reasoning and store only redacted bounded records.
 The package sends no product analytics, usage telemetry, or automatic crash reports.
 The user-selected model provider receives only the bounded content required for Advisor requests.
-Support diagnostics are not implemented in Slice 1.
-Any future diagnostics must require explicit user action and be redacted and bounded.
+Support diagnostics require explicit `/advisor dump` action and never export automatically.
+The dump is bounded to 16 KiB, recursively redacts every included string, and excludes Executor and Advisor transcripts, reasoning, Advisory note content, instructions, and protected paths.
 
 ## Scope boundary
 

@@ -2,10 +2,10 @@
 
 Pi Advisor provides automatic secondary review of a primary Pi agent session while keeping reviewer state separate from the primary conversation.
 
-## Slice 2 Batch A terminology status
+## Slice 2 Batch B terminology status
 
-The implemented runtime provides Executor, Advisor, Advisor update, Cursor, Epoch, Meaningful Executor turn, Executor reasoning, Advisory note, in-session Deferred advice, Session activation, in-memory caller configuration, Fixed Advisor policy, User instructions, tagged Project instructions, Protected path, Protected-path exception, and Destructive-command guard boundaries.
-Re-prime, Memory suggestion, cross-exit Deferred advice restoration, rich Advice cards, durable User configuration, durable Project configuration, and Persisted Advisor transcript remain reserved later-slice terms.
+The implemented runtime provides Executor, Advisor, Advisor update, Cursor, Epoch, Meaningful Executor turn, Executor reasoning, Advisory note, in-session Deferred advice, Advice card, Session activation, in-memory caller configuration, Fixed Advisor policy, User instructions, tagged Project instructions, Protected path, Protected-path exception, and Destructive-command guard boundaries.
+Re-prime, Memory suggestion, cross-exit Deferred advice restoration, durable User configuration, durable Project configuration, and Persisted Advisor transcript remain reserved later-slice terms.
 
 ## Language
 
@@ -60,7 +60,8 @@ Cross-exit restoration remains deferred to Slice 3.
 _Avoid_: Backlog, hidden instruction, cross-session message
 
 **Advice card**:
-The user-visible presentation of an accepted Advisory note and its severity, delivery state, age, and staleness metadata.
+The theme-aware, width-bounded user-visible presentation of an accepted Advisory note and its severity, delivery state, age, and staleness metadata.
+A late TUI-only card is a custom entry outside Executor context, while active and otherwise undisplayed next-turn notes use the custom message renderer.
 _Avoid_: Tool result, hidden message, approval dialog
 
 **Session activation**:

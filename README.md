@@ -3,7 +3,7 @@
 `@ribbons-digital/pi-advisor` is an independent Pi extension for automatic, isolated secondary review of an Executor session.
 The implemented core observes meaningful completed Executor turns in the background, stays silent when work is sound, and delivers only bounded actionable notes.
 
-> Slice 2 Batch A status: the safe automatic core now includes severity and delivery labels, in-session deferred preservation, normalized cross-update dedupe, and staleness annotation, with in-memory configuration only.
+> Slice 2 Batch B status: the safe automatic core now includes themed advice cards, immediate TUI-only late-advice entries, XML-safe model-visible delivery, bounded redacted diagnostics, and explicit delivery-failure accounting, with in-memory configuration only.
 > The installed default remains off and has no model selection until the durable WATCHDOG configuration and `/advisor configure` workflow arrive in a later approved slice.
 
 ## Not the same as rpiv-advisor
@@ -13,13 +13,15 @@ This package is designed for automatic background observation that does not depe
 Both packages register `/advisor`, and Pi 0.80.7 assigns `/advisor:1` and `/advisor:2` in extension load order when both are installed.
 Slice 1 does not add a collision warning, so users must identify the intended command from Pi's command list.
 
-## Implemented behavior through Slice 2 Batch A
+## Implemented behavior through Slice 2 Batch B
 
 - One explicitly selected Advisor model, with no fallback to the Executor model.
 - Automatic review after meaningful completed Executor turns.
 - Silence when no material issue exists.
 - At most one bounded visible Advisory note per review update.
-- Plain model-visible nit, concern, and blocker labels with active, deferred, and potentially stale states.
+- XML-safe model-visible nit, concern, and blocker notes with active, deferred, and stale attributes.
+- Theme-aware custom advice cards show severity, delivery state, age, and staleness while respecting terminal width.
+- Advice accepted after a TUI turn settles appears immediately as a TUI-only late-advice entry, then enters model context without a duplicate visible card on the next user-driven turn.
 - Active advice reaches Pi's next steering boundary regardless of severity.
   A bounded package-owned copy remains active-pending until Pi acknowledges the custom message through its lifecycle or persisted branch state; an unacknowledged copy recovered at settlement becomes deferred instead of being lost on TUI queue clearing.
 - Terminal and interruption-time advice waits for the next user-driven turn without triggering completion.
@@ -37,10 +39,12 @@ Slice 1 does not add a collision warning, so users must identify the intended co
 - Single-flight review with bounded coalescing while Advisor is busy.
 - Epoch invalidation on disablement, branch mismatch, and shutdown.
 - Three consecutive failed updates pause Advisor and warn once.
+- Delivery attempts are single-shot, count separately, retain only one bounded redacted last-failure reason, and never enter a retry loop.
+- Explicit `/advisor dump` diagnostics exclude transcripts, notes, reasoning, instructions, and protected paths, redact included string fields, and stay within 16 KiB.
 - Fail-safe inactive behavior when the configured model or credentials are unavailable.
 - No product telemetry.
 
-Rich advice cards and custom rendering, cross-exit lifecycle restoration, provider retry, context compaction, WATCHDOG files, transcript persistence, and Memory suggestions remain outside Batch A.
+Cross-exit lifecycle restoration, provider retry, context compaction, WATCHDOG files, transcript persistence, and Memory suggestions remain outside Batch B.
 
 The normative public contract is in [`docs/behavior-contract.md`](docs/behavior-contract.md).
 The measured OMP parity position is tracked in [`docs/omp-parity.md`](docs/omp-parity.md).
@@ -48,6 +52,7 @@ Slice 0 compatibility evidence is in [`docs/slice-0-compatibility.md`](docs/slic
 The approved defaults and hard maxima are in [`docs/slice-0-limit-proposal.md`](docs/slice-0-limit-proposal.md).
 The protected-path analysis is in [`docs/protected-path-threat-model.md`](docs/protected-path-threat-model.md).
 Slice 2 Batch A implementation evidence is in [`docs/slice-2-batch-a.md`](docs/slice-2-batch-a.md).
+Slice 2 Batch B implementation evidence is in [`docs/slice-2-batch-b.md`](docs/slice-2-batch-b.md).
 
 ## Install the package locally
 
@@ -63,7 +68,7 @@ The package can also be loaded for one run:
 pi --no-extensions -e ./src/index.ts --no-session
 ```
 
-The installed default registers `/advisor` and `--advisor` but does not start a nested runtime because no model is durably configured through Slice 2 Batch A.
+The installed default registers `/advisor` and `--advisor` but does not start a nested runtime because no model is durably configured through Slice 2 Batch B.
 The manifest remains deliberately private as an accidental-publication guard.
 An approved release change must remove that guard before the manual trusted-publishing workflow can publish.
 
@@ -71,7 +76,8 @@ An approved release change must remove that guard before the manual trusted-publ
 
 - `/advisor on` enables review for the current session when the configured `provider/model` is available and authenticated.
 - `/advisor off` disables review, invalidates in-flight work, clears the bounded transcript backlog, pending advice, and dedupe history, and disposes the nested session.
-- `/advisor status` reports activation, model, backlog, context, usage, review, active-pending, delivered, deferred, suppressed, pause, and last-failure state.
+- `/advisor status` reports activation, model, backlog, context, usage, review, delivery-failure, active-pending, delivered, deferred, suppressed, pause, and last-failure state.
+- `/advisor dump` explicitly emits a redacted, bounded diagnostic snapshot without transcripts, notes, reasoning, instructions, or protected paths.
 - `--advisor` requests activation for the current session in every Pi mode.
 - `defaultEnabled: true` applies only to TUI and RPC sessions, while JSON and print sessions require explicit activation.
 
@@ -96,10 +102,10 @@ export default createPiAdvisorExtension({ config });
 The model reference must use `provider/model` syntax and must resolve through Pi's model registry with valid credentials.
 Version 1 defaults to disabled, no model, `high` effort, all four read-only tools, empty review instructions, no additional protected paths, and no protected-path exceptions.
 The active configuration fields are `defaultEnabled`, `model`, `effort`, `tools`, `instructions`, all `context` fields, the note, turn, tool-call, pending-byte, token, and cost limits, and both `security` path lists.
-Slice 2 Batch A adds no configuration field.
+Slice 2 Batches A and B add no configuration field.
 Its 4,096-key dedupe history, 4,096-note and 1,000,000-byte deferred queue, and 64 KiB deferred delivery batch are fixed protocol bounds.
 A full deferred queue rejects newer advice, increments the suppressed-note count, and warns once per session.
-`maxReprimeTokens`, review cadence, deferred-advice retention, `memorySuggestions`, `persistence`, `AdvisorProjectConfig`, and `CONFIG_VALIDATION_STRATEGY` remain reserved and do not change Batch A runtime behavior.
+`maxReprimeTokens`, review cadence, deferred-advice retention, `memorySuggestions`, `persistence`, `AdvisorProjectConfig`, and `CONFIG_VALIDATION_STRATEGY` remain reserved and do not change Batch B runtime behavior.
 `DEFAULT_ADVISOR_CONFIG` is deeply frozen; clone it before editing configuration.
 `PROPOSED_ADVISOR_CONFIG` remains a deprecated compatibility alias containing an independent mutable clone of the canonical defaults.
 Programmatic hooks are intended for embedding and tests: `onRuntime` exposes the instance, `onStatus` receives status snapshots, and `onWarning` receives runtime warnings.
@@ -115,10 +121,11 @@ All current modules are re-exported from the package root.
 | Surface         | Exports                                                                                                                                                                                |
 | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Extension       | Default Pi extension, `createPiAdvisorExtension`, `PiAdvisorExtensionOptions`                                                                                                          |
-| Runtime         | `AdvisorRuntime`, `AdvisorRuntimeHooks`, `AdvisorRuntimeStatus`, `AdvisorUsageTotals`, `DeferredAdviceMaterialization`, `formatAdvisorStatus`, `formatAdvisorEnableStatus`             |
+| Runtime         | `AdvisorRuntime`, runtime and status types, status formatters, bounded diagnostic formatting, and delivery-failure state                                                               |
 | Configuration   | `DEFAULT_ADVISOR_CONFIG`, deprecated `PROPOSED_ADVISOR_CONFIG`, `normalizeAdvisorConfig`, `HARD_LIMITS`, `READ_ONLY_TOOL_NAMES`, configuration types, and reserved validation metadata |
 | Advice          | `createAdviseTool`, `boundAdvice`, policy-specific normalizers, severity-scoped dedupe helpers, delivery formatting, and advice types                                                  |
 | Delivery        | Fixed delivery bounds, `BoundedKeyedByteFifo`, `takeRenderedPrefix`, and queue types                                                                                                   |
+| Presentation    | XML escaping, advice message and late-entry renderers, themed card rendering, presentation data types, and the late-entry custom type                                                  |
 | Protected tools | `ProtectedPathPolicy`, `createProtectedAdvisorTools`, `isAdvisorReadOnlyTool`, and `AdvisorToolContext`                                                                                |
 | Transcript      | `ADVISOR_CUSTOM_TYPE`, cursor helpers, meaningful-turn filtering, delta rendering, and transcript types                                                                                |
 | Redaction       | `redactSecrets`, `estimateTokens`, UTF-8 truncation helpers, and `RedactionResult`                                                                                                     |
@@ -130,8 +137,9 @@ The factory, runtime hooks, status formatters, and policy helpers support contro
 
 ## Compatibility
 
-Development, compatibility evidence, and the automatic core through Slice 2 Batch A target `@earendil-works/pi-coding-agent` 0.80.7.
+Development, compatibility evidence, and the automatic core through Slice 2 Batch B target `@earendil-works/pi-coding-agent` 0.80.7.
 The peer range is `>=0.80.7 <0.81.0`, with 0.80.7 as the only tested version.
+The supported Pi host supplies the coding-agent and TUI peer packages; standalone runtime imports without those host peers are unsupported.
 A missing or unavailable configured Advisor model leaves Advisor inactive without fallback or partial nested runtime construction.
 
 ## Security, privacy, and cost
@@ -146,13 +154,13 @@ Results returned by Advisor's allowed read-only tools, including allowed file co
 The protected `grep` tool uses `rg` when available; without `rg`, explicit literal searches use a bounded in-process fallback while regex searches report that they are unavailable.
 Protected-path checks cover direct and symlink-resolved access, but neither path protection nor redaction can guarantee that every secret is excluded.
 Automatic review creates additional provider usage and cost, bounded by configured session governors and the active package hard maxima for notes, turns, tool calls, and pending bytes.
-Advisor transcript persistence remains disabled and unimplemented in Slice 2 Batch A.
+Advisor transcript persistence remains disabled and unimplemented in Slice 2 Batch B.
 
 ## Telemetry
 
 This package sends no product telemetry or automatic crash reports to Ribbons Digital or another analytics service.
 Model-provider traffic occurs only while an explicitly configured Advisor is active.
-Support diagnostics remain deferred and no automatic diagnostic export occurs.
+Support diagnostics occur only through explicit `/advisor dump`, remain redacted and bounded, and are never exported automatically.
 
 ## Development
 

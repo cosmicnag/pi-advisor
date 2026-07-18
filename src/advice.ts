@@ -5,6 +5,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import { HARD_LIMITS, type AdvisorConfig } from "./config.js";
+import { escapeXmlAttribute, escapeXmlText } from "./presentation.js";
 import { estimateTokens, redactSecrets } from "./redaction.js";
 
 export type AdviceSeverity = "nit" | "concern" | "blocker";
@@ -197,11 +198,16 @@ export function formatAdviceForDelivery(
 	delivery: AdviceDelivery,
 	stale: boolean,
 ): string {
-	const labels = [advice.severity, delivery, ...(stale ? ["potentially stale"] : [])];
 	const guidance = stale
-		? "Peer guidance: verify this still applies, then weigh it rather than obeying blindly."
-		: "Peer guidance: weigh this rather than obeying blindly.";
-	return `[Advisor ${labels.join(" - ")}]\n${advice.note}\n\n${guidance}`;
+		? "Verify this still applies, then weigh it rather than obeying blindly."
+		: "Weigh this rather than obeying blindly.";
+	const attributes = [
+		`intent="${escapeXmlAttribute("review")}"`,
+		`severity="${escapeXmlAttribute(advice.severity)}"`,
+		`delivery="${escapeXmlAttribute(delivery)}"`,
+		`stale="${escapeXmlAttribute(String(stale))}"`,
+	];
+	return `<advisor-note ${attributes.join(" ")}>\n<note>${escapeXmlText(advice.note)}</note>\n<guidance>${escapeXmlText(guidance)}</guidance>\n</advisor-note>`;
 }
 
 export function createAdviseTool(
