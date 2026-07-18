@@ -5,7 +5,7 @@
 This document defines the intended public behavior of `@ribbons-digital/pi-advisor`.
 Slice 4A extends the safe automatic core with usage-anchored context estimation, active ordinary review cadence, per-tool-result serialization bounds, public nested-session compaction, and post-compaction recalculation.
 Slice 4B adds bounded current-branch re-prime fallback, unsafe-snapshot pause behavior, complete public-API accounting, optional private transcript records, and repeated long-session coverage.
-Durable WATCHDOG configuration remains deferred.
+Slice 5A adds versioned durable WATCHDOG loading, trusted Project narrowing, bounded Markdown instructions, atomic User saves, immediate configuration rebuild, explicit external-edit reload behavior, and model and reasoning selection.
 
 ## Roles
 
@@ -16,9 +16,9 @@ An Advisory note is one accepted, bounded, actionable observation shown to the u
 
 ## Activation
 
-Slice 1 accepts configuration only from the programmatic extension factory and does not load User configuration or Project configuration files.
-Session activation through `/advisor on` or `--advisor` and the in-memory `defaultEnabled` value are the only Slice 1 activation authorities.
-The in-memory default applies to TUI and RPC sessions, while JSON and print sessions remain explicit opt-in.
+The extension loads versioned User configuration from `~/.pi/agent/WATCHDOG.yml` and optional User instructions from `~/.pi/agent/WATCHDOG.md`.
+Session activation through `/advisor on` or `--advisor` remains session-scoped.
+The persisted User `defaultEnabled` value applies to TUI and RPC sessions, while JSON and print sessions remain explicit opt-in.
 No model is selected implicitly.
 Missing or malformed model configuration, unavailable credentials, or nested-session isolation failure leaves Advisor inactive without model fallback or a partial nested runtime.
 Running `/advisor on` while paused explicitly resets the current session usage budget before reactivation.
@@ -123,13 +123,27 @@ Pi Advisor never calls `memory_save` or `memory_suggest`, imports Memory Lane, w
 
 ## Configuration ownership
 
-The Slice 1 programmatic `AdvisorConfig` is trusted caller input, normalized once, and held in memory for one extension instance.
-There is no runtime configuration apply, Project configuration merge, file validation, or reload in Slice 1.
-The exported `AdvisorProjectConfig` and `CONFIG_VALIDATION_STRATEGY` describe reserved later-slice policy and are not consumed by the Slice 1 runtime.
-Future durable User configuration owns activation defaults, model choice, reasoning effort, spending, cadence, persistence, and protected-path exceptions.
-Future trusted Project configuration may only add instructions, narrow tools, add protections, disable Memory suggestions, and lower limits.
-Fixed Advisor safety and protocol policy remains above caller instructions, tagged project context, and observed Executor context.
-When the formatted Pi-supplied project context changes, the nested Advisor conversation is cleared before its next review so removed instructions do not remain in historical provider messages.
+Version `1` WATCHDOG YAML is validated through a compiled schema.
+Unknown and invalid-scope fields produce path-specific warnings without printing values.
+Malformed User configuration leaves persisted activation inactive with safe release defaults, while malformed Project configuration is ignored without preventing startup.
+
+User configuration owns activation defaults, model choice, reasoning effort, spending, cadence, persistence, read-only tool approval, instructions, and protected-path exceptions.
+Trusted Project configuration is loaded only when `ctx.isProjectTrusted()` is true.
+It may add tagged instructions and protected paths, intersect tools, disable or narrow Memory suggestions, lower maximum limits, increase minimum cadence, lower context fraction, and increase response reserve.
+It cannot activate Advisor, select a model, increase reasoning, spending or exposure, remove protections, create exceptions, re-enable User-disabled behavior, or enable transcript persistence.
+Untrusted Project WATCHDOG files are not read.
+
+User and Project WATCHDOG Markdown is redacted and bounded to 64 KiB before use.
+Project instructions are structurally tagged below User instructions rather than inserted as fixed policy.
+Fixed Advisor safety and protocol policy remains above User instructions, tagged Project instructions, and observed Executor context.
+Freeform instructions cannot replace code-enforced tools, protected paths, emission, bounds, context, cost, delivery, lifecycle, or `advise` behavior, although trusted Project text retains residual model prompt-injection risk.
+When formatted Pi-supplied project context changes, the nested Advisor conversation is cleared before its next review so removed instructions do not remain in historical provider messages.
+
+`/advisor` and `/advisor configure` use Pi-native dialog selectors in TUI or RPC clients for an available authenticated model and the approved reasoning levels.
+After confirmation, User YAML is written through a same-directory temporary file and atomic rename.
+A save failure keeps the prior runtime and valid file active.
+A successful apply increments the runtime epoch, invalidates pending output, rebuilds the nested runtime and tool policy, preserves delivered-note and aggregate usage totals, and prepares a bounded current-branch re-prime for the next review update.
+External WATCHDOG edits are not watched and remain unapplied until `/reload` or another confirmed configure apply.
 
 ## Lifecycle and limits
 

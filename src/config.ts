@@ -70,7 +70,7 @@ export interface AdvisorProjectConfig {
 	};
 	memorySuggestions?: {
 		enabled?: false;
-	};
+	} & Partial<Omit<MemorySuggestionConfig, "enabled">>;
 }
 
 function deepFreeze<T>(value: T): T {

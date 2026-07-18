@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
     devDependencies:
       '@earendil-works/pi-agent-core':
         specifier: 0.80.7

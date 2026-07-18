@@ -3,8 +3,8 @@
 `@ribbons-digital/pi-advisor` is an independent Pi extension for automatic, isolated secondary review of an Executor session.
 The implemented core observes meaningful completed Executor turns in the background, stays silent when work is sound, and delivers only bounded actionable notes.
 
-> Slice 4 status: the safe automatic core now includes token-aware context estimation, review cadence, nested compaction, bounded branch re-prime, complete public status accounting, and optional reasoning-free transcript records.
-> The installed default remains off and has no model selection until the durable WATCHDOG configuration and `/advisor configure` workflow arrive in a later approved slice.
+> Slice 5A adds versioned WATCHDOG YAML validation, trusted Project narrowing, bounded WATCHDOG Markdown instructions, atomic User saves, immediate runtime rebuild, and a Pi-native model and reasoning picker.
+> The installed release default remains off with no implicit model selection.
 
 ## Not the same as rpiv-advisor
 
@@ -13,7 +13,7 @@ This package is designed for automatic background observation that does not depe
 Both packages register `/advisor`, and Pi 0.80.7 assigns `/advisor:1` and `/advisor:2` in extension load order when both are installed.
 Slice 1 does not add a collision warning, so users must identify the intended command from Pi's command list.
 
-## Implemented behavior through Slice 4
+## Implemented behavior through Slice 5A
 
 - One explicitly selected Advisor model, with no fallback to the Executor model.
 - Automatic review after meaningful completed Executor turns.
@@ -69,8 +69,8 @@ Slice 1 does not add a collision warning, so users must identify the intended co
 - Pi Advisor never imports Memory Lane, invokes `memory_save` or `memory_suggest`, writes memory storage, or approves a memory.
 - No product telemetry.
 
-Bounded branch re-prime, unsafe-snapshot pause behavior, complete Slice 4 accounting, and optional private transcript records are implemented through Slice 4B.
-WATCHDOG file loading remains unimplemented.
+Bounded branch re-prime, unsafe-snapshot pause behavior, complete accounting, and optional private transcript records are implemented through Slice 4B.
+Slice 5A adds durable configuration loading and the model and reasoning picker while keeping tool and instruction editing UI in the later Slice 5 batch.
 
 The normative public contract is in [`docs/behavior-contract.md`](docs/behavior-contract.md).
 The measured OMP parity position is tracked in [`docs/omp-parity.md`](docs/omp-parity.md).
@@ -87,6 +87,7 @@ Full Slice 3 acceptance and closure evidence is in [`docs/slice-3-verification.m
 Slice 4A context-policy and compaction evidence is in [`docs/slice-4a.md`](docs/slice-4a.md).
 Slice 4B re-prime, accounting, persistence, and long-session evidence is in [`docs/slice-4b.md`](docs/slice-4b.md).
 Full Slice 4 acceptance and closure evidence is in [`docs/slice-4-verification.md`](docs/slice-4-verification.md).
+Slice 5A WATCHDOG configuration and runtime-apply evidence is in [`docs/slice-5a.md`](docs/slice-5a.md).
 
 ## Install the package locally
 
@@ -102,12 +103,13 @@ The package can also be loaded for one run:
 pi --no-extensions -e ./src/index.ts --no-session
 ```
 
-The installed default registers `/advisor` and `--advisor` but does not start a nested runtime because no model is durably configured through Slice 2.
+The installed default registers `/advisor` and `--advisor` but does not start a nested runtime until the user explicitly configures a model.
 The manifest remains deliberately private as an accidental-publication guard.
 An approved release change must remove that guard before the manual trusted-publishing workflow can publish.
 
 ## Session controls
 
+- `/advisor` or `/advisor configure` opens the model and reasoning-level picker in a dialog-capable TUI or RPC client, asks for confirmation, atomically saves User configuration, and rebuilds the current runtime without restarting Pi.
 - `/advisor on` enables review for the current session when the configured `provider/model` is available and authenticated.
 - `/advisor off` disables review, invalidates in-flight work, clears the bounded transcript backlog, pending advice, and dedupe history, and disposes the nested session.
 - `/advisor status` reports activation, model, queued transcript and retry backlog, context maintenance, input/output/cache/total tokens, reported cost, review requests and outcomes, retry attempts, stale nested-queue discards, delivery, suppression, persistence, Memory suggestion capability and governors, pause, and last-failure state.
@@ -119,10 +121,37 @@ An approved release change must remove that guard before the manual trusted-publ
 Running `/advisor on` after the three-failure pause or a governor pause resets the session token and cost totals before starting again and reports the previous totals.
 Without an in-memory model configuration, `/advisor on` and `--advisor` leave Advisor inactive with an actionable status reason and never fall back to the Executor model.
 
-## In-memory configuration
+## WATCHDOG configuration
 
-Slice 1 has no YAML, WATCHDOG, User configuration file, Project configuration file, configuration reload, or `/advisor configure` workflow.
-An embedding extension or SDK host can provide one complete trusted `AdvisorConfig` object for the lifetime of the extension instance:
+Pi Advisor loads User configuration from `~/.pi/agent/WATCHDOG.yml` and optional User instructions from `~/.pi/agent/WATCHDOG.md`.
+When `ctx.isProjectTrusted()` is true, it also loads `<repository>/.pi/WATCHDOG.yml` and `<repository>/.pi/WATCHDOG.md`.
+Untrusted Project files are ignored.
+Malformed files produce bounded path-specific warnings without preventing Pi startup.
+External edits are not watched and apply only after `/reload` or a confirmed `/advisor configure` apply.
+
+User YAML uses version `1` and may provide any supported field over the release defaults.
+Trusted Project configuration can add tagged lower-authority instructions and protected paths, intersect the User-approved read-only tool set, disable or narrow Memory suggestions, lower maximum limits, increase minimum cadence, lower the context fraction, and increase the response reserve.
+Project fields that could activate Advisor, select a model, increase reasoning or spending, create protected-path exceptions, or enable persistence are warned and ignored.
+Fixed Advisor policy remains above User instructions, tagged Project instructions, and observed Executor context.
+Freeform instructions cannot override code-enforced safety and protocol behavior, but trusted Project instructions still carry residual model prompt-injection risk.
+WATCHDOG YAML and Markdown are bounded before use, instruction text is redacted, and Project Markdown is structurally tagged rather than inserted as fixed policy.
+
+A minimal User file is:
+
+```yaml
+version: 1
+model: anthropic/claude-sonnet-4-5
+effort: high
+defaultEnabled: false
+```
+
+Persisted `defaultEnabled: true` activates new TUI and RPC sessions only.
+JSON and print modes remain opt-in through `--advisor` or `/advisor on` in a long-lived session.
+User saves use a same-directory temporary file and atomic rename, so a failed save leaves the prior valid file active.
+A confirmed apply invalidates old in-flight output, rebuilds tools and policy immediately, preserves delivered-note and aggregate usage totals, and prepares one bounded current-branch re-prime for the next review update.
+The initial Slice 5A picker changes only model and reasoning level in dialog-capable TUI or RPC clients; read-only tool and instruction editing UI remains in the next Slice 5 batch.
+
+An embedding extension or SDK host can still provide one complete trusted `AdvisorConfig` object as the fallback when no User file exists:
 
 ```ts
 import { createPiAdvisorExtension, DEFAULT_ADVISOR_CONFIG } from "@ribbons-digital/pi-advisor";
@@ -147,40 +176,40 @@ A full deferred queue rejects newer advice, increments the suppressed-note count
 `maxReprimeTokens` bounds the redacted current-branch snapshot used after compaction fails or remains over policy.
 `persistence.transcript` is active, User-owned embedding configuration and remains `false` by default.
 `AdvisorProjectConfig` cannot enable it.
-`AdvisorProjectConfig` and `CONFIG_VALIDATION_STRATEGY` otherwise remain reserved until WATCHDOG configuration loading is implemented.
+`AdvisorProjectConfig` and `CONFIG_VALIDATION_STRATEGY` define the active trusted Project narrowing and validation policy.
 `DEFAULT_ADVISOR_CONFIG` is deeply frozen; clone it before editing configuration.
 `PROPOSED_ADVISOR_CONFIG` remains a deprecated compatibility alias containing an independent mutable clone of the canonical defaults.
 Programmatic hooks are intended for embedding and tests: `onRuntime` exposes the instance, `onStatus` receives status snapshots, and `onWarning` receives runtime warnings.
 Observer exceptions from `onStatus` and `onWarning` do not alter runtime outcomes or prevent built-in status and UI publication.
 An additional protected path blocks that target and its descendants by normalized request and canonical target, while an exception permits only one exact normalized or canonical target and can deliberately expose sensitive content.
 
-Project context files supplied by Pi are tagged, redacted, and bounded before review, but they are treated as untrusted review context rather than higher-authority policy.
+Project context files supplied by Pi and trusted Project WATCHDOG instructions are tagged, redacted, and bounded before review, but they are treated as untrusted review context rather than higher-authority policy.
 
 ## Exported API
 
 All current modules are re-exported from the package root.
 
-| Surface         | Exports                                                                                                                                                                                |
-| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Extension       | Default Pi extension, `createPiAdvisorExtension`, `PiAdvisorExtensionOptions`                                                                                                          |
-| Runtime         | `AdvisorRuntime`, runtime and status types, status formatters, bounded diagnostic formatting, and delivery-failure state                                                               |
-| Configuration   | `DEFAULT_ADVISOR_CONFIG`, deprecated `PROPOSED_ADVISOR_CONFIG`, `normalizeAdvisorConfig`, `HARD_LIMITS`, `READ_ONLY_TOOL_NAMES`, configuration types, and reserved validation metadata |
-| Advice          | `createAdviseTool`, `boundAdvice`, policy-specific normalizers, intent-scoped dedupe helpers, delivery formatting, and ordinary or Memory suggestion advice types                      |
-| Delivery        | Fixed delivery bounds, `BoundedKeyedByteFifo`, `takeRenderedPrefix`, and queue types                                                                                                   |
-| Persistence     | Runtime-state and optional transcript-record custom types, schemas, fixed bounds, strict parsers, persisted types, and the measured 128-hash cap                                       |
-| Presentation    | XML escaping, advice message and late-entry renderers, themed card rendering, presentation data types, and the late-entry custom type                                                  |
-| Protected tools | `ProtectedPathPolicy`, `createProtectedAdvisorTools`, `isAdvisorReadOnlyTool`, and `AdvisorToolContext`                                                                                |
-| Transcript      | `ADVISOR_CUSTOM_TYPE`, cursor helpers, meaningful-turn filtering, delta rendering, and transcript types                                                                                |
-| Redaction       | `redactSecrets`, `estimateTokens`, UTF-8 truncation helpers, and `RedactionResult`                                                                                                     |
+| Surface         | Exports                                                                                                                                                                      |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Extension       | Default Pi extension, `createPiAdvisorExtension`, `PiAdvisorExtensionOptions`                                                                                                |
+| Runtime         | `AdvisorRuntime`, runtime and status types, status formatters, bounded diagnostic formatting, and delivery-failure state                                                     |
+| Configuration   | Defaults, hard limits, versioned WATCHDOG loading and merge helpers, atomic save, the model and effort picker, configuration types, warnings, paths, and validation metadata |
+| Advice          | `createAdviseTool`, `boundAdvice`, policy-specific normalizers, intent-scoped dedupe helpers, delivery formatting, and ordinary or Memory suggestion advice types            |
+| Delivery        | Fixed delivery bounds, `BoundedKeyedByteFifo`, `takeRenderedPrefix`, and queue types                                                                                         |
+| Persistence     | Runtime-state and optional transcript-record custom types, schemas, fixed bounds, strict parsers, persisted types, and the measured 128-hash cap                             |
+| Presentation    | XML escaping, advice message and late-entry renderers, themed card rendering, presentation data types, and the late-entry custom type                                        |
+| Protected tools | `ProtectedPathPolicy`, `createProtectedAdvisorTools`, `isAdvisorReadOnlyTool`, and `AdvisorToolContext`                                                                      |
+| Transcript      | `ADVISOR_CUSTOM_TYPE`, cursor helpers, meaningful-turn filtering, delta rendering, and transcript types                                                                      |
+| Redaction       | `redactSecrets`, `estimateTokens`, UTF-8 truncation helpers, and `RedactionResult`                                                                                           |
 
 The default extension is the installable entry point.
 `AdvisorRuntime` exposes cloned status snapshots, nested-message inspection, project-context capture, session restoration, explicit enable and disable, turn and message observation, active-delivery settlement, deferred-advice materialization through `takeDeferredAdvice`, eager lifecycle invalidation, branch reseeding, and shutdown, while the extension factory wires those lifecycle methods to Pi.
 `AdvisorRuntimeStatus.activeNotesPending` counts active notes awaiting Pi acknowledgement, `deferredNotesPending` counts notes waiting for a later user prompt, `restoredDeferredNotesPending` identifies the restored subset, `oldestDeferredAdviceAgeMs` reports its age, and `notesDelivered` increases only after acknowledgement or deferred materialization.
-The factory, runtime hooks, status formatters, and policy helpers support controlled embedding, integration tests, and inspection without enabling durable WATCHDOG configuration.
+The factory, runtime hooks, status formatters, configuration helpers, and policy helpers support controlled embedding, integration tests, and inspection alongside durable WATCHDOG configuration.
 
 ## Compatibility
 
-Development, compatibility evidence, and the automatic core through Slice 3B target `@earendil-works/pi-coding-agent` 0.80.7.
+Development, compatibility evidence, and the automatic core through Slice 5A target `@earendil-works/pi-coding-agent` 0.80.7.
 The peer range is `>=0.80.7 <0.81.0`, with 0.80.7 as the only tested version.
 The supported Pi host supplies the coding-agent and TUI peer packages; standalone runtime imports without those host peers are unsupported.
 A missing or unavailable configured Advisor model leaves Advisor inactive without fallback or partial nested runtime construction.
