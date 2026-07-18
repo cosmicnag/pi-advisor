@@ -1601,12 +1601,6 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				return undefined;
 			this.status.compactionFailures++;
 			compactionFailure = `Advisor context compaction failed: ${boundedReason(error)}`;
-			this.status.lastFailure = compactionFailure;
-			this.persistTranscriptDetails({
-				kind: "failure",
-				reason: compactionFailure,
-				stopReason: "compaction-failed",
-			});
 		} finally {
 			if (epoch === this.status.epoch && this.session === session && !this.disposed) {
 				this.status.compactionUsageUnavailable++;
@@ -1722,9 +1716,6 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				costUsd: run.usage.costUsd,
 				stopReason: boundedPersistedValue(run.stopReason, 256),
 			});
-			this.status.notesSuppressed += this.collector.suppressedCalls;
-			this.status.memorySuggestionsPolicySuppressed += this.collector.memoryPolicySuppressedCalls;
-			this.status.memorySuggestionsLimitSuppressed += this.collector.memoryLimitSuppressedCalls;
 			if (this.status.enabled && !this.disposed) this.applySessionSoftCaps();
 			if (epoch !== this.status.epoch || !this.status.enabled || this.disposed) return;
 			const branchAfterAttempt = ctx.sessionManager.getBranch();
@@ -1752,6 +1743,9 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				}
 				this.status.reviewsCompleted++;
 				this.status.consecutiveFailures = 0;
+				this.status.notesSuppressed += this.collector.suppressedCalls;
+				this.status.memorySuggestionsPolicySuppressed += this.collector.memoryPolicySuppressedCalls;
+				this.status.memorySuggestionsLimitSuppressed += this.collector.memoryLimitSuppressedCalls;
 				if (delivered && accepted !== undefined) {
 					this.persistTranscriptDetails({
 						kind: "accepted-advice",
@@ -2375,7 +2369,7 @@ export function formatAdvisorStatus(status: AdvisorRuntimeStatus): string {
 		`Notes: ${String(status.notesDelivered)} delivered, ${String(status.activeNotesPending)} active pending, ${String(status.deferredNotesPending)} deferred (${String(status.restoredDeferredNotesPending)} restored), oldest deferred age ${String(status.oldestDeferredAdviceAgeMs)} ms, ${String(status.notesSuppressed)} suppressed`,
 		`Memory suggestions: ${status.memorySuggestionsEnabled ? "enabled" : "disabled"}, capability ${status.memorySuggestionCapability.state}, ${String(status.memorySuggestionsDelivered)} delivered, ${String(status.memorySuggestionsRemaining)} remaining, ${String(status.memorySuggestionsPolicySuppressed)} policy-suppressed, ${String(status.memorySuggestionsLimitSuppressed)} limit-suppressed`,
 		`Memory suggestion next eligibility: turn ${String(status.memorySuggestionNextEligibleTurn)}, ${new Date(status.memorySuggestionNextEligibleAt).toISOString()}`,
-		`Transcript persistence: ${status.transcriptPersistenceEnabled ? "enabled" : "disabled"}, ${String(status.transcriptRecordsPersisted)} records available, ${String(status.transcriptPersistenceFailures)} write or validation failures`,
+		`Transcript persistence: ${status.transcriptPersistenceEnabled ? "enabled" : "disabled"}, ${String(status.transcriptRecordsPersisted)} records persisted, ${String(status.transcriptPersistenceFailures)} write or validation failures`,
 	];
 	if (status.memorySuggestionCapability.reason) {
 		lines.push(`Memory suggestion capability: ${status.memorySuggestionCapability.reason}`);

@@ -218,7 +218,7 @@ describe("Slice 1 configuration and emission policy", () => {
 		);
 		expect(output).toContain("Reviews: 4 requests, 3 completed");
 		expect(output).toContain("7 suppressed");
-		expect(output).toContain("Transcript persistence: enabled, 9 records available, 1");
+		expect(output).toContain("Transcript persistence: enabled, 9 records persisted, 1");
 	});
 
 	it("keeps even extremely small configured note bounds within their limit", () => {

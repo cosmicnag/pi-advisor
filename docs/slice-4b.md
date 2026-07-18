@@ -12,7 +12,7 @@ It does not add context-model promotion, OMP snapcompact behavior, Agent Hub int
 | ------------------------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Bounded current-branch re-prime       | Pass   | When nested compaction fails or remains over policy, the runtime renders the active primary branch through the existing redacted bounded re-prime serializer, reduces the snapshot budget until the combined snapshot and pending update fit policy, increments the epoch, resets only private nested context, and submits one continuity-bearing review request. |
 | Unsafe snapshot pause                 | Pass   | An empty branch, a snapshot that cannot fit with the pending update, or serialization/reset failure increments re-prime failure state, records a bounded redacted failure when persistence is enabled, pauses only Advisor, and emits one warning through the existing idempotent pause path.                                                                     |
-| Status and accounting                 | Pass   | Status reports review request attempts, input, output, cache-read, cache-write, total tokens, reported cost, review outcomes, deliveries, suppression classes, compaction and re-prime outcomes, persistence records and failures, retry and pause state, and bounded last failures.                                                                              |
+| Status and accounting                 | Pass   | Status reports review request attempts, input, output, cache-read, cache-write, total tokens, reported cost, review outcomes, deliveries, resolved-update suppression classes, compaction and re-prime outcomes, the monotonic persisted-record count, persistence failures, retry and pause state, and bounded last failures.                                    |
 | Optional transcript persistence       | Pass   | `persistence.transcript` remains false by default. Enabled persistence appends strictly parsed, 256 KiB-bounded `pi-advisor-transcript-record` custom entries outside model context for reasoning-free redacted updates, non-`advise` tool calls, redacted tool results, usage, accepted advice, failures, and stop reasons.                                      |
 | Long-session and repeated maintenance | Pass   | Scripted integration coverage plants a pre-maintenance requirement, exercises repeated compaction-failure re-primes, verifies every re-prime stays under policy and carries current branch continuity, and checks exact exposed review usage and cost totals.                                                                                                     |
 
@@ -22,7 +22,8 @@ Optional transcript persistence is User-owned embedding configuration and is dis
 Project configuration has no field that can enable it.
 Each enabled record is a versioned Pi custom entry in the active session and is excluded from primary model context by Pi's public context builder.
 The strict parser rejects an unexpected version, session ID, shape, unredacted text, unsafe accepted advice, or record larger than 256 KiB.
-The runtime inspects at most the newest 256 valid records and `/advisor dump` includes at most 32 recent bounded previews within its existing 16 KiB output limit.
+Status labels its lifetime counter as records persisted.
+The runtime inspects at most the newest 256 valid records and `/advisor dump` separately reports that available count and includes at most 32 recent bounded previews within its existing 16 KiB output limit.
 Disabling persistence stops future transcript-record writes without deleting existing records.
 File-backed records remain in the Pi session JSONL until the user deletes the session through Pi or removes its session file.
 In-memory records disappear when the process exits.
@@ -61,8 +62,8 @@ Private Advisor responses, compaction prompts and summaries, transcript records,
 
 ## Verification
 
-- `pnpm exec vitest run tests/unit/advisor-policy.test.ts tests/unit/presentation.test.ts tests/integration/context-policy.test.ts tests/integration/advisor-safety.test.ts tests/integration/transcript-persistence.test.ts --reporter=dot` - passed 96 focused policy, presentation, safety, long-context, re-prime, accounting, and persistence tests across 5 files.
-- `pnpm verify` - passed typecheck, lint, formatting, and 163 unit, contract, and integration tests across 18 files.
+- `pnpm exec vitest run tests/unit/advisor-policy.test.ts tests/integration/context-policy.test.ts tests/integration/retry-resilience.test.ts --reporter=dot` - passed 43 focused policy, long-context, re-prime, retry, suppression, and accounting tests across 3 files.
+- `pnpm verify` - passed typecheck, lint, formatting, and 165 unit, contract, and integration tests across 18 files.
 - `pnpm test:e2e` - passed the packed Pi installation and default-inactive package scenario.
 - `pnpm pack:validate` - passed with 30 package files validated.
 - `git diff --check` - passed with no whitespace errors.
@@ -71,6 +72,8 @@ Private Advisor responses, compaction prompts and summaries, transcript records,
 
 Pi 0.80.7 does not expose nested compaction request usage or cost through the public `AgentSession.compact()` result or public events.
 Review-request usage and reported cost remain exact, while status separately counts compaction operations whose provider usage is unavailable.
+A compaction failure recovered by bounded re-prime remains visible in compaction accounting without becoming the last review failure or a persisted failure record.
+Suppression totals include only the resolved successful attempt for a completed update, so discarded retries and fully failed updates do not inflate them.
 One public compaction operation may perform more than one provider summarization request, so the unavailable count is operation-level rather than an estimated provider-request total.
 Transcript records are append-only Pi session entries.
 Disabling persistence does not delete prior records, and this batch does not add a transcript-specific retention timer or deletion command.

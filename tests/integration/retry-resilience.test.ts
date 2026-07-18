@@ -116,6 +116,100 @@ describe.sequential("Slice 3B retry lifecycle resilience", () => {
 		}
 	});
 
+	it("counts suppression only from the successful resolved retry attempt", async () => {
+		const firstAttempt = createBarrier();
+		const resolvedAttempt = createBarrier();
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "executor answer" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			{ errorMessage: "failure after suppression", waitFor: firstAttempt.promise },
+			{ content: [], waitFor: resolvedAttempt.promise },
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("retry after a suppressed call");
+			await waitFor(() => advisor.requests.length === 1 && runtime !== undefined);
+			if (runtime === undefined) throw new Error("Expected Advisor runtime");
+			const activeRuntime = runtime;
+			const collector = Reflect.get(activeRuntime, "collector") as {
+				suppressedCalls: number;
+			};
+			collector.suppressedCalls = 1;
+			firstAttempt.release();
+			await waitFor(() => advisor.requests.length === 2);
+			collector.suppressedCalls = 1;
+			resolvedAttempt.release();
+			await waitFor(() => activeRuntime.getStatus().reviewsCompleted === 1);
+
+			expect(activeRuntime.getStatus()).toMatchObject({
+				reviewRequests: 2,
+				reviewsCompleted: 1,
+				failedReviews: 1,
+				retryAttempts: 1,
+				notesSuppressed: 1,
+			});
+		} finally {
+			firstAttempt.release();
+			resolvedAttempt.release();
+			await harness.dispose();
+		}
+	});
+
+	it("does not count suppression from an update whose attempts all fail", async () => {
+		const firstAttempt = createBarrier();
+		const finalAttempt = createBarrier();
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "executor answer" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			{ errorMessage: "first failure after suppression", waitFor: firstAttempt.promise },
+			{ errorMessage: "second failure after suppression", waitFor: finalAttempt.promise },
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("fail every suppressed review attempt");
+			await waitFor(() => advisor.requests.length === 1 && runtime !== undefined);
+			if (runtime === undefined) throw new Error("Expected Advisor runtime");
+			const activeRuntime = runtime;
+			const collector = Reflect.get(activeRuntime, "collector") as {
+				suppressedCalls: number;
+			};
+			collector.suppressedCalls = 1;
+			firstAttempt.release();
+			await waitFor(() => advisor.requests.length === 2);
+			collector.suppressedCalls = 1;
+			finalAttempt.release();
+			await waitFor(() => activeRuntime.getStatus().failedReviews === 2);
+
+			expect(activeRuntime.getStatus()).toMatchObject({
+				reviewRequests: 2,
+				reviewsCompleted: 0,
+				failedReviews: 2,
+				retryAttempts: 1,
+				notesSuppressed: 0,
+			});
+		} finally {
+			firstAttempt.release();
+			finalAttempt.release();
+			await harness.dispose();
+		}
+	});
+
 	it("counts repeated attempts toward the existing three-failure pause and warns once", async () => {
 		const primary = createPrimaryProvider([
 			{ content: [{ type: "text", text: "first answer" }] },

@@ -185,7 +185,10 @@ Programmatic status and warning observers are isolated so observer exceptions ca
 The custom message and entry renderers use current theme colors, sanitize terminal control characters, render age and delivery metadata, and keep every line within the supplied terminal width.
 An unsafe bounded re-prime or reaching a session token or reported-cost cap pauses only Advisor and never interrupts Executor.
 Status distinguishes reported context usage from trailing estimates and reports completed and failed nested compactions and re-primes.
+A compaction failure recovered by bounded re-prime remains visible in the compaction counter but does not become the last review failure or a persisted failure record.
 Status reports review request count, input, output, cache-read, cache-write, total tokens, reported cost, review outcomes, delivery, suppression, persistence, and failure state.
+Suppression counters include only the resolved successful attempt for a completed update, not discarded retry attempts or an update whose attempts all fail.
+The transcript status count reports the monotonic number of records persisted, while diagnostics separately report the bounded number currently available for inspection.
 Pi 0.80.7 does not expose nested compaction-request usage or cost through its public compaction result or events, so status separately counts compaction operations whose provider usage is unavailable rather than folding an estimate into exact review totals.
 
 ## Lifecycle persistence

@@ -7,6 +7,7 @@ import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 
 import {
+	ADVISOR_TRANSCRIPT_ENTRY_TYPE,
 	createPiAdvisorExtension,
 	DEFAULT_ADVISOR_CONFIG,
 	type AdvisorConfig,
@@ -480,9 +481,7 @@ describe.sequential("Token-aware Advisor context through Slice 4B", () => {
 					content: [{ type: "text", text: `private-before-reprime-${"x".repeat(4_000)}` }],
 					usage: { input: 2_500, output: 500, costUsd: 0.03 },
 				},
-				{ errorMessage: "scripted first compaction failure" },
 				{ content: [], usage: { input: 2_500, output: 500, costUsd: 0.03 } },
-				{ errorMessage: "scripted second compaction failure" },
 				{ content: [], usage: { input: 100, output: 20, costUsd: 0.01 } },
 			],
 		});
@@ -496,6 +495,7 @@ describe.sequential("Token-aware Advisor context through Slice 4B", () => {
 						config.context.maxFraction = 0.65;
 						config.context.reserveTokens = 300;
 						config.limits.maxReprimeTokens = 512;
+						config.persistence.transcript = true;
 					}),
 					(value) => (runtime = value),
 				),
@@ -515,8 +515,8 @@ describe.sequential("Token-aware Advisor context through Slice 4B", () => {
 					runtime.getStatus().reviewsCompleted === 3,
 			);
 
-			expect(advisor.requests).toHaveLength(5);
-			const reprimeReviews = [advisor.requests[2], advisor.requests[4]];
+			expect(advisor.requests).toHaveLength(3);
+			const reprimeReviews = [advisor.requests[1], advisor.requests[2]];
 			expect(JSON.stringify(reprimeReviews[0]?.context.messages)).toContain("REPRIME-REQUIREMENT");
 			expect(JSON.stringify(reprimeReviews[0]?.context.messages)).toContain(
 				"SECOND-LONG-SESSION-UPDATE",
@@ -530,11 +530,23 @@ describe.sequential("Token-aware Advisor context through Slice 4B", () => {
 				compactionUsageUnavailable: 2,
 				contextReprimesCompleted: 2,
 				contextReprimeFailures: 0,
-				reviewRequests: 5,
+				reviewRequests: 3,
 				reviewsCompleted: 3,
-				failedReviews: 2,
-				retryAttempts: 2,
+				failedReviews: 0,
+				retryAttempts: 0,
 			});
+			expect(runtime?.getStatus().lastFailure).toBeUndefined();
+			const failureRecords = harness.sessionManager
+				.getBranch()
+				.filter(
+					(entry) =>
+						entry.type === "custom" &&
+						entry.customType === ADVISOR_TRANSCRIPT_ENTRY_TYPE &&
+						typeof entry.data === "object" &&
+						entry.data !== null &&
+						Reflect.get(entry.data, "kind") === "failure",
+				);
+			expect(failureRecords).toHaveLength(0);
 			expect(runtime?.getStatus().usage).toMatchObject({
 				input: 5_100,
 				output: 1_020,
