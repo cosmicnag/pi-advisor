@@ -9,6 +9,7 @@ import {
 	type AgentSession,
 	type ExtensionAPI,
 	type ExtensionContext,
+	type SessionEntry,
 	type TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
 
@@ -48,12 +49,23 @@ import {
 } from "./redaction.js";
 import { createProtectedAdvisorTools, isAdvisorReadOnlyTool } from "./security.js";
 import {
+	ADVISOR_RUNTIME_STATE_ENTRY_TYPE,
+	ADVISOR_RUNTIME_STATE_VERSION,
+	deferredAdviceIdentity,
+	MAX_PERSISTED_DEDUPE_HASHES,
+	MAX_PERSISTED_RUNTIME_STATE_BYTES,
+	parsePersistedAdvisorRuntimeState,
+	type PersistedAdvisorRuntimeState,
+	type PersistedDeferredAdvice,
+} from "./persistence.js";
+import {
 	ADVISOR_CUSTOM_TYPE,
 	cursorAtTail,
 	cursorMatches,
 	isMeaningfulExecutorTurn,
 	renderAdvisorDelta,
 	successfulMemoryToolTexts,
+	validateCursor,
 	type AdvisorCursor,
 } from "./transcript.js";
 
@@ -97,6 +109,13 @@ function adviceQueueBytes(advice: AcceptedAdvice): number {
 	);
 }
 
+function branchHasNewerExecutorState(branch: SessionEntry[], window: AdvisorCursor): boolean {
+	return branch.slice(window.expectedIndex).some((entry) => {
+		if (entry.type === "custom") return false;
+		return !(entry.type === "custom_message" && entry.customType === ADVISOR_CUSTOM_TYPE);
+	});
+}
+
 export interface AdvisorUsageTotals {
 	input: number;
 	output: number;
@@ -128,6 +147,8 @@ export interface AdvisorRuntimeStatus {
 	notesDelivered: number;
 	activeNotesPending: number;
 	deferredNotesPending: number;
+	restoredDeferredNotesPending: number;
+	oldestDeferredAdviceAgeMs: number;
 	notesSuppressed: number;
 	memorySuggestionCapability: MemorySuggestCapability;
 	memorySuggestionsEnabled: boolean;
@@ -173,6 +194,7 @@ interface PendingAdvice {
 	stale: boolean;
 	branchWindow: AdvisorCursor;
 	displayedInEntry: boolean;
+	restoredAfterResume?: boolean;
 }
 
 interface QueuedAdvisorUpdate {
@@ -246,6 +268,8 @@ export function formatAdvisorDiagnosticsDump(
 		notesDelivered: status.notesDelivered,
 		activeNotesPending: status.activeNotesPending,
 		deferredNotesPending: status.deferredNotesPending,
+		restoredDeferredNotesPending: status.restoredDeferredNotesPending,
+		oldestDeferredAdviceAgeMs: status.oldestDeferredAdviceAgeMs,
 		notesSuppressed: status.notesSuppressed,
 		memorySuggestionCapability: status.memorySuggestionCapability,
 		memorySuggestionsEnabled: status.memorySuggestionsEnabled,
@@ -359,8 +383,11 @@ export class AdvisorRuntime {
 	private sessionUnsubscribe?: () => void;
 	private hostContext?: ExtensionContext;
 	private model?: Model<Api>;
+	private sessionId?: string;
+	private sessionInitialized = false;
 	private cursor: AdvisorCursor = { expectedIndex: 0 };
 	private pendingUpdate?: QueuedAdvisorUpdate;
+	private lifecycleResetEpoch?: number;
 	private meaningfulTurnCount = 0;
 	private memorySuggestionAdmissions = 0;
 	private lastMemorySuggestionTurn?: number;
@@ -414,6 +441,8 @@ export class AdvisorRuntime {
 			notesDelivered: 0,
 			activeNotesPending: 0,
 			deferredNotesPending: 0,
+			restoredDeferredNotesPending: 0,
+			oldestDeferredAdviceAgeMs: 0,
 			notesSuppressed: 0,
 			memorySuggestionCapability: {
 				state: "absent",
@@ -490,6 +519,172 @@ export class AdvisorRuntime {
 		this.publishStatus();
 	}
 
+	async startSession(ctx: ExtensionContext): Promise<void> {
+		if (this.disposed) return;
+		const sessionId = ctx.sessionManager.getSessionId();
+		if (this.sessionInitialized) {
+			if (this.sessionId !== sessionId) await this.shutdown();
+			return;
+		}
+		this.sessionInitialized = true;
+		this.sessionId = sessionId;
+		this.hostContext = ctx;
+		this.restorePersistedState(ctx);
+		this.refreshDeferredAdviceStatus();
+		this.publishStatus();
+	}
+
+	private restorePersistedState(ctx: ExtensionContext): void {
+		const sessionId = this.sessionId;
+		const branch = ctx.sessionManager.getBranch();
+		this.cursor = cursorAtTail(branch);
+		if (sessionId === undefined) return;
+		const latest = [...branch]
+			.reverse()
+			.find(
+				(entry) => entry.type === "custom" && entry.customType === ADVISOR_RUNTIME_STATE_ENTRY_TYPE,
+			);
+		if (latest?.type !== "custom") return;
+		const state = parsePersistedAdvisorRuntimeState(latest.data, sessionId, branch);
+		if (state === undefined) return;
+
+		this.cursor = { ...state.cursor };
+		this.meaningfulTurnCount = state.memorySuggestions.meaningfulTurnCount;
+		this.memorySuggestionAdmissions = state.memorySuggestions.admittedCount;
+		if (state.memorySuggestions.lastAdmittedTurn === undefined) {
+			delete this.lastMemorySuggestionTurn;
+		} else {
+			this.lastMemorySuggestionTurn = state.memorySuggestions.lastAdmittedTurn;
+		}
+		if (state.memorySuggestions.lastAdmittedAt === undefined) {
+			delete this.lastMemorySuggestionAt;
+		} else {
+			this.lastMemorySuggestionAt = state.memorySuggestions.lastAdmittedAt;
+		}
+		this.status.memorySuggestionsDelivered = state.memorySuggestions.deliveredCount;
+		this.status.notesDelivered = state.notesDelivered;
+
+		const retentionMs = this.config.limits.deferredAdviceRetentionHours * 60 * 60 * 1_000;
+		const now = Date.now();
+		const discardedIdentities = new Set<string>();
+		for (const persisted of state.deferredAdvice) {
+			const identity = deferredAdviceIdentity(persisted);
+			const unexpired = retentionMs > 0 && now - persisted.advice.createdAt <= retentionMs;
+			if (!unexpired || !cursorMatches(branch, persisted.branchWindow)) {
+				discardedIdentities.add(identity);
+				continue;
+			}
+			const pending: PendingAdvice = {
+				advice: structuredClone(persisted.advice),
+				stale: true,
+				branchWindow: { ...persisted.branchWindow },
+				displayedInEntry: false,
+				restoredAfterResume: true,
+			};
+			if (
+				this.pendingAdvice.enqueue(identity, pending, adviceQueueBytes(pending.advice)) ===
+				"accepted"
+			) {
+				if (ctx.mode === "tui") this.publishLateAdviceEntry(pending);
+			} else {
+				discardedIdentities.add(identity);
+			}
+		}
+		this.adviceDedupe.restoreKeys(
+			state.dedupeHashes.filter((hash) => !discardedIdentities.has(hash)),
+		);
+	}
+
+	private refreshDeferredAdviceStatus(now = Date.now()): void {
+		const pending = this.pendingAdvice.values();
+		this.status.deferredNotesPending = pending.length;
+		this.status.restoredDeferredNotesPending = pending.filter(
+			(note) => note.restoredAfterResume === true,
+		).length;
+		const oldest = pending.reduce<number | undefined>(
+			(value, note) =>
+				value === undefined ? note.advice.createdAt : Math.min(value, note.advice.createdAt),
+			undefined,
+		);
+		this.status.oldestDeferredAdviceAgeMs = oldest === undefined ? 0 : Math.max(0, now - oldest);
+	}
+
+	private persistState(): void {
+		const ctx = this.hostContext;
+		const sessionId = this.sessionId;
+		if (ctx === undefined || sessionId === undefined || this.disposed) return;
+		const branch = ctx.sessionManager.getBranch();
+		if (validateCursor(branch, this.cursor) !== "valid") {
+			this.pendingAdvice.clear();
+			this.activeAdvice.clear();
+			this.adviceDedupe.clear();
+			this.cursor = cursorAtTail(branch);
+			this.refreshDeferredAdviceStatus();
+			this.status.activeNotesPending = 0;
+		}
+		const retainDeferred = this.config.limits.deferredAdviceRetentionHours > 0;
+		const deferredAdvice: PersistedDeferredAdvice[] = retainDeferred
+			? this.pendingAdvice.values().map((pending) => ({
+					advice: structuredClone(pending.advice),
+					stale: pending.stale,
+					branchWindow: { ...pending.branchWindow },
+					displayedInEntry: pending.displayedInEntry,
+					...(pending.restoredAfterResume ? { restoredAfterResume: true as const } : {}),
+				}))
+			: [];
+		const transientIdentities = new Set([
+			...this.pendingAdvice.values().map((pending) => adviceDedupeKey(pending.advice)),
+			...this.activeAdvice.values().map((pending) => pending.identity),
+		]);
+		const state: PersistedAdvisorRuntimeState = {
+			version: ADVISOR_RUNTIME_STATE_VERSION,
+			sessionId,
+			savedAt: Date.now(),
+			cursor: { ...this.cursor },
+			deferredAdvice,
+			dedupeHashes: this.adviceDedupe
+				.exportNewestKeys(MAX_PERSISTED_DEDUPE_HASHES)
+				.filter((hash) => !transientIdentities.has(hash)),
+			memorySuggestions: {
+				meaningfulTurnCount: this.meaningfulTurnCount,
+				admittedCount: this.memorySuggestionAdmissions,
+				deliveredCount: this.status.memorySuggestionsDelivered,
+				...(this.lastMemorySuggestionTurn === undefined
+					? {}
+					: { lastAdmittedTurn: this.lastMemorySuggestionTurn }),
+				...(this.lastMemorySuggestionAt === undefined
+					? {}
+					: { lastAdmittedAt: this.lastMemorySuggestionAt }),
+				sessionCapReached:
+					this.memorySuggestionAdmissions >= this.config.memorySuggestions.sessionSuggestionCap,
+			},
+			notesDelivered: this.status.notesDelivered,
+		};
+		while (
+			state.deferredAdvice.length > 0 &&
+			Buffer.byteLength(JSON.stringify(state), "utf8") > MAX_PERSISTED_RUNTIME_STATE_BYTES
+		) {
+			state.deferredAdvice.pop();
+		}
+		if (Buffer.byteLength(JSON.stringify(state), "utf8") > MAX_PERSISTED_RUNTIME_STATE_BYTES) {
+			return;
+		}
+		try {
+			this.pi.appendEntry(ADVISOR_RUNTIME_STATE_ENTRY_TYPE, state);
+		} catch {
+			// Persistence failure cannot make the primary session or Advisor delivery fail.
+		}
+	}
+
+	private activationStillCurrent(ctx: ExtensionContext, epoch: number): boolean {
+		return (
+			epoch === this.status.epoch &&
+			!this.disposed &&
+			this.status.enabled &&
+			this.sessionId === ctx.sessionManager.getSessionId()
+		);
+	}
+
 	async enable(
 		ctx: ExtensionContext,
 		source: "user-default" | "session-command" | "cli-flag",
@@ -497,6 +692,11 @@ export class AdvisorRuntime {
 	): Promise<void> {
 		if (this.disposed) return;
 		this.hostContext = ctx;
+		if (!this.sessionInitialized) {
+			this.sessionInitialized = true;
+			this.sessionId = ctx.sessionManager.getSessionId();
+			this.cursor = cursorAtTail(ctx.sessionManager.getBranch());
+		}
 		this.refreshMemorySuggestionCapability();
 		this.status.enabled = true;
 		this.status.activationSource = source;
@@ -515,6 +715,7 @@ export class AdvisorRuntime {
 			this.publishStatus();
 			return;
 		}
+		const activationEpoch = this.status.epoch;
 		const modelReference = this.config.model;
 		if (modelReference === undefined) {
 			this.status.active = false;
@@ -539,6 +740,7 @@ export class AdvisorRuntime {
 		}
 		try {
 			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+			if (!this.activationStillCurrent(ctx, activationEpoch)) return;
 			if (!auth.ok) {
 				this.status.active = false;
 				this.status.inactiveReason = `Configured Advisor model ${modelReference} cannot authenticate: ${boundedReason(auth.error)}. No fallback was selected.`;
@@ -546,14 +748,18 @@ export class AdvisorRuntime {
 				return;
 			}
 			await this.createNestedSession(ctx, model);
+			if (!this.activationStillCurrent(ctx, activationEpoch)) {
+				await this.disposeNestedSession();
+				return;
+			}
 		} catch (error) {
+			if (!this.activationStillCurrent(ctx, activationEpoch)) return;
 			this.status.active = false;
 			this.status.inactiveReason = `Advisor could not start: ${boundedReason(error)}. No fallback was selected.`;
 			this.publishStatus();
 			return;
 		}
 		this.model = model;
-		this.cursor = cursorAtTail(ctx.sessionManager.getBranch());
 		this.status.active = true;
 		this.status.model = `${model.provider}/${model.id}`;
 		this.status.contextLimitTokens = Math.max(
@@ -668,6 +874,7 @@ export class AdvisorRuntime {
 	}
 
 	async observeTurn(event: TurnEndEvent, ctx: ExtensionContext): Promise<void> {
+		delete this.lifecycleResetEpoch;
 		if (event.message.role === "assistant" && event.message.stopReason === "aborted") {
 			const run = this.currentRun;
 			if (run !== undefined) run.deferAdvice = true;
@@ -675,13 +882,16 @@ export class AdvisorRuntime {
 		if (!this.status.enabled || !this.status.active || this.status.paused || this.disposed) return;
 		this.hostContext = ctx;
 		const branch = ctx.sessionManager.getBranch();
-		if (!cursorMatches(branch, this.cursor)) {
+		if (validateCursor(branch, this.cursor) !== "valid") {
 			await this.resetForBranchMismatch(branch);
 			return;
 		}
 		const entries = branch.slice(this.cursor.expectedIndex);
 		this.cursor = cursorAtTail(branch);
-		if (!isMeaningfulExecutorTurn(event, entries)) return;
+		if (!isMeaningfulExecutorTurn(event, entries)) {
+			this.persistState();
+			return;
+		}
 		const rendered = renderAdvisorDelta(entries, this.config.context.maxUpdateTokens);
 		this.status.redactions += rendered.redactions;
 		if (rendered.text.trim().length === 0) return;
@@ -868,7 +1078,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			await this.resetForBranchMismatch(currentBranch);
 			return;
 		}
-		const stale = currentBranch.length > update.window.expectedIndex;
+		const stale = branchHasNewerExecutorState(currentBranch, update.window);
 		const failure = thrownFailure ?? run.governorFailure ?? run.toolFailure ?? run.providerFailure;
 		const accepted = this.getAcceptedAdvice();
 		if (failure !== undefined) {
@@ -895,6 +1105,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			if (!delivered) this.status.silentReviews++;
 		}
 		this.applySessionSoftCaps();
+		this.persistState();
 		this.publishStatus();
 	}
 
@@ -909,6 +1120,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		deliveryId?: string,
 		displayedInEntry = false,
 		queueState?: MemorySuggestionQueueState,
+		restoredAfterResume = false,
 	): AdvicePresentationNote {
 		const common = {
 			note: advice.note,
@@ -920,6 +1132,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			createdAt: advice.createdAt,
 			...(deliveryId === undefined ? {} : { deliveryId }),
 			...(displayedInEntry ? { displayedInEntry: true as const } : {}),
+			...(restoredAfterResume ? { restoredAfterResume: true as const } : {}),
 		};
 		return advice.intent === "memory-suggestion"
 			? {
@@ -954,6 +1167,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			undefined,
 			false,
 			this.memoryQueueState(pending.advice),
+			pending.restoredAfterResume === true,
 		);
 		const data: LateAdviceEntryData = { note: details, displayedAt: Date.now() };
 		try {
@@ -1001,7 +1215,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			}
 			this.adviceDedupe.add(advice);
 			this.recordMemorySuggestionAdmission(advice, turnNumber);
-			this.status.deferredNotesPending = this.pendingAdvice.length;
+			this.refreshDeferredAdviceStatus();
 			if (ctx.mode === "tui" && ctx.isIdle()) this.publishLateAdviceEntry(pending);
 		} else {
 			const deliveryId = `${String(this.status.epoch)}:${String(++this.deliverySequence)}:${identity}`;
@@ -1074,7 +1288,8 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				this.adviceDedupe.delete(pending.advice);
 			}
 			this.pendingAdvice.clear();
-			this.status.deferredNotesPending = 0;
+			this.refreshDeferredAdviceStatus();
+			this.persistState();
 			this.publishStatus();
 			return undefined;
 		}
@@ -1082,13 +1297,14 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		const isStale = (pending: PendingAdvice): boolean =>
 			pending.stale ||
 			materialization.hasNewerExecutorInput ||
-			branch.length > pending.branchWindow.expectedIndex;
+			branchHasNewerExecutorState(branch, pending.branchWindow);
 		const batch = takeRenderedPrefix(this.pendingAdvice, MAX_DEFERRED_DELIVERY_BYTES, (pending) =>
 			formatAdviceForDelivery(
 				pending.advice,
 				"deferred",
 				isStale(pending),
 				this.memoryQueueState(pending.advice),
+				pending.restoredAfterResume === true,
 			),
 		);
 		const pending = batch.map(({ value, rendered }) => ({
@@ -1098,12 +1314,12 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		}));
 		for (const { advice } of pending) this.adviceDedupe.add(advice);
 
-		this.status.deferredNotesPending = this.pendingAdvice.length;
+		this.refreshDeferredAdviceStatus();
 		this.status.notesDelivered += pending.length;
 		this.status.memorySuggestionsDelivered += pending.filter(
 			({ advice }) => advice.intent === "memory-suggestion",
 		).length;
-		const notes = pending.map(({ advice, stale, displayedInEntry }) =>
+		const notes = pending.map(({ advice, stale, displayedInEntry, restoredAfterResume }) =>
 			this.adviceDetails(
 				advice,
 				"deferred",
@@ -1111,11 +1327,13 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				undefined,
 				displayedInEntry,
 				this.memoryQueueState(advice),
+				restoredAfterResume === true,
 			),
 		);
 		const content = pending.map(({ formatted }) => formatted).join("\n\n");
 		const single = notes.length === 1 ? notes[0] : undefined;
 		const details: AdviceMessageDetails = { ...(single ?? {}), notes };
+		this.persistState();
 		this.publishStatus();
 		return {
 			customType: ADVISOR_CUSTOM_TYPE,
@@ -1143,6 +1361,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		if (removed.value.advice.intent === "memory-suggestion") {
 			this.status.memorySuggestionsDelivered++;
 		}
+		this.persistState();
 		if (publish) this.publishStatus();
 		return true;
 	}
@@ -1216,11 +1435,24 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			}
 		}
 		this.status.activeNotesPending = this.activeAdvice.length;
-		this.status.deferredNotesPending = this.pendingAdvice.length;
+		this.refreshDeferredAdviceStatus();
+		this.persistState();
 		this.publishStatus();
 	}
 
+	async handleLifecycleHint(ctx: ExtensionContext): Promise<void> {
+		await this.resetForBranchMismatch(ctx.sessionManager.getBranch());
+		this.lifecycleResetEpoch = this.status.epoch;
+	}
+
 	async handleBranchChange(ctx: ExtensionContext): Promise<void> {
+		if (this.lifecycleResetEpoch === this.status.epoch) {
+			delete this.lifecycleResetEpoch;
+			this.cursor = cursorAtTail(ctx.sessionManager.getBranch());
+			this.persistState();
+			this.publishStatus();
+			return;
+		}
 		await this.resetForBranchMismatch(ctx.sessionManager.getBranch());
 	}
 
@@ -1283,7 +1515,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		this.pendingAdvice.clear();
 		this.activeAdvice.clear();
 		this.status.activeNotesPending = 0;
-		this.status.deferredNotesPending = 0;
+		this.refreshDeferredAdviceStatus();
 		this.adviceDedupe.clear();
 		const session = this.session;
 		if (session?.isStreaming) {
@@ -1299,6 +1531,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		}
 		this.cursor = cursorAtTail(branch);
 		this.updateBacklogStatus();
+		this.persistState();
 		this.publishStatus();
 	}
 
@@ -1313,10 +1546,11 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		this.pendingAdvice.clear();
 		this.activeAdvice.clear();
 		this.status.activeNotesPending = 0;
-		this.status.deferredNotesPending = 0;
+		this.refreshDeferredAdviceStatus();
 		this.adviceDedupe.clear();
 		await this.disposeNestedSession();
 		this.updateBacklogStatus();
+		this.persistState();
 		this.publishStatus();
 	}
 
@@ -1326,10 +1560,11 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		this.status.enabled = false;
 		this.status.active = false;
 		delete this.pendingUpdate;
+		this.persistState();
 		this.pendingAdvice.clear();
 		this.activeAdvice.clear();
 		this.status.activeNotesPending = 0;
-		this.status.deferredNotesPending = 0;
+		this.refreshDeferredAdviceStatus();
 		this.adviceDedupe.clear();
 		await this.disposeNestedSession();
 		this.disposed = true;
@@ -1404,7 +1639,7 @@ export function formatAdvisorStatus(status: AdvisorRuntimeStatus): string {
 		`Session cost: $${status.usage.costUsd.toFixed(4)}`,
 		`Reviews: ${String(status.reviewsCompleted)} completed, ${String(status.silentReviews)} silent, ${String(status.failedReviews)} failed`,
 		`Delivery failures: ${String(status.deliveryFailures)}`,
-		`Notes: ${String(status.notesDelivered)} delivered, ${String(status.activeNotesPending)} active pending, ${String(status.deferredNotesPending)} deferred, ${String(status.notesSuppressed)} suppressed`,
+		`Notes: ${String(status.notesDelivered)} delivered, ${String(status.activeNotesPending)} active pending, ${String(status.deferredNotesPending)} deferred (${String(status.restoredDeferredNotesPending)} restored), oldest deferred age ${String(status.oldestDeferredAdviceAgeMs)} ms, ${String(status.notesSuppressed)} suppressed`,
 		`Memory suggestions: ${status.memorySuggestionsEnabled ? "enabled" : "disabled"}, capability ${status.memorySuggestionCapability.state}, ${String(status.memorySuggestionsDelivered)} delivered, ${String(status.memorySuggestionsRemaining)} remaining, ${String(status.memorySuggestionsPolicySuppressed)} policy-suppressed, ${String(status.memorySuggestionsLimitSuppressed)} limit-suppressed`,
 		`Memory suggestion next eligibility: turn ${String(status.memorySuggestionNextEligibleTurn)}, ${new Date(status.memorySuggestionNextEligibleAt).toISOString()}`,
 	];

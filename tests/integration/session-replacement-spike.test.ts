@@ -17,7 +17,34 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 
-import { SCRIPTED_API, createPrimaryProvider } from "../fixtures/scripted-provider.js";
+import {
+	createPiAdvisorExtension,
+	DEFAULT_ADVISOR_CONFIG,
+	type AdvisorRuntime,
+} from "../../src/index.js";
+import {
+	SCRIPTED_API,
+	createAdvisorProvider,
+	createPrimaryProvider,
+} from "../fixtures/scripted-provider.js";
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+	await expect.poll(predicate, { timeout: 5_000, interval: 10 }).toBe(true);
+}
+
+function acceptedAdvice(note: string) {
+	return {
+		content: [
+			{
+				type: "toolCall" as const,
+				id: "replacement-advice",
+				name: "advise",
+				arguments: { note, severity: "concern", intent: "review" },
+			},
+		],
+		stopReason: "toolUse" as const,
+	};
+}
 
 describe("Pi 0.80.7 session replacement spike", () => {
 	it("shuts down the old extension instance before rebinding a replacement session", async () => {
@@ -142,5 +169,150 @@ describe("Pi 0.80.7 session replacement spike", () => {
 			"start:2:new",
 			"shutdown:2:quit",
 		]);
+	});
+
+	it("does not deliver old-session deferred advice after runtime replacement", async () => {
+		const oldNote = "Never carry this queued old-session advice into the replacement session.";
+		const sourceId = "pi-advisor-session-replacement-isolation";
+		let root: string | undefined;
+		let providerRegistered = false;
+		let runtime: AgentSessionRuntime | undefined;
+		let modelRegistry: ModelRegistry | undefined;
+		const advisorRuntimes: AdvisorRuntime[] = [];
+
+		try {
+			root = await mkdtemp(join(tmpdir(), "pi-advisor-replacement-isolation-"));
+			const cwd = join(root, "project");
+			const agentDir = join(root, "agent");
+			await mkdir(cwd, { recursive: true });
+			await mkdir(agentDir, { recursive: true });
+
+			const primary = createPrimaryProvider([
+				{ content: [{ type: "text", text: "old session answer" }] },
+				{ content: [{ type: "text", text: "replacement session answer" }] },
+			]);
+			const advisor = createAdvisorProvider([
+				{ ...acceptedAdvice(oldNote), delayMs: 25 },
+				{ content: [] },
+			]);
+			const config = structuredClone(DEFAULT_ADVISOR_CONFIG);
+			config.defaultEnabled = true;
+			config.model = `${advisor.model.provider}/${advisor.model.id}`;
+			const advisorExtension: InlineExtension = {
+				name: "replacement-advisor",
+				factory: createPiAdvisorExtension({
+					config,
+					hooks: { onRuntime: (value) => advisorRuntimes.push(value) },
+				}),
+			};
+
+			const authStorage = AuthStorage.inMemory();
+			authStorage.setRuntimeApiKey(primary.model.provider, "scripted-key");
+			authStorage.setRuntimeApiKey(advisor.model.provider, "scripted-advisor-key");
+			const replacementModelRegistry = ModelRegistry.inMemory(authStorage);
+			modelRegistry = replacementModelRegistry;
+			replacementModelRegistry.registerProvider(advisor.model.provider, {
+				baseUrl: advisor.model.baseUrl,
+				api: advisor.model.api,
+				apiKey: "scripted-advisor-key",
+				streamSimple: advisor.streamSimple,
+				models: [
+					{
+						id: advisor.model.id,
+						name: advisor.model.name,
+						api: advisor.model.api,
+						baseUrl: advisor.model.baseUrl,
+						reasoning: advisor.model.reasoning,
+						input: advisor.model.input,
+						cost: advisor.model.cost,
+						contextWindow: advisor.model.contextWindow,
+						maxTokens: advisor.model.maxTokens,
+					},
+				],
+			});
+			registerApiProvider(
+				{
+					api: SCRIPTED_API,
+					stream: primary.streamSimple,
+					streamSimple: primary.streamSimple,
+				},
+				sourceId,
+			);
+			providerRegistered = true;
+			const settingsManager = SettingsManager.inMemory({
+				compaction: { enabled: false },
+				retry: { enabled: false },
+			});
+			const createRuntime: CreateAgentSessionRuntimeFactory = async ({
+				cwd: runtimeCwd,
+				sessionManager,
+				sessionStartEvent,
+			}) => {
+				const services = await createAgentSessionServices({
+					cwd: runtimeCwd,
+					agentDir,
+					authStorage,
+					modelRegistry: replacementModelRegistry,
+					settingsManager,
+					resourceLoaderOptions: {
+						extensionFactories: [advisorExtension],
+						noSkills: true,
+						noPromptTemplates: true,
+						noThemes: true,
+						noContextFiles: true,
+						systemPromptOverride: () => "Replacement isolation test.",
+						appendSystemPromptOverride: () => [],
+					},
+				});
+				return {
+					...(await createAgentSessionFromServices({
+						services,
+						sessionManager,
+						...(sessionStartEvent === undefined ? {} : { sessionStartEvent }),
+						model: primary.model,
+						thinkingLevel: "off",
+						tools: [],
+					})),
+					services,
+					diagnostics: services.diagnostics,
+				};
+			};
+
+			runtime = await createAgentSessionRuntime(createRuntime, {
+				cwd,
+				agentDir,
+				sessionManager: SessionManager.inMemory(cwd),
+			});
+			runtime.setRebindSession((session) => session.bindExtensions({ mode: "rpc" }));
+			await runtime.session.bindExtensions({ mode: "rpc" });
+			await runtime.session.prompt("queue advice in the old session");
+			await waitFor(() => advisorRuntimes[0]?.getStatus().deferredNotesPending === 1);
+
+			const oldSessionId = runtime.session.sessionId;
+			let replacementSessionId = "";
+			const replacement = await runtime.newSession({
+				withSession: async (ctx) => {
+					replacementSessionId = ctx.sessionManager.getSessionId();
+					await ctx.sendUserMessage("start the replacement session");
+				},
+			});
+
+			expect(replacement.cancelled).toBe(false);
+			expect(replacementSessionId).not.toBe(oldSessionId);
+			expect(advisorRuntimes).toHaveLength(2);
+			expect(advisorRuntimes[1]?.getStatus()).toMatchObject({
+				deferredNotesPending: 0,
+				notesDelivered: 0,
+			});
+			expect(JSON.stringify(primary.requests[1]?.context)).not.toContain(oldNote);
+			expect(JSON.stringify(runtime.session.messages)).not.toContain(oldNote);
+		} finally {
+			if (runtime !== undefined) await runtime.dispose();
+			if (modelRegistry !== undefined) {
+				modelRegistry.unregisterProvider("pi-advisor-fixture-advisor");
+			}
+			if (providerRegistered) unregisterApiProviders(sourceId);
+			if (root !== undefined) await rm(root, { recursive: true, force: true });
+		}
 	});
 });

@@ -14,6 +14,7 @@ import {
 	adviceDedupeKey,
 	createPiAdvisorExtension,
 	cursorAtTail,
+	cursorMatches,
 	formatAdvisorStatus,
 	DEFAULT_ADVISOR_CONFIG,
 	MAX_PENDING_ADVICE_BYTES,
@@ -623,7 +624,9 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			});
 			await harness.session.prompt("finish before failed late card");
 			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
-			expect(appendEntry).toHaveBeenCalledTimes(1);
+			expect(
+				appendEntry.mock.calls.filter(([customType]) => customType === ADVISOR_LATE_ENTRY_TYPE),
+			).toHaveLength(1);
 			expect(runtime.getStatus()).toMatchObject({
 				deliveryFailures: 1,
 				lastDeliveryFailure: "TOKEN=[REDACTED]",
@@ -631,7 +634,9 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 
 			await harness.session.prompt("deliver despite card failure");
 			expect(JSON.stringify(primary.requests[1]?.context)).toContain(note);
-			expect(appendEntry).toHaveBeenCalledTimes(1);
+			expect(
+				appendEntry.mock.calls.filter(([customType]) => customType === ADVISOR_LATE_ENTRY_TYPE),
+			).toHaveLength(1);
 			appendEntry.mockRestore();
 		} finally {
 			await harness.dispose();
@@ -1677,11 +1682,13 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			const pendingAdvice = Reflect.get(runtime, "pendingAdvice") as BoundedKeyedByteFifo<{
 				advice: AcceptedAdvice;
 				stale: boolean;
-				branchWindow: { expectedIndex: number };
+				branchWindow: { expectedIndex: number; lastEntryId?: string };
 			}>;
-			expect(pendingAdvice.values()).toMatchObject([
-				{ stale: false, branchWindow: { expectedIndex: branchBeforePrompt.length } },
-			]);
+			const queued = pendingAdvice.values()[0];
+			expect(queued?.stale).toBe(false);
+			expect(
+				queued === undefined ? false : cursorMatches(branchBeforePrompt, queued.branchWindow),
+			).toBe(true);
 
 			await harness.session.prompt("materialize with newer Executor input");
 
@@ -1831,7 +1838,7 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			advisorBarrier.release();
 			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
 			expect(primary.requests).toHaveLength(2);
-			expect(JSON.stringify(harness.sessionManager.getEntries())).not.toContain(
+			expect(JSON.stringify(harness.sessionManager.buildSessionContext())).not.toContain(
 				"Inspect the interrupted work before continuing.",
 			);
 			await harness.session.prompt("resume after interruption");
@@ -1880,7 +1887,7 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
 			expect(primary.activeRequests).toBe(1);
 			expect(runtime?.getStatus()).toMatchObject({ notesDelivered: 0 });
-			expect(JSON.stringify(harness.sessionManager.getEntries())).not.toContain(
+			expect(JSON.stringify(harness.sessionManager.buildSessionContext())).not.toContain(
 				"Keep this signal-first interruption advice deferred.",
 			);
 			abortedTurnEndBarrier.release();

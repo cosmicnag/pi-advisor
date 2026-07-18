@@ -23,6 +23,7 @@ interface AdvicePresentationBase {
 	createdAt: number;
 	deliveryId?: string;
 	displayedInEntry?: boolean;
+	restoredAfterResume?: boolean;
 }
 
 export interface ReviewAdvicePresentationNote extends AdvicePresentationBase {
@@ -136,6 +137,7 @@ function parsePresentationBase(note: Record<string, unknown>): AdvicePresentatio
 			? { deliveryId: note.deliveryId }
 			: {}),
 		...(note.displayedInEntry === true ? { displayedInEntry: true } : {}),
+		...(note.restoredAfterResume === true ? { restoredAfterResume: true } : {}),
 	};
 }
 
@@ -242,6 +244,7 @@ export function renderAdviceCards(
 			formatAge(note.createdAt, now),
 			...(note.intent === "memory-suggestion" ? [note.memory.category, note.memory.basis] : []),
 			...(note.stale ? ["potentially stale"] : []),
+			...(note.restoredAfterResume ? ["restored after resume"] : []),
 		];
 		box.addChild(new Spacer(1));
 		box.addChild(new Text(theme.fg(note.stale ? "warning" : "muted", metadata.join(" · ")), 0, 0));

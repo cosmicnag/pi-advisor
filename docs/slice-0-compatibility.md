@@ -50,13 +50,15 @@ Equal-length branches have different leaf and ancestry IDs, so counts cannot saf
 `buildContextEntries()` applies compaction to the active branch while the original entry IDs remain queryable from the append-only tree.
 `session_tree` reports stable old and new leaf IDs after navigation.
 
-Slice 1 combines the expected index with the entry ID at that index for minimal mismatch detection.
-An obvious mismatch invalidates in-flight work, clears pending content, resets nested messages, and moves the cursor to the new tail without reconstructing or reviewing the replacement branch.
-Equal-length ancestry reconstruction and bounded re-prime remain deferred.
+Slice 3A combines the expected index with the entry ID at that index for active-branch ancestry validation.
+A shorter active branch is classified as transcript shrink, while an equal-length changed ID is classified as ancestry mismatch.
+Either mismatch invalidates in-flight work, clears pending content, resets nested messages, and moves the cursor to the new tail without reviewing the replacement branch.
+Bounded re-prime remains deferred.
 
 Runtime session replacement emits `session_shutdown` for the old extension instance before `session_start` for the new instance.
 The replacement has a new session ID and new bound extension instance.
-Slice 1 increments its epoch, aborts streaming nested work when possible, disposes the nested session, and creates no persistent Advisor transcript.
+Slice 3A increments the old epoch, aborts streaming nested work when possible, persists only branch-aware lifecycle state to the old Pi session, and disposes the nested session.
+The new session ID prevents old deferred advice or copied state from restoring into the replacement.
 Runtime disposal emits `session_shutdown` with reason `quit`.
 
 ## Abort measurement

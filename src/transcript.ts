@@ -35,10 +35,23 @@ export function cursorAtTail(branch: SessionEntry[]): AdvisorCursor {
 	};
 }
 
+export type AdvisorCursorValidation = "valid" | "transcript-shrunk" | "ancestry-mismatch";
+
+export function validateCursor(
+	branch: SessionEntry[],
+	cursor: AdvisorCursor,
+): AdvisorCursorValidation {
+	if (branch.length < cursor.expectedIndex) return "transcript-shrunk";
+	if (cursor.expectedIndex === 0) {
+		return cursor.lastEntryId === undefined ? "valid" : "ancestry-mismatch";
+	}
+	return branch[cursor.expectedIndex - 1]?.id === cursor.lastEntryId
+		? "valid"
+		: "ancestry-mismatch";
+}
+
 export function cursorMatches(branch: SessionEntry[], cursor: AdvisorCursor): boolean {
-	if (cursor.expectedIndex === 0) return cursor.lastEntryId === undefined;
-	if (branch.length < cursor.expectedIndex) return false;
-	return branch[cursor.expectedIndex - 1]?.id === cursor.lastEntryId;
+	return validateCursor(branch, cursor) === "valid";
 }
 
 function stringValue(value: unknown, fallback = ""): string {

@@ -3,7 +3,7 @@
 `@ribbons-digital/pi-advisor` is an independent Pi extension for automatic, isolated secondary review of an Executor session.
 The implemented core observes meaningful completed Executor turns in the background, stays silent when work is sound, and delivers only bounded actionable notes.
 
-> Slice 2 status: the safe automatic core includes state-aware delivery, dedupe, themed presentation, bounded diagnostics, and optional capability-detected Memory suggestions with strict safety and delivery-time rechecks.
+> Slice 3A status: the safe automatic core now includes branch-identity validation, eager compaction and tree invalidation, strict session isolation, and bounded branch-aware resume state in addition to Slice 2 delivery and Memory suggestion behavior.
 > The installed default remains off and has no model selection until the durable WATCHDOG configuration and `/advisor configure` workflow arrive in a later approved slice.
 
 ## Not the same as rpiv-advisor
@@ -13,7 +13,7 @@ This package is designed for automatic background observation that does not depe
 Both packages register `/advisor`, and Pi 0.80.7 assigns `/advisor:1` and `/advisor:2` in extension load order when both are installed.
 Slice 1 does not add a collision warning, so users must identify the intended command from Pi's command list.
 
-## Implemented behavior through Slice 2
+## Implemented behavior through Slice 3A
 
 - One explicitly selected Advisor model, with no fallback to the Executor model.
 - Automatic review after meaningful completed Executor turns.
@@ -33,11 +33,17 @@ Slice 1 does not add a collision warning, so users must identify the intended co
   Each user-driven turn receives at most a 64 KiB FIFO prefix, with remaining notes retained for later turns.
 - Advice produced after the Executor advances beyond the reviewed window is marked potentially stale and asks the Executor to verify it still applies.
   Deferred advice emitted from `before_agent_start` is also potentially stale because the current user prompt is newer Executor input that Pi has not yet appended to branch state.
-- Separate in-memory Advisor state that does not persist a transcript.
+- Separate in-memory Advisor conversation state with no persisted Advisor transcript.
+- Bounded versioned `pi-advisor-runtime-state` custom entries persist lifecycle-only state outside model context even while optional transcript persistence is false.
+- Entry-ID cursor ancestry validation detects transcript shrink and equal-length branch replacement.
+- Compaction and tree-navigation hints invalidate every in-flight continuation before the host lifecycle await, then reseed to the resulting active branch.
+- Compatible resume restores unexpired deferred advice, reports its age, marks it restored and potentially stale, and delivers it only after the next user prompt.
+- Resume also restores up to 128 newest delivered-note dedupe hashes and Memory suggestion turn and time cadence, admitted count, delivered count, and session-cap state.
+- New sessions, incompatible branches, expired notes, already delivered notes, and retention `0` do not restore deferred delivery.
 - Protected `read`, `grep`, `find`, and `ls` tools, with no mutating Advisor tools.
 - Explicit update, pending-byte, context, token, cost, tool-call, and turn governors.
 - Single-flight review with bounded coalescing while Advisor is busy.
-- Epoch invalidation on disablement, branch mismatch, and shutdown.
+- Epoch invalidation on disablement, branch mismatch, compaction, tree navigation, session replacement, and shutdown.
 - Three consecutive failed updates pause Advisor and warn once.
 - Delivery attempts are single-shot, count separately, retain only one bounded redacted last-failure reason, and never enter a retry loop.
 - Explicit `/advisor dump` diagnostics exclude transcripts, notes, reasoning, instructions, protected paths, and raw failure text, redact included string fields, and stay within 16 KiB.
@@ -53,7 +59,7 @@ Slice 1 does not add a collision warning, so users must identify the intended co
 - Pi Advisor never imports Memory Lane, invokes `memory_save` or `memory_suggest`, writes memory storage, or approves a memory.
 - No product telemetry.
 
-Cross-exit lifecycle restoration, provider retry, context compaction, WATCHDOG files, and transcript persistence remain outside Slice 2.
+Provider retry, retry and pause integration, backlog or failure status expansion, Advisor context compaction or re-prime, WATCHDOG files, and optional full Advisor transcript persistence remain outside Slice 3A.
 
 The normative public contract is in [`docs/behavior-contract.md`](docs/behavior-contract.md).
 The measured OMP parity position is tracked in [`docs/omp-parity.md`](docs/omp-parity.md).
@@ -64,6 +70,7 @@ Slice 2 Batch A implementation evidence is in [`docs/slice-2-batch-a.md`](docs/s
 Slice 2 Batch B implementation evidence is in [`docs/slice-2-batch-b.md`](docs/slice-2-batch-b.md).
 Slice 2 Batch C implementation evidence is in [`docs/slice-2-batch-c.md`](docs/slice-2-batch-c.md).
 Full Slice 2 acceptance and closure evidence is in [`docs/slice-2-verification.md`](docs/slice-2-verification.md).
+Slice 3A lifecycle and persistence evidence is in [`docs/slice-3a.md`](docs/slice-3a.md).
 
 ## Install the package locally
 
@@ -118,7 +125,8 @@ The release defaults require eight meaningful turns and ten minutes between acce
 The hard maxima are 4,000 characters and approximately 1,024 estimated tokens.
 Its 4,096-key dedupe history, 4,096-note and 1,000,000-byte deferred queue, and 64 KiB deferred delivery batch are fixed protocol bounds.
 A full deferred queue rejects newer advice, increments the suppressed-note count, and warns once per session.
-`maxReprimeTokens`, review cadence, deferred-advice retention, `persistence`, `AdvisorProjectConfig`, and `CONFIG_VALIDATION_STRATEGY` remain reserved and do not change Slice 2 runtime behavior.
+`deferredAdviceRetentionHours` now controls cross-exit deferred-note restoration, with `0` disabling it and the 24-hour default applying on compatible resume.
+`maxReprimeTokens`, review cadence, optional full transcript `persistence`, `AdvisorProjectConfig`, and `CONFIG_VALIDATION_STRATEGY` remain reserved and do not change Slice 3A runtime behavior.
 `DEFAULT_ADVISOR_CONFIG` is deeply frozen; clone it before editing configuration.
 `PROPOSED_ADVISOR_CONFIG` remains a deprecated compatibility alias containing an independent mutable clone of the canonical defaults.
 Programmatic hooks are intended for embedding and tests: `onRuntime` exposes the instance, `onStatus` receives status snapshots, and `onWarning` receives runtime warnings.
@@ -138,19 +146,20 @@ All current modules are re-exported from the package root.
 | Configuration   | `DEFAULT_ADVISOR_CONFIG`, deprecated `PROPOSED_ADVISOR_CONFIG`, `normalizeAdvisorConfig`, `HARD_LIMITS`, `READ_ONLY_TOOL_NAMES`, configuration types, and reserved validation metadata |
 | Advice          | `createAdviseTool`, `boundAdvice`, policy-specific normalizers, intent-scoped dedupe helpers, delivery formatting, and ordinary or Memory suggestion advice types                      |
 | Delivery        | Fixed delivery bounds, `BoundedKeyedByteFifo`, `takeRenderedPrefix`, and queue types                                                                                                   |
+| Persistence     | Runtime-state custom type, schema and bounds, strict parser, persisted state types, and the measured 128-hash cap                                                                      |
 | Presentation    | XML escaping, advice message and late-entry renderers, themed card rendering, presentation data types, and the late-entry custom type                                                  |
 | Protected tools | `ProtectedPathPolicy`, `createProtectedAdvisorTools`, `isAdvisorReadOnlyTool`, and `AdvisorToolContext`                                                                                |
 | Transcript      | `ADVISOR_CUSTOM_TYPE`, cursor helpers, meaningful-turn filtering, delta rendering, and transcript types                                                                                |
 | Redaction       | `redactSecrets`, `estimateTokens`, UTF-8 truncation helpers, and `RedactionResult`                                                                                                     |
 
 The default extension is the installable entry point.
-`AdvisorRuntime` exposes cloned status snapshots, nested-message inspection, project-context capture, explicit enable and disable, turn and message observation, active-delivery settlement, deferred-advice materialization through `takeDeferredAdvice`, branch-change invalidation through `handleBranchChange`, and shutdown, while the extension factory wires those lifecycle methods to Pi.
-`AdvisorRuntimeStatus.activeNotesPending` counts active notes awaiting Pi acknowledgement, `deferredNotesPending` counts notes waiting for a later user prompt, and `notesDelivered` increases only after acknowledgement or deferred materialization.
-The factory, runtime hooks, status formatters, and policy helpers support controlled embedding, integration tests, and inspection without enabling durable configuration or persistence.
+`AdvisorRuntime` exposes cloned status snapshots, nested-message inspection, project-context capture, session restoration, explicit enable and disable, turn and message observation, active-delivery settlement, deferred-advice materialization through `takeDeferredAdvice`, eager lifecycle invalidation, branch reseeding, and shutdown, while the extension factory wires those lifecycle methods to Pi.
+`AdvisorRuntimeStatus.activeNotesPending` counts active notes awaiting Pi acknowledgement, `deferredNotesPending` counts notes waiting for a later user prompt, `restoredDeferredNotesPending` identifies the restored subset, `oldestDeferredAdviceAgeMs` reports its age, and `notesDelivered` increases only after acknowledgement or deferred materialization.
+The factory, runtime hooks, status formatters, and policy helpers support controlled embedding, integration tests, and inspection without enabling durable configuration or optional full transcript persistence.
 
 ## Compatibility
 
-Development, compatibility evidence, and the automatic core through Slice 2 target `@earendil-works/pi-coding-agent` 0.80.7.
+Development, compatibility evidence, and the automatic core through Slice 3A target `@earendil-works/pi-coding-agent` 0.80.7.
 The peer range is `>=0.80.7 <0.81.0`, with 0.80.7 as the only tested version.
 The supported Pi host supplies the coding-agent and TUI peer packages; standalone runtime imports without those host peers are unsupported.
 A missing or unavailable configured Advisor model leaves Advisor inactive without fallback or partial nested runtime construction.
@@ -167,7 +176,11 @@ Results returned by Advisor's allowed read-only tools, including allowed file co
 The protected `grep` tool uses `rg` when available; without `rg`, explicit literal searches use a bounded in-process fallback while regex searches report that they are unavailable.
 Protected-path checks cover direct and symlink-resolved access, but neither path protection nor redaction can guarantee that every secret is excluded.
 Automatic review creates additional provider usage and cost, bounded by configured session governors and the active package hard maxima for notes, turns, tool calls, and pending bytes.
-Advisor transcript persistence remains disabled and unimplemented in Slice 2.
+Optional full Advisor transcript persistence remains disabled and unimplemented in Slice 3A.
+Pi Advisor always stores bounded lifecycle-only custom entries in the active Pi session JSONL, including a branch cursor, retained deferred accepted notes, up to 128 dedupe hashes, delivery counts, and Memory suggestion cadence and cap state.
+These custom entries are outside model context and contain no Executor or Advisor reasoning, provider payloads, transcript updates, suppressed notes, or raw failure text.
+They are deleted with the owning Pi session file.
+Retention `0` prevents deferred note content from being written into new lifecycle snapshots, while disabling optional full transcript persistence does not disable lifecycle state required for correctness.
 
 ## Telemetry
 

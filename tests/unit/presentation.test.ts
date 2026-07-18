@@ -70,6 +70,8 @@ function runtimeStatus(): AdvisorRuntimeStatus {
 		notesDelivered: 1,
 		activeNotesPending: 0,
 		deferredNotesPending: 0,
+		restoredDeferredNotesPending: 0,
+		oldestDeferredAdviceAgeMs: 0,
 		notesSuppressed: 0,
 		memorySuggestionCapability: { state: "available" },
 		memorySuggestionsEnabled: true,
@@ -89,7 +91,7 @@ function runtimeStatus(): AdvisorRuntimeStatus {
 	};
 }
 
-describe("Slice 2 Batch B presentation and diagnostics", () => {
+describe("Advisor presentation and diagnostics through Slice 3A", () => {
 	it("escapes XML text, attributes, and invalid XML control characters", () => {
 		expect(escapeXmlText(`A & B < C > D\u0000 "quoted"`)).toBe(
 			`A &amp; B &lt; C &gt; D\uFFFD "quoted"`,
@@ -133,6 +135,19 @@ describe("Slice 2 Batch B presentation and diagnostics", () => {
 			expect(lines.length).toBeGreaterThan(0);
 			for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 		}
+	});
+
+	it("renders restored deferred advice with its age and resume marker", () => {
+		const lines = renderAdviceCards(
+			[presentationNote({ restoredAfterResume: true })],
+			false,
+			fixtureTheme(false),
+			1_700_007_200_000,
+		).render(80);
+		const rendered = lines.join("\n");
+		expect(rendered).toContain("2h ago");
+		expect(rendered).toContain("potentially stale");
+		expect(rendered).toContain("restored after resume");
 	});
 
 	it("renders Memory suggestions distinctly with proposed text and queue state", () => {
