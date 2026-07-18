@@ -2,10 +2,10 @@
 
 Pi Advisor provides automatic secondary review of a primary Pi agent session while keeping reviewer state separate from the primary conversation.
 
-## Slice 2 terminology status
+## Slice 3A terminology status
 
-The implemented runtime provides Executor, Advisor, Advisor update, Cursor, Epoch, Meaningful Executor turn, Executor reasoning, Advisory note, Memory suggestion, in-session Deferred advice, Advice card, Session activation, in-memory caller configuration, Fixed Advisor policy, User instructions, tagged Project instructions, Protected path, Protected-path exception, and Destructive-command guard boundaries.
-Re-prime, cross-exit Deferred advice restoration, durable User configuration, durable Project configuration, and Persisted Advisor transcript remain reserved later-slice terms.
+The implemented runtime provides Executor, Advisor, Advisor update, active-branch Cursor, Epoch, Meaningful Executor turn, Executor reasoning, Advisory note, Memory suggestion, retained Deferred advice, compatible resume, lifecycle-only persisted state, Advice card, Session activation, in-memory caller configuration, Fixed Advisor policy, User instructions, tagged Project instructions, Protected path, Protected-path exception, and Destructive-command guard boundaries.
+Re-prime, durable User configuration, durable Project configuration, and optional Persisted Advisor transcript remain reserved later-slice terms.
 
 ## Language
 
@@ -53,10 +53,12 @@ It never grants approval to the proposed memory.
 _Avoid_: Saved memory, approved memory, hidden autosave, Advisor-owned memory
 
 **Deferred advice**:
-An accepted, individually bounded Advisory note waiting in in-memory runtime state for the next user-driven Executor turn and cleared if the active session or branch changes first.
+An accepted, individually bounded Advisory note waiting for the next user-driven Executor turn.
 The user prompt that triggers materialization is newer Executor input, so the emitted note is potentially stale even though Pi has not yet appended that prompt to branch state during `before_agent_start`.
 The pending FIFO has fixed, non-configurable limits of 4,096 advice items and 1,000,000 retained UTF-8 bytes, including Memory rationale and proposed text, and each user-turn delivery contains at most 64 KiB of rendered content.
-Cross-exit restoration remains deferred to Slice 3.
+Slice 3A retains deferred advice in versioned branch-aware custom entries when retention is nonzero.
+Compatible resume marks it restored, reports and renders its age, and adds a stale-after-resume warning before next-prompt delivery.
+Session replacement, branch incompatibility, delivery, expiry, or retention `0` prevents restoration.
 _Avoid_: Backlog, hidden instruction, cross-session message
 
 **Advice card**:

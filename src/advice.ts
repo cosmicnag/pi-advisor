@@ -193,6 +193,31 @@ export class BoundedAdviceDedupe {
 		this.keys.clear();
 	}
 
+	exportNewestKeys(maximum: number, excludedKeys: ReadonlySet<string> = new Set()): string[] {
+		if (!Number.isInteger(maximum) || maximum < 0) {
+			throw new RangeError("Advice dedupe export bound must be a non-negative integer");
+		}
+		if (maximum === 0) return [];
+		const newest: string[] = [];
+		for (const key of [...this.keys].reverse()) {
+			if (excludedKeys.has(key)) continue;
+			newest.push(key);
+			if (newest.length === maximum) break;
+		}
+		return newest.reverse();
+	}
+
+	restoreKeys(keys: readonly string[]): void {
+		for (const key of keys) {
+			if (!/^[a-f0-9]{64}$/u.test(key) || this.keys.has(key)) continue;
+			this.keys.add(key);
+			if (this.keys.size > this.capacity) {
+				const oldest = this.keys.values().next().value;
+				if (oldest !== undefined) this.keys.delete(oldest);
+			}
+		}
+	}
+
 	get size(): number {
 		return this.keys.size;
 	}
@@ -325,6 +350,7 @@ export function formatAdviceForDelivery(
 	delivery: AdviceDelivery,
 	stale: boolean,
 	queueState?: MemorySuggestionQueueState,
+	restoredAfterResume = false,
 ): string {
 	if (advice.intent === "memory-suggestion") {
 		const attributes = [
@@ -333,12 +359,16 @@ export function formatAdviceForDelivery(
 			`basis="${escapeXmlAttribute(advice.memory.basis)}"`,
 			`delivery="${escapeXmlAttribute(delivery)}"`,
 			`stale="${escapeXmlAttribute(String(stale))}"`,
+			...(restoredAfterResume ? [`restored-after-resume="true"`] : []),
 			...(queueState === undefined ? [] : [`queue-state="${escapeXmlAttribute(queueState)}"`]),
 		];
+		const resumeWarning = restoredAfterResume
+			? "This deferred suggestion was restored after resume and may be stale. "
+			: "";
 		const guidance =
 			queueState === "could-not-queue"
-				? "The compatible memory_suggest capability is no longer available. Do not attempt this tool call. Briefly tell the user the proposal could not be queued."
-				: `${stale ? "First verify that this still applies. " : ""}Verify or revise the proposed durable memory, then call memory_suggest with the chosen text, category, and status "pending" without asking for another confirmation. If the proposal is unsuitable, briefly explain why to the user.`;
+				? `${resumeWarning}The compatible memory_suggest capability is no longer available. Do not attempt this tool call. Briefly tell the user the proposal could not be queued.`
+				: `${resumeWarning}${stale ? "First verify that this still applies. " : ""}Verify or revise the proposed durable memory, then call memory_suggest with the chosen text, category, and status "pending" without asking for another confirmation. If the proposal is unsuitable, briefly explain why to the user.`;
 		return `<advisor-note ${attributes.join(" ")}>\n<rationale>${escapeXmlText(advice.note)}</rationale>\n<proposed-memory>${escapeXmlText(advice.memory.text)}</proposed-memory>\n<guidance>${escapeXmlText(guidance)}</guidance>\n</advisor-note>`;
 	}
 	const guidance = stale
@@ -349,8 +379,12 @@ export function formatAdviceForDelivery(
 		`severity="${escapeXmlAttribute(advice.severity)}"`,
 		`delivery="${escapeXmlAttribute(delivery)}"`,
 		`stale="${escapeXmlAttribute(String(stale))}"`,
+		...(restoredAfterResume ? [`restored-after-resume="true"`] : []),
 	];
-	return `<advisor-note ${attributes.join(" ")}>\n<note>${escapeXmlText(advice.note)}</note>\n<guidance>${escapeXmlText(guidance)}</guidance>\n</advisor-note>`;
+	const resumeWarning = restoredAfterResume
+		? "This deferred advice was restored after resume and may be stale. "
+		: "";
+	return `<advisor-note ${attributes.join(" ")}>\n<note>${escapeXmlText(advice.note)}</note>\n<guidance>${escapeXmlText(`${resumeWarning}${guidance}`)}</guidance>\n</advisor-note>`;
 }
 
 export function createAdviseTool(

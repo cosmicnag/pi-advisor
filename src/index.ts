@@ -67,6 +67,7 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		await runtime.startSession(ctx);
 		const cliEnabled = pi.getFlag("advisor") === true;
 		const defaultEnabled = config.defaultEnabled && (ctx.mode === "tui" || ctx.mode === "rpc");
 		if (cliEnabled) await runtime.enable(ctx, "cli-flag");
@@ -90,6 +91,12 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 
 	pi.on("agent_settled", (_event, ctx) => runtime.settleActiveAdvice(ctx));
 
+	pi.on("session_before_compact", (_event, ctx) => runtime.handleLifecycleHint(ctx));
+
+	pi.on("session_compact", (_event, ctx) => runtime.handleBranchChange(ctx));
+
+	pi.on("session_before_tree", (_event, ctx) => runtime.handleLifecycleHint(ctx));
+
 	pi.on("session_tree", (_event, ctx) => runtime.handleBranchChange(ctx));
 
 	pi.on("session_shutdown", async () => {
@@ -112,6 +119,7 @@ export default function piAdvisor(pi: ExtensionAPI): void {
 export * from "./advice.js";
 export * from "./config.js";
 export * from "./delivery.js";
+export * from "./persistence.js";
 export * from "./presentation.js";
 export * from "./redaction.js";
 export * from "./runtime.js";

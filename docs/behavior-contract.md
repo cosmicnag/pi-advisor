@@ -3,8 +3,8 @@
 ## Status
 
 This document defines the intended public behavior of `@ribbons-digital/pi-advisor`.
-Slice 2 completes the safe automatic core's state-aware delivery, dedupe, themed presentation, bounded diagnostics, and optional compatible Memory suggestions with strict proposal policy and delivery-time capability rechecks.
-Durable configuration, cross-exit lifecycle restoration, context compaction, and transcript persistence remain deferred to their separately approved slices.
+Slice 3A extends the safe automatic core with active-branch cursor validation, eager lifecycle invalidation, strict session replacement isolation, and bounded compatible-resume state.
+Durable configuration, provider retry, Advisor context compaction and re-prime, and optional full transcript persistence remain deferred to their separately approved slices.
 
 ## Roles
 
@@ -39,9 +39,10 @@ Only accepted Advisory notes may enter Executor context.
 Executor user and assistant messages, exposed reasoning, tool calls and results, included user shell executions, branch and compaction summaries, and non-Advisor extension context may enter a bounded update.
 Image payloads are omitted.
 Executor reasoning is included only when Pi or the provider exposes it, after redaction and bounding.
-Executor and Advisor reasoning is never persisted by Pi Advisor in Slice 1.
+Executor and Advisor reasoning is never persisted by Pi Advisor.
 Advisor updates, coalesced pending deltas, protected tool results, and accepted notes are bounded.
-Re-prime snapshots and persisted records are not implemented in Slice 1.
+Re-prime snapshots and optional full Advisor transcript records are not implemented in Slice 3A.
+Lifecycle-only custom entries persist outside model context independently of optional transcript persistence.
 
 ## Delivery
 
@@ -53,9 +54,10 @@ Idle or terminal advice waits in bounded in-memory runtime state for the next us
 The active-pending and deferred queues each reject new advice when admission would exceed 4,096 items or 1,000,000 UTF-8 bytes of retained review-note text or combined Memory rationale and proposed-memory text.
 A rejection preserves older FIFO entries, increments the suppressed-note count, and emits at most one queue-capacity warning per session.
 Pi 0.80.7 exposes no public abort cause, so every public abort signal or aborted Executor stop reason forces advice already being reviewed to use deferred delivery, and aborted Executor turns are excluded from new review.
-Pi 0.80.7 also exposes no public method to cancel an already queued `nextTurn` custom message after branch navigation, so Batch A uses the documented `before_agent_start` injection fallback for branch-safe deferred delivery.
-Batch A does not implement cross-exit deferred-advice restoration or a package-managed retention timer.
-An incompatible active-branch cursor invalidates in-flight review and clears in-memory deferred advice before delivery, while disablement and shutdown invalidate the runtime epoch and dispose nested work.
+Pi 0.80.7 also exposes no public method to cancel an already queued `nextTurn` custom message after branch navigation, so deferred delivery uses the documented `before_agent_start` injection fallback.
+Slice 3A persists retained deferred advice in branch-aware lifecycle state and applies `deferredAdviceRetentionHours` only when restoring a compatible session.
+Retention `0` excludes deferred note content from new persisted snapshots.
+An incompatible active-branch cursor invalidates in-flight review and clears deferred advice before delivery, while disablement, compaction, tree navigation, session replacement, and shutdown invalidate the runtime epoch.
 Every delivered item is visible and is framed as guidance to weigh rather than obey blindly.
 It uses custom message type `pi-advisor-note` and XML-safe `<advisor-note>` content.
 Review-note wrappers carry review intent, severity, delivery, and stale attributes plus bounded note and guidance text.
@@ -140,14 +142,16 @@ If the Executor advances beyond the transcript window fixed for Advisor submissi
 Deferred advice recomputes staleness against its captured branch window when it materializes.
 Pi invokes `before_agent_start` before appending that event's current user prompt to branch state, so the runtime receives explicit notice of that pending newer Executor input and marks every deferred note emitted alongside it potentially stale.
 Every asynchronous review continuation is guarded by a runtime epoch and a captured active-branch window.
-Active-branch entry IDs, not message counts, anchor minimal cursor validation.
-Obvious tree-navigation or branch mismatches reset private Advisor context, while disablement and shutdown invalidate stale work.
-Batch A does not reconstruct equal-length branches or restore advice across process or session exits.
+Active-branch entry IDs, not message counts, anchor cursor validation.
+The cursor validator distinguishes transcript shrink from an equal-length ancestry mismatch.
+`session_before_compact` and `session_before_tree` eagerly invalidate in-flight work before host lifecycle awaits, while the corresponding completion events reseed the cursor to the resulting branch.
+Entry identity remains authoritative when no lifecycle hint is observed.
+Compatible resume restores only state whose Pi session ID and cursor match the active branch.
 Update, pending-byte, context, turn, tool-call, note, session-token, and reported-cost governors remain enabled by default.
-Review cadence, re-prime, deferred-retention, and persistence settings remain reserved and have no Slice 2 runtime effect.
-Memory suggestion cadence, session cap, and proposed-text bounds are active in Slice 2.
-In particular, `deferredAdviceRetentionHours` does not expire in-memory Slice 2 advice and remains reserved for cross-exit lifecycle work.
-Batches A and B add no user-configurable field.
+Review cadence, re-prime, and optional full transcript persistence remain reserved and have no Slice 3A runtime effect.
+Memory suggestion cadence, session cap, proposed-text bounds, and cross-exit cadence and cap restoration are active.
+`deferredAdviceRetentionHours` applies during cross-exit restoration but does not expire a live in-memory queue.
+Slice 3A adds no user-configurable field.
 Its 4,096-key dedupe history, 4,096-note and 1,000,000-byte deferred queue, and 64 KiB delivery batch are fixed protocol bounds.
 Provider, malformed internal tool, governor, and delivery failures are not retried, and failed update messages are removed from private Advisor context.
 Active message-send failures count as both one failed review and one delivery failure, remove the active-pending copy, and retain only a bounded redacted reason.
@@ -159,10 +163,25 @@ Programmatic status and warning observers are isolated so observer exceptions ca
 The custom message and entry renderers use current theme colors, sanitize terminal control characters, render age and delivery metadata, and keep every line within the supplied terminal width.
 Exceeding the context limit or reaching a session token or reported-cost cap pauses only Advisor and never interrupts Executor.
 
+## Lifecycle persistence
+
+Pi Advisor attempts to append versioned `pi-advisor-runtime-state` custom entries to the active Pi session state.
+Pi custom entries do not participate in model context.
+A file-backed Pi session persists successful appends in its JSONL, while an in-memory session has no JSONL and an append failure does not alter Advisor delivery.
+Each snapshot is bounded to 4 MiB and stores the Pi session ID, save timestamp, active-branch cursor, retained deferred accepted notes, at most 128 lowercase SHA-256 dedupe hashes, delivered-note count, and Memory suggestion meaningful-turn count, admission count, delivered count, last-admission turn and timestamp, and session-cap state.
+Deferred notes retain only their already bounded redacted accepted-note shape, branch window, staleness and display flags, and restored-after-resume marker.
+Snapshots never contain Executor or Advisor reasoning, Advisor transcript messages, observed transcript updates, provider payloads, protected tool output, suppressed or rejected notes, or raw failure text.
+The strict version, shape, item, text, hash, byte, session-ID, and cursor checks reject malformed or incompatible state without fallback to an older snapshot.
+The latest state entry on the active branch is authoritative.
+A genuinely new or forked Pi session receives a new session ID and cannot restore copied state from its parent.
+Compatible resume restores unexpired deferred notes as potentially stale, reports their age, shows a restored marker, and materializes them only after the next user prompt.
+Delivered, expired, branch-incompatible, over-capacity, and retention-disabled deferred notes are discarded.
+For a file-backed session, successfully appended lifecycle state is deleted by deleting that session through Pi or removing its session file.
+
 ## Privacy and telemetry
 
-Private Advisor transcript persistence is unimplemented and cannot be enabled in Slice 1.
-Any future enabled persistence must exclude Executor and Advisor reasoning and store only redacted bounded records.
+Optional full Advisor transcript persistence is unimplemented and cannot be enabled in Slice 3A.
+Any future enabled transcript persistence must exclude Executor and Advisor reasoning and store only redacted bounded records.
 The package sends no product analytics, usage telemetry, or automatic crash reports.
 The user-selected model provider receives only the bounded content required for Advisor requests.
 Support diagnostics require explicit `/advisor dump` action and never export automatically.

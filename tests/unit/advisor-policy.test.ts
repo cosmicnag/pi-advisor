@@ -75,6 +75,8 @@ function runtimeStatus(): AdvisorRuntimeStatus {
 		notesDelivered: 0,
 		activeNotesPending: 0,
 		deferredNotesPending: 0,
+		restoredDeferredNotesPending: 0,
+		oldestDeferredAdviceAgeMs: 0,
 		notesSuppressed: 0,
 		memorySuggestionCapability: { state: "absent", reason: "not registered" },
 		memorySuggestionsEnabled: false,
