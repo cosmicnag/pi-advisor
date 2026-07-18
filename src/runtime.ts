@@ -30,6 +30,12 @@ import {
 	takeRenderedPrefix,
 } from "./delivery.js";
 import {
+	ADVISOR_LATE_ENTRY_TYPE,
+	type AdviceMessageDetails,
+	type AdvicePresentationNote,
+	type LateAdviceEntryData,
+} from "./presentation.js";
+import {
 	estimateTokens,
 	redactSecrets,
 	truncateUtf8Bytes,
@@ -48,6 +54,7 @@ import {
 const PENDING_TRUNCATION_MARKER =
 	"[Older coalesced Advisor update content discarded at pending-byte limit]\n";
 const FAILURE_PAUSE_COUNT = 3;
+export const MAX_ADVISOR_DUMP_BYTES = 16 * 1_024;
 
 export interface AdvisorUsageTotals {
 	input: number;
@@ -76,6 +83,7 @@ export interface AdvisorRuntimeStatus {
 	reviewsCompleted: number;
 	silentReviews: number;
 	failedReviews: number;
+	deliveryFailures: number;
 	notesDelivered: number;
 	activeNotesPending: number;
 	deferredNotesPending: number;
@@ -85,6 +93,7 @@ export interface AdvisorRuntimeStatus {
 	branchResets: number;
 	warnings: number;
 	lastFailure?: string;
+	lastDeliveryFailure?: string;
 	epoch: number;
 	nestedExtensionCount?: number;
 	nestedActiveTools: string[];
@@ -114,25 +123,13 @@ interface PendingAdvice {
 	advice: AcceptedAdvice;
 	stale: boolean;
 	branchWindow: AdvisorCursor;
+	displayedInEntry: boolean;
 }
 
 interface OutstandingAdvice extends PendingAdvice {
 	identity: string;
 	deliveryId: string;
 	epoch: number;
-}
-
-interface AdviceMessageNote {
-	intent: "review";
-	note: string;
-	severity: AcceptedAdvice["severity"];
-	delivery: AdviceDelivery;
-	stale?: boolean;
-	truncated: boolean;
-	originalCharacters: number;
-	originalEstimatedTokens: number;
-	createdAt: number;
-	deliveryId?: string;
 }
 
 function emptyUsage(): AdvisorUsageTotals {
@@ -155,6 +152,102 @@ function hasToolCall(message: AssistantMessage): boolean {
 function boundedReason(error: unknown): string {
 	const message = error instanceof Error ? error.message : String(error);
 	return redactSecrets(message).text.slice(0, 500);
+}
+
+function redactDiagnosticValue(value: unknown): unknown {
+	if (typeof value === "string") return redactSecrets(value).text;
+	if (Array.isArray(value)) return value.map((item) => redactDiagnosticValue(item));
+	if (typeof value !== "object" || value === null) return value;
+	return Object.fromEntries(
+		Object.entries(value).map(([key, nested]) => [key, redactDiagnosticValue(nested)]),
+	);
+}
+
+export function formatAdvisorDiagnosticsDump(
+	status: AdvisorRuntimeStatus,
+	config: AdvisorConfig,
+	now = Date.now(),
+): string {
+	const diagnosticStatus = {
+		enabled: status.enabled,
+		active: status.active,
+		paused: status.paused,
+		activationSource: status.activationSource ?? null,
+		hasInactiveReason: status.inactiveReason !== undefined,
+		hasPauseReason: status.pauseReason !== undefined,
+		model: status.model ?? null,
+		effort: status.effort,
+		backlog: status.backlog,
+		pendingTranscriptBytes: status.pendingTranscriptBytes,
+		maxPendingTranscriptBytesObserved: status.maxPendingTranscriptBytesObserved,
+		contextEstimateTokens: status.contextEstimateTokens,
+		contextLimitTokens: status.contextLimitTokens,
+		usage: status.usage,
+		reviewsCompleted: status.reviewsCompleted,
+		silentReviews: status.silentReviews,
+		failedReviews: status.failedReviews,
+		deliveryFailures: status.deliveryFailures,
+		notesDelivered: status.notesDelivered,
+		activeNotesPending: status.activeNotesPending,
+		deferredNotesPending: status.deferredNotesPending,
+		notesSuppressed: status.notesSuppressed,
+		redactions: status.redactions,
+		consecutiveFailures: status.consecutiveFailures,
+		branchResets: status.branchResets,
+		warnings: status.warnings,
+		hasLastFailure: status.lastFailure !== undefined,
+		hasLastDeliveryFailure: status.lastDeliveryFailure !== undefined,
+		epoch: status.epoch,
+		nestedExtensionCount: status.nestedExtensionCount ?? null,
+		nestedActiveTools: status.nestedActiveTools.slice(0, 64).map((name) => name.slice(0, 128)),
+	};
+	const payload = {
+		schemaVersion: 1,
+		generatedAt: new Date(now).toISOString(),
+		status: diagnosticStatus,
+		configuration: {
+			defaultEnabled: config.defaultEnabled,
+			model: config.model ?? null,
+			effort: config.effort,
+			tools: config.tools,
+			context: config.context,
+			limits: config.limits,
+			memorySuggestionsEnabled: config.memorySuggestions.enabled,
+			transcriptPersistenceEnabled: config.persistence.transcript,
+		},
+		privacy: {
+			executorTranscriptIncluded: false,
+			advisorTranscriptIncluded: false,
+			reasoningIncluded: false,
+			noteContentIncluded: false,
+			instructionsIncluded: false,
+			protectedPathsIncluded: false,
+		},
+	};
+	const header = "Advisor diagnostics (redacted)\n";
+	const serialized = JSON.stringify(redactDiagnosticValue(payload), null, 2);
+	const output = `${header}${serialized}`;
+	if (Buffer.byteLength(output, "utf8") <= MAX_ADVISOR_DUMP_BYTES) return output;
+	const fallback = JSON.stringify(
+		{
+			schemaVersion: 1,
+			generatedAt: payload.generatedAt,
+			truncated: true,
+			status: {
+				enabled: status.enabled,
+				active: status.active,
+				paused: status.paused,
+				reviewsCompleted: status.reviewsCompleted,
+				failedReviews: status.failedReviews,
+				deliveryFailures: status.deliveryFailures,
+				notesDelivered: status.notesDelivered,
+			},
+			privacy: payload.privacy,
+		},
+		null,
+		2,
+	);
+	return truncateUtf8Bytes(`${header}${fallback}`, MAX_ADVISOR_DUMP_BYTES, "");
 }
 
 function parseModelReference(reference: string): { provider: string; modelId: string } | undefined {
@@ -248,6 +341,7 @@ export class AdvisorRuntime {
 			reviewsCompleted: 0,
 			silentReviews: 0,
 			failedReviews: 0,
+			deliveryFailures: 0,
 			notesDelivered: 0,
 			activeNotesPending: 0,
 			deferredNotesPending: 0,
@@ -263,6 +357,10 @@ export class AdvisorRuntime {
 
 	getStatus(): AdvisorRuntimeStatus {
 		return structuredClone(this.status);
+	}
+
+	formatDiagnosticsDump(now = Date.now()): string {
+		return formatAdvisorDiagnosticsDump(this.getStatus(), this.config, now);
 	}
 
 	getNestedMessageCount(): number {
@@ -629,7 +727,8 @@ export class AdvisorRuntime {
 		delivery: AdviceDelivery,
 		stale: boolean,
 		deliveryId?: string,
-	): AdviceMessageNote {
+		displayedInEntry = false,
+	): AdvicePresentationNote {
 		return {
 			intent: "review",
 			note: advice.note,
@@ -641,7 +740,19 @@ export class AdvisorRuntime {
 			originalEstimatedTokens: advice.originalEstimatedTokens,
 			createdAt: advice.createdAt,
 			...(deliveryId === undefined ? {} : { deliveryId }),
+			...(displayedInEntry ? { displayedInEntry: true } : {}),
 		};
+	}
+
+	private publishLateAdviceEntry(pending: PendingAdvice): void {
+		const details = this.adviceDetails(pending.advice, "deferred", pending.stale);
+		const data: LateAdviceEntryData = { note: details, displayedAt: Date.now() };
+		try {
+			this.pi.appendEntry(ADVISOR_LATE_ENTRY_TYPE, data);
+			pending.displayedInEntry = true;
+		} catch (error) {
+			this.recordDeliveryFailure(error);
+		}
 	}
 
 	private deliver(
@@ -661,13 +772,15 @@ export class AdvisorRuntime {
 		}
 		const deferred = forceDeferred || ctx.signal?.aborted === true || ctx.isIdle();
 		if (deferred) {
+			const pending: PendingAdvice = {
+				advice,
+				stale,
+				branchWindow: cursorAtTail(ctx.sessionManager.getBranch()),
+				displayedInEntry: false,
+			};
 			const admission = this.pendingAdvice.enqueue(
 				identity,
-				{
-					advice,
-					stale,
-					branchWindow: cursorAtTail(ctx.sessionManager.getBranch()),
-				},
+				pending,
 				Buffer.byteLength(advice.note, "utf8"),
 			);
 			if (admission !== "accepted") {
@@ -682,6 +795,7 @@ export class AdvisorRuntime {
 			}
 			this.adviceDedupe.add(advice);
 			this.status.deferredNotesPending = this.pendingAdvice.length;
+			if (ctx.mode === "tui" && ctx.isIdle()) this.publishLateAdviceEntry(pending);
 		} else {
 			const deliveryId = `${String(this.status.epoch)}:${String(++this.deliverySequence)}:${identity}`;
 			const admission = this.activeAdvice.enqueue(
@@ -690,6 +804,7 @@ export class AdvisorRuntime {
 					advice,
 					stale,
 					branchWindow: cursorAtTail(ctx.sessionManager.getBranch()),
+					displayedInEntry: false,
 					identity,
 					deliveryId,
 					epoch: this.status.epoch,
@@ -721,6 +836,7 @@ export class AdvisorRuntime {
 			} catch (error) {
 				this.activeAdvice.remove(identity);
 				this.status.activeNotesPending = this.activeAdvice.length;
+				this.recordDeliveryFailure(error);
 				throw error;
 			}
 			this.adviceDedupe.add(advice);
@@ -770,15 +886,18 @@ export class AdvisorRuntime {
 
 		this.status.deferredNotesPending = this.pendingAdvice.length;
 		this.status.notesDelivered += pending.length;
-		const notes = pending.map(({ advice, stale }) => this.adviceDetails(advice, "deferred", stale));
+		const notes = pending.map(({ advice, stale, displayedInEntry }) =>
+			this.adviceDetails(advice, "deferred", stale, undefined, displayedInEntry),
+		);
 		const content = pending.map(({ formatted }) => formatted).join("\n\n");
 		const single = notes.length === 1 ? notes[0] : undefined;
+		const details: AdviceMessageDetails = { ...(single ?? {}), notes };
 		this.publishStatus();
 		return {
 			customType: ADVISOR_CUSTOM_TYPE,
 			content,
-			display: true,
-			details: { ...(single ?? {}), notes },
+			display: notes.some((note) => note.displayedInEntry !== true),
+			details: { ...details },
 		};
 	}
 
@@ -843,16 +962,21 @@ export class AdvisorRuntime {
 			}
 
 			this.activeAdvice.remove(outstanding.identity);
+			const pending: PendingAdvice = {
+				advice: outstanding.advice,
+				stale: true,
+				branchWindow: cursorAtTail(branch),
+				displayedInEntry: false,
+			};
 			const admission = this.pendingAdvice.enqueue(
 				outstanding.identity,
-				{
-					advice: outstanding.advice,
-					stale: true,
-					branchWindow: cursorAtTail(branch),
-				},
+				pending,
 				Buffer.byteLength(outstanding.advice.note, "utf8"),
 			);
-			if (admission === "accepted") continue;
+			if (admission === "accepted") {
+				if (ctx.mode === "tui" && ctx.isIdle()) this.publishLateAdviceEntry(pending);
+				continue;
+			}
 			this.status.notesSuppressed++;
 			if (admission === "capacity") {
 				this.adviceDedupe.delete(outstanding.advice);
@@ -871,6 +995,11 @@ export class AdvisorRuntime {
 
 	async handleBranchChange(ctx: ExtensionContext): Promise<void> {
 		await this.resetForBranchMismatch(ctx.sessionManager.getBranch());
+	}
+
+	private recordDeliveryFailure(error: unknown): void {
+		this.status.deliveryFailures++;
+		this.status.lastDeliveryFailure = boundedReason(error);
 	}
 
 	private recordFailure(reason: string): void {
@@ -1045,10 +1174,14 @@ export function formatAdvisorStatus(status: AdvisorRuntimeStatus): string {
 		`Session tokens: ${String(status.usage.total)}`,
 		`Session cost: $${status.usage.costUsd.toFixed(4)}`,
 		`Reviews: ${String(status.reviewsCompleted)} completed, ${String(status.silentReviews)} silent, ${String(status.failedReviews)} failed`,
+		`Delivery failures: ${String(status.deliveryFailures)}`,
 		`Notes: ${String(status.notesDelivered)} delivered, ${String(status.activeNotesPending)} active pending, ${String(status.deferredNotesPending)} deferred, ${String(status.notesSuppressed)} suppressed`,
 	];
 	if (status.inactiveReason) lines.push(`Inactive reason: ${status.inactiveReason}`);
 	if (status.pauseReason) lines.push(`Pause reason: ${status.pauseReason}`);
 	if (status.lastFailure) lines.push(`Last failure: ${status.lastFailure}`);
+	if (status.lastDeliveryFailure) {
+		lines.push(`Last delivery failure: ${status.lastDeliveryFailure}`);
+	}
 	return lines.join("\n");
 }

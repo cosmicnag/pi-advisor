@@ -2,6 +2,12 @@ import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-a
 
 import { DEFAULT_ADVISOR_CONFIG, normalizeAdvisorConfig, type AdvisorConfig } from "./config.js";
 import {
+	ADVISOR_LATE_ENTRY_TYPE,
+	renderAdviceMessage,
+	renderLateAdviceEntry,
+} from "./presentation.js";
+import { ADVISOR_CUSTOM_TYPE } from "./transcript.js";
+import {
 	AdvisorRuntime,
 	formatAdvisorEnableStatus,
 	formatAdvisorStatus,
@@ -26,8 +32,11 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 		default: false,
 	});
 
+	pi.registerMessageRenderer(ADVISOR_CUSTOM_TYPE, renderAdviceMessage);
+	pi.registerEntryRenderer(ADVISOR_LATE_ENTRY_TYPE, renderLateAdviceEntry);
+
 	pi.registerCommand("advisor", {
-		description: "Control automatic Advisor review: on, off, status",
+		description: "Control automatic Advisor review: on, off, status, dump",
 		handler: async (args, ctx) => {
 			const command = args.trim().toLocaleLowerCase("en-US");
 			if (command === "on") {
@@ -49,7 +58,11 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 				ctx.ui.notify(formatAdvisorStatus(runtime.getStatus()), "info");
 				return;
 			}
-			ctx.ui.notify("Usage: /advisor on | /advisor off | /advisor status", "info");
+			if (command === "dump") {
+				ctx.ui.notify(runtime.formatDiagnosticsDump(), "info");
+				return;
+			}
+			ctx.ui.notify("Usage: /advisor on | /advisor off | /advisor status | /advisor dump", "info");
 		},
 	});
 
@@ -99,6 +112,7 @@ export default function piAdvisor(pi: ExtensionAPI): void {
 export * from "./advice.js";
 export * from "./config.js";
 export * from "./delivery.js";
+export * from "./presentation.js";
 export * from "./redaction.js";
 export * from "./runtime.js";
 export * from "./security.js";

@@ -1,5 +1,6 @@
 import {
 	defineTool,
+	type CustomEntry,
 	type CustomMessageEntry,
 	type ExtensionAPI,
 	type ExtensionContext,
@@ -9,9 +10,11 @@ import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+	ADVISOR_LATE_ENTRY_TYPE,
 	adviceDedupeKey,
 	createPiAdvisorExtension,
 	cursorAtTail,
+	formatAdvisorStatus,
 	DEFAULT_ADVISOR_CONFIG,
 	MAX_PENDING_ADVICE_BYTES,
 	type AcceptedAdvice,
@@ -203,11 +206,14 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 					expect(activeRuntime.getStatus()).toMatchObject({
 						reviewsCompleted: 0,
 						failedReviews: 1,
+						deliveryFailures: 1,
 						consecutiveFailures: 1,
 						silentReviews: 0,
 						activeNotesPending: 0,
 						lastFailure: "scripted active delivery failure",
+						lastDeliveryFailure: "scripted active delivery failure",
 					});
+					expect(sendMessage).toHaveBeenCalledTimes(1);
 					expect(activeRuntime.getNestedMessageCount()).toBe(0);
 				} finally {
 					advisorBarrier.release();
@@ -490,6 +496,142 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			);
 			await waitFor(() => runtime?.getStatus().reviewsCompleted === 2);
 			expect(advisor.requests).toHaveLength(2);
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("shows late TUI advice immediately without duplicating it on next-turn delivery", async () => {
+		const note = "Check the late TUI artifact before shipping.";
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "terminal answer" }] },
+			{ content: [{ type: "text", text: "answer after late advice" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			{ ...acceptedAdvice(note, "late-tui"), delayMs: 50 },
+			{ content: [] },
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "tui",
+		});
+		try {
+			await harness.session.prompt("finish before the late review");
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			expect(primary.requests).toHaveLength(1);
+			const lateEntries = harness.sessionManager
+				.getEntries()
+				.filter(
+					(entry): entry is CustomEntry =>
+						entry.type === "custom" && entry.customType === ADVISOR_LATE_ENTRY_TYPE,
+				);
+			expect(lateEntries).toHaveLength(1);
+			expect(lateEntries[0]?.data).toMatchObject({
+				note: { note, delivery: "deferred" },
+			});
+			expect(JSON.stringify(primary.requests[0]?.context)).not.toContain(note);
+
+			await harness.session.prompt("weigh the late review");
+			const nextContext = JSON.stringify(primary.requests[1]?.context);
+			expect(nextContext.match(new RegExp(note.replaceAll(".", "\\."), "gu"))).toHaveLength(1);
+			const delivered = harness.sessionManager
+				.getEntries()
+				.find(
+					(entry): entry is CustomMessageEntry =>
+						entry.type === "custom_message" && entry.customType === "pi-advisor-note",
+				);
+			expect(delivered).toMatchObject({
+				display: false,
+				details: { displayedInEntry: true, notes: [{ displayedInEntry: true }] },
+			});
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it.each(["json", "print"] as const)(
+		"delivers deferred advice in %s mode without invoking TUI-only entries",
+		async (mode) => {
+			const note = `Non-interactive ${mode} advice.`;
+			const primary = createPrimaryProvider([
+				{ content: [{ type: "text", text: "terminal answer" }] },
+				{ content: [{ type: "text", text: "next answer" }] },
+			]);
+			const advisor = createAdvisorProvider([
+				{ ...acceptedAdvice(note, `non-interactive-${mode}`), delayMs: 25 },
+				{ content: [] },
+			]);
+			let runtime: AdvisorRuntime | undefined;
+			const harness = await createSessionHarness({
+				provider: primary,
+				advisorProvider: advisor,
+				extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+				tools: [],
+				mode,
+			});
+			try {
+				await harness.session.prompt("/advisor on");
+				expect(runtime?.getStatus()).toMatchObject({ active: true });
+				await harness.session.prompt(`finish ${mode} turn`);
+				await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+				if (runtime === undefined) throw new Error("Expected Advisor runtime");
+				expect(
+					harness.sessionManager
+						.getEntries()
+						.some(
+							(entry) => entry.type === "custom" && entry.customType === ADVISOR_LATE_ENTRY_TYPE,
+						),
+				).toBe(false);
+				expect(formatAdvisorStatus(runtime.getStatus())).toContain("Delivery failures: 0");
+
+				await harness.session.prompt(`deliver ${mode} advice`);
+				expect(JSON.stringify(primary.requests[1]?.context)).toContain(note);
+			} finally {
+				await harness.dispose();
+			}
+		},
+	);
+
+	it("counts a failed late-card append once and keeps next-turn delivery available", async () => {
+		const note = "Preserve delivery after the late card fails.";
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "terminal answer" }] },
+			{ content: [{ type: "text", text: "next answer" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			{ ...acceptedAdvice(note, "late-card-failure"), delayMs: 50 },
+			{ content: [] },
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "tui",
+		});
+		try {
+			if (runtime === undefined) throw new Error("Expected Advisor runtime");
+			const extensionApi = Reflect.get(runtime, "pi") as ExtensionAPI;
+			const appendEntry = vi.spyOn(extensionApi, "appendEntry").mockImplementation(() => {
+				throw new Error("TOKEN=late-card-secret-value");
+			});
+			await harness.session.prompt("finish before failed late card");
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			expect(appendEntry).toHaveBeenCalledTimes(1);
+			expect(runtime.getStatus()).toMatchObject({
+				deliveryFailures: 1,
+				lastDeliveryFailure: "TOKEN=[REDACTED]",
+			});
+
+			await harness.session.prompt("deliver despite card failure");
+			expect(JSON.stringify(primary.requests[1]?.context)).toContain(note);
+			expect(appendEntry).toHaveBeenCalledTimes(1);
+			appendEntry.mockRestore();
 		} finally {
 			await harness.dispose();
 		}
@@ -1383,10 +1525,10 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
 			await harness.session.prompt("materialize blocker escalation");
 			expect(JSON.stringify(primary.requests[1]?.context)).toContain(
-				"[Advisor concern - deferred - potentially stale]",
+				'severity=\\"concern\\" delivery=\\"deferred\\" stale=\\"true\\"',
 			);
 			expect(JSON.stringify(primary.requests[2]?.context)).toContain(
-				"[Advisor blocker - deferred - potentially stale]",
+				'severity=\\"blocker\\" delivery=\\"deferred\\" stale=\\"true\\"',
 			);
 			expect(runtime?.getStatus()).toMatchObject({
 				notesDelivered: 2,
@@ -1425,8 +1567,8 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
 			await harness.session.prompt("materialize stale advice");
 			const context = JSON.stringify(primary.requests.at(-1)?.context);
-			expect(context).toContain("potentially stale");
-			expect(context).toContain("verify this still applies");
+			expect(context).toContain('stale=\\"true\\"');
+			expect(context).toContain("Verify this still applies");
 			const note = harness.sessionManager
 				.getEntries()
 				.find(
@@ -1474,8 +1616,8 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			await harness.session.prompt("materialize with newer Executor input");
 
 			const context = JSON.stringify(primary.requests[1]?.context);
-			expect(context).toContain("[Advisor concern - deferred - potentially stale]");
-			expect(context).toContain("verify this still applies");
+			expect(context).toContain('severity=\\"concern\\" delivery=\\"deferred\\" stale=\\"true\\"');
+			expect(context).toContain("Verify this still applies");
 			const note = harness.sessionManager
 				.getEntries()
 				.find(
@@ -1519,8 +1661,8 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			});
 			await harness.session.prompt("materialize after buffered activity");
 			const context = JSON.stringify(primary.requests[1]?.context);
-			expect(context).toContain("[Advisor concern - deferred - potentially stale]");
-			expect(context).toContain("verify this still applies");
+			expect(context).toContain('severity=\\"concern\\" delivery=\\"deferred\\" stale=\\"true\\"');
+			expect(context).toContain("Verify this still applies");
 			const note = harness.sessionManager
 				.getEntries()
 				.find(
@@ -1624,8 +1766,10 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			);
 			await harness.session.prompt("resume after interruption");
 			const resumedContext = JSON.stringify(primary.requests[2]?.context);
-			expect(resumedContext).toContain("[Advisor concern - deferred - potentially stale]");
-			expect(resumedContext).toContain("verify this still applies");
+			expect(resumedContext).toContain(
+				'severity=\\"concern\\" delivery=\\"deferred\\" stale=\\"true\\"',
+			);
+			expect(resumedContext).toContain("Verify this still applies");
 		} finally {
 			advisorBarrier.release();
 			await harness.dispose();
@@ -1919,7 +2063,7 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 					notesDelivered: 1,
 				});
 				expect(JSON.stringify(primary.requests[2]?.context)).toContain(
-					`[Advisor ${severity} - active]`,
+					`severity=\\"${severity}\\" delivery=\\"active\\" stale=\\"false\\"`,
 				);
 			} finally {
 				executorBarrier.release();
@@ -1951,7 +2095,7 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			expect(primary.requests).toHaveLength(1);
 			await harness.session.prompt("next user-driven turn");
 			expect(JSON.stringify(primary.requests[1]?.context)).toContain(
-				"[Advisor blocker - deferred - potentially stale]",
+				'severity=\\"blocker\\" delivery=\\"deferred\\" stale=\\"true\\"',
 			);
 		} finally {
 			await harness.dispose();

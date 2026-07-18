@@ -70,6 +70,7 @@ function runtimeStatus(): AdvisorRuntimeStatus {
 		reviewsCompleted: 0,
 		silentReviews: 0,
 		failedReviews: 0,
+		deliveryFailures: 0,
 		notesDelivered: 0,
 		activeNotesPending: 0,
 		deferredNotesPending: 0,
@@ -219,17 +220,17 @@ describe("Slice 1 transcript filtering and redaction", () => {
 		expect(redacted.text).not.toContain("url-password");
 	});
 
-	it("formats every severity with delivery and staleness labels", () => {
+	it("formats every severity as structured delivery-safe XML", () => {
 		for (const severity of ["nit", "concern", "blocker"] as const) {
 			const advice = {
 				...boundAdvice("Check the rollback path.", DEFAULT_ADVISOR_CONFIG),
 				severity,
 			};
 			expect(formatAdviceForDelivery(advice, "active", false)).toContain(
-				`[Advisor ${severity} - active]`,
+				`severity="${severity}" delivery="active" stale="false"`,
 			);
 			expect(formatAdviceForDelivery(advice, "deferred", true)).toContain(
-				`[Advisor ${severity} - deferred - potentially stale]`,
+				`severity="${severity}" delivery="deferred" stale="true"`,
 			);
 		}
 	});
