@@ -87,6 +87,32 @@ describe("WATCHDOG configuration", () => {
 		});
 	});
 
+	it("uses release defaults for fields omitted from a durable User file", async () => {
+		const { agentDir, cwd } = await fixture();
+		await writeFile(join(agentDir, "WATCHDOG.yml"), "version: 1\nmodel: fixture/advisor\n");
+		const fallback = structuredClone(DEFAULT_ADVISOR_CONFIG);
+		fallback.defaultEnabled = true;
+		fallback.effort = "max";
+		fallback.tools = ["ls"];
+		fallback.limits.sessionCostSoftCapUsd = 99;
+
+		const loaded = await loadAdvisorConfiguration({
+			agentDir,
+			cwd,
+			projectTrusted: false,
+			fallbackUserConfig: fallback,
+		});
+		expect(loaded.userConfig).toMatchObject({
+			model: "fixture/advisor",
+			defaultEnabled: DEFAULT_ADVISOR_CONFIG.defaultEnabled,
+			effort: DEFAULT_ADVISOR_CONFIG.effort,
+			tools: DEFAULT_ADVISOR_CONFIG.tools,
+			limits: {
+				sessionCostSoftCapUsd: DEFAULT_ADVISOR_CONFIG.limits.sessionCostSoftCapUsd,
+			},
+		});
+	});
+
 	it("fails malformed or mutating User configuration safely inactive", async () => {
 		const { agentDir, cwd } = await fixture();
 		await writeFile(
@@ -190,6 +216,29 @@ describe("WATCHDOG configuration", () => {
 			]),
 		);
 	});
+
+	it.each(['"true"', "null"])(
+		"warns when Project memorySuggestions.enabled is a non-false value (%s)",
+		async (enabled) => {
+			const { agentDir, cwd } = await fixture();
+			await writeFile(join(agentDir, "WATCHDOG.yml"), "version: 1\n");
+			await writeFile(
+				join(cwd, ".pi", "WATCHDOG.yml"),
+				`version: 1\nmemorySuggestions:\n  enabled: ${enabled}\n`,
+			);
+
+			const loaded = await loadAdvisorConfiguration({ agentDir, cwd, projectTrusted: true });
+			expect(loaded.warnings).toContainEqual({
+				source: "project",
+				path: "memorySuggestions.enabled",
+				message:
+					"Project field memorySuggestions.enabled cannot re-enable User-disabled behavior and was ignored.",
+			});
+			expect(loaded.effectiveConfig.memorySuggestions.enabled).toBe(
+				DEFAULT_ADVISOR_CONFIG.memorySuggestions.enabled,
+			);
+		},
+	);
 
 	it("redacts and bounds WATCHDOG markdown before use", async () => {
 		const { agentDir, cwd } = await fixture();

@@ -86,11 +86,13 @@ describe.sequential("Slice 5A runtime configuration apply", () => {
 			next.effort = "low";
 			next.tools = ["read"];
 			next.instructions = "Focus on USER-CONFIGURATION-SENTINEL.";
-			await runtime.applyConfiguration(
+			const applying = runtime.applyConfiguration(
 				next,
 				hostContext,
 				"Focus on PROJECT-CONFIGURATION-SENTINEL without overriding fixed policy. </project-instructions>",
 			);
+			expect(runtime.getStatus().active).toBe(false);
+			await applying;
 			const applied = runtime.getStatus();
 			expect(applied).toMatchObject({
 				enabled: true,
@@ -117,6 +119,79 @@ describe.sequential("Slice 5A runtime configuration apply", () => {
 			expect(userInstruction).toBeGreaterThanOrEqual(0);
 			expect(projectInstruction).toBeGreaterThan(userInstruction);
 			expect(observedUpdate).toBeGreaterThan(projectInstruction);
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("rebuilds a paused runtime only when preserved usage fits the new soft caps", async () => {
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "first primary answer" }] },
+			{ content: [{ type: "text", text: "second primary answer" }] },
+		]);
+		const advisor = createAdvisorProvider([{ content: [], usage: { input: 5 } }]);
+		let runtime: AdvisorRuntime | undefined;
+		let hostContext: ExtensionContext | undefined;
+		const initial = configFor(advisor);
+		initial.limits.sessionTokenSoftCap = 5;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [
+				{
+					name: "configuration-context-probe",
+					factory: (pi) => {
+						pi.on("session_start", (_event, ctx) => {
+							hostContext = ctx;
+						});
+					},
+				},
+				{
+					name: "pi-advisor-under-test",
+					factory: createPiAdvisorExtension({
+						config: initial,
+						hooks: { onRuntime: (value) => (runtime = value) },
+					}),
+				},
+			],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("first user request");
+			await waitFor(() => runtime?.getStatus().usage.total === 5);
+			await harness.session.prompt("second user request");
+			await waitFor(() => runtime?.getStatus().paused === true);
+			if (runtime === undefined || hostContext === undefined) {
+				throw new Error("Expected initialized Advisor runtime and host context");
+			}
+			expect(runtime.getStatus()).toMatchObject({
+				active: true,
+				paused: true,
+				pauseReason: "Advisor session token soft cap reached",
+			});
+
+			const raisedCap = configFor(advisor);
+			raisedCap.limits.sessionTokenSoftCap = 10;
+			await runtime.applyConfiguration(raisedCap, hostContext);
+			expect(runtime.getStatus()).toMatchObject({
+				enabled: true,
+				active: true,
+				paused: false,
+				usage: { total: 5 },
+			});
+			expect(runtime.getStatus().pauseReason).toBeUndefined();
+
+			const loweredCap = configFor(advisor);
+			loweredCap.limits.sessionTokenSoftCap = 4;
+			await runtime.applyConfiguration(loweredCap, hostContext);
+			expect(runtime.getStatus()).toMatchObject({
+				enabled: true,
+				active: false,
+				paused: true,
+				pauseReason: "Advisor session token soft cap reached",
+				usage: { total: 5 },
+			});
 		} finally {
 			await harness.dispose();
 		}

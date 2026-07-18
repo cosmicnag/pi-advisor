@@ -816,6 +816,7 @@ export class AdvisorRuntime {
 		const wasEnabled = this.status.enabled;
 		const activationSource = this.status.activationSource ?? "session-command";
 		this.status.epoch++;
+		this.status.active = false;
 		this.status.retryPending = false;
 		this.status.retryDelayMs = 0;
 		this.clearCadenceTimer();
@@ -838,7 +839,8 @@ export class AdvisorRuntime {
 			0,
 			this.config.memorySuggestions.sessionSuggestionCap - this.memorySuggestionAdmissions,
 		);
-		this.status.active = false;
+		this.status.paused = false;
+		delete this.status.pauseReason;
 		delete this.status.model;
 		delete this.status.inactiveReason;
 		this.status.contextEstimateTokens = 0;
@@ -851,6 +853,7 @@ export class AdvisorRuntime {
 		this.updateBacklogStatus();
 
 		if (wasEnabled) {
+			this.applySessionSoftCaps();
 			await this.enable(ctx, activationSource);
 			this.seedConfigurationReprime(ctx);
 		}

@@ -10,7 +10,7 @@ It does not add OMP paths, `@import`, a fullscreen editor, multiple advisors, re
 
 | Deliverable                      | Result | Evidence                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | -------------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Versioned YAML schema validation | Pass   | `WATCHDOG.yml` uses a compiled TypeBox version `1` schema over YAML parsing. Partial User configuration merges over approved release defaults. Unknown fields warn and are ignored. Invalid types, unsupported versions, and mutating tool names fail safely without preventing startup.                                                                                                                                                 |
+| Versioned YAML schema validation | Pass   | `WATCHDOG.yml` uses a compiled TypeBox version `1` schema over YAML parsing. A present partial User file merges over approved release defaults rather than programmatic fallback values. Unknown fields warn and are ignored. Invalid types, unsupported versions, and mutating tool names fail safely without preventing startup.                                                                                                       |
 | User and trusted Project merge   | Pass   | User configuration owns activation, model, effort, persistence, exceptions, and spending. Project files are not read when trust is inactive. Trusted Project tools intersect the User set, protected paths only accumulate, maximums only decrease, minimum cadence only increases, response reserve only increases, and User-only fields warn and are ignored.                                                                          |
 | `WATCHDOG.md` loading            | Pass   | User and trusted Project Markdown is read through a fixed byte bound, redacted, truncated to 64 KiB, and combined under the correct authority. Project text is inserted in a tagged lower-authority section below fixed policy and User instructions.                                                                                                                                                                                    |
 | Atomic save and runtime apply    | Pass   | Confirmed User changes are written to a same-directory mode `0600` temporary file, flushed, and atomically renamed. Save failure leaves the prior file and runtime active. Successful apply increments epoch, aborts old nested work, clears old-policy pending output, rebuilds policy and tools, preserves usage and delivered-note totals, and prepends one bounded branch re-prime to the next review. No file watcher is installed. |
@@ -26,20 +26,20 @@ Redaction reduces but cannot guarantee elimination of every sensitive value.
 
 ## Tests
 
-- Versioned partial User loading over release defaults.
+- Versioned partial User loading over release defaults, including when programmatic fallback values differ.
 - Malformed YAML, unsupported or invalid fields, and mutating tool rejection with safe inactive fallback.
 - Untrusted Project file exclusion.
-- Trusted Project tool intersection, path accumulation, limit narrowing, cadence narrowing, exception preservation, and User-only field warnings.
+- Trusted Project tool intersection, path accumulation, limit narrowing, cadence narrowing, exception preservation, and User-only field warnings, including non-false Memory enablement values.
 - User and Project Markdown redaction and byte bounds.
 - Atomic replacement, temporary-file cleanup, and prior-file preservation on save failure.
 - Picker model ordering and approved reasoning choices.
-- Live configuration apply with delivered-note and usage preservation, epoch invalidation, tool rebuild, and bounded current-branch re-prime on the next review.
+- Live configuration apply with delivered-note and usage preservation, epoch invalidation, paused-state soft-cap re-evaluation, tool rebuild, and bounded current-branch re-prime on the next review.
 - Packed Pi startup with no config, persisted RPC default activation, JSON default suppression, malformed config warning, and explicit CLI activation.
 
 ## Verification
 
-- `pnpm exec vitest run tests/unit/configuration.test.ts tests/integration/configuration-runtime.test.ts --reporter=dot` - passed 9 focused tests across 2 files.
-- `pnpm verify` - passed typecheck, lint, formatting, and 176 unit, contract, and integration tests across 20 files.
+- `pnpm exec vitest run tests/unit/configuration.test.ts tests/integration/configuration-runtime.test.ts` - passed 13 focused tests across 2 files.
+- `pnpm verify` - passed typecheck, lint, formatting, and 180 unit, contract, and integration tests across 20 files.
 - `pnpm test:e2e` - passed the packed Pi installation scenario covering persisted RPC activation, JSON opt-in behavior, malformed startup safety, and explicit CLI activation.
 - `pnpm pack:validate` - passed with 33 package files validated, including the new configuration runtime, public Slice 5A evidence, and YAML dependency metadata while excluding internal planning files and `CONTEXT.md`.
 - `git diff --check` - passed with no whitespace errors.

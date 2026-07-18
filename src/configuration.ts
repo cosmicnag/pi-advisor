@@ -209,7 +209,12 @@ function collectUnknownWarnings(
 	for (const [name, keys] of nested) {
 		const candidate = value[name];
 		if (!isRecord(candidate)) continue;
-		if (source === "project" && name === "memorySuggestions" && candidate.enabled === true) {
+		if (
+			source === "project" &&
+			name === "memorySuggestions" &&
+			Object.hasOwn(candidate, "enabled") &&
+			candidate.enabled !== false
+		) {
 			warnings.push({
 				source,
 				path: "memorySuggestions.enabled",
@@ -531,7 +536,7 @@ export async function loadAdvisorConfiguration(options: {
 			userConfig =
 				document === undefined
 					? structuredClone(DEFAULT_ADVISOR_CONFIG)
-					: mergeUserConfig(base, document);
+					: mergeUserConfig(DEFAULT_ADVISOR_CONFIG, document);
 		}
 	} catch {
 		warnings.push({
