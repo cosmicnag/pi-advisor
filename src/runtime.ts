@@ -840,22 +840,20 @@ export class AdvisorRuntime {
 		this.status.activationSource = source;
 		delete this.status.inactiveReason;
 		if (resetBudget) {
-			const throttledUpdate = this.throttledUpdate;
 			this.clearCadenceTimer();
-			delete this.throttledUpdate;
 			this.status.usage = emptyUsage();
 			delete this.lastReviewSubmittedTurn;
 			delete this.lastReviewSubmittedAt;
 			this.status.paused = false;
 			delete this.status.pauseReason;
 			this.status.consecutiveFailures = 0;
-			if (throttledUpdate !== undefined) this.scheduleCadencedUpdate(throttledUpdate);
 		}
 		if (this.status.paused) {
 			this.publishStatus();
 			return;
 		}
 		if (this.session !== undefined && this.status.active) {
+			this.resumeThrottledUpdate();
 			this.publishStatus();
 			return;
 		}
@@ -907,6 +905,7 @@ export class AdvisorRuntime {
 		this.status.active = true;
 		this.status.model = `${model.provider}/${model.id}`;
 		this.status.contextLimitTokens = advisorContextLimit(model, this.config);
+		this.resumeThrottledUpdate();
 		this.publishStatus();
 	}
 
@@ -1039,6 +1038,22 @@ export class AdvisorRuntime {
 		if (this.cadenceTimer === undefined) return;
 		clearTimeout(this.cadenceTimer);
 		delete this.cadenceTimer;
+	}
+
+	private resumeThrottledUpdate(): void {
+		if (
+			this.throttledUpdate === undefined ||
+			this.session === undefined ||
+			!this.status.enabled ||
+			!this.status.active ||
+			this.status.paused ||
+			this.disposed
+		) {
+			return;
+		}
+		const update = this.throttledUpdate;
+		delete this.throttledUpdate;
+		this.scheduleCadencedUpdate(update);
 	}
 
 	private armCadenceTimer(): void {

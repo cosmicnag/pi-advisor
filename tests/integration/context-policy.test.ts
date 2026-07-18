@@ -266,6 +266,68 @@ describe.sequential("Slice 4A token-aware Advisor context", () => {
 		}
 	});
 
+	it("retains a held elapsed-time update until inactive runtime activation completes", async () => {
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "INACTIVE-INTERVAL-ONE" }] },
+			{ content: [{ type: "text", text: "INACTIVE-INTERVAL-TWO" }] },
+		]);
+		const advisor = new ScriptedProvider({
+			providerId: "pi-advisor-fixture-advisor",
+			modelId: "advisor-scripted",
+			api: ADVISOR_SCRIPTED_API,
+			responses: [{ content: [] }, { content: [] }],
+		});
+		let runtime: AdvisorRuntime | undefined;
+		let hostContext: ExtensionContext | undefined;
+		const contextCapture: InlineExtension = {
+			name: "capture-context-for-inactive-budget-reset",
+			factory: (pi) => {
+				pi.on("session_start", (_event, ctx) => {
+					hostContext = ctx;
+				});
+			},
+		};
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [
+				contextCapture,
+				extensionFor(
+					configFor(advisor, (config) => {
+						config.limits.minIntervalMs = 500;
+					}),
+					(value) => (runtime = value),
+				),
+			],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("interval before inactive budget reset");
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 1);
+			await harness.session.prompt("held interval before inactive budget reset");
+			expect(advisor.requests).toHaveLength(1);
+			expect(runtime?.getStatus().backlog).toBe(true);
+			if (runtime === undefined || hostContext === undefined) {
+				throw new Error("Expected Advisor runtime and captured extension context");
+			}
+
+			const internalStatus = Reflect.get(runtime, "status") as { active: boolean };
+			internalStatus.active = false;
+			await runtime.enable(hostContext, "session-command", true);
+
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 2);
+			const resetReview = JSON.stringify(advisor.requests[1]?.context.messages);
+			expect(resetReview).toContain("INACTIVE-INTERVAL-TWO");
+			expect(runtime.getStatus().active).toBe(true);
+			expect(runtime.getStatus().pendingTranscriptBytes).toBe(0);
+			expect(Reflect.get(runtime, "cadenceTimer")).toBeUndefined();
+			expect(advisor.requests).toHaveLength(2);
+		} finally {
+			await harness.dispose();
+		}
+	});
+
 	it("cancels an elapsed-time cadence flush when Advisor is disabled", async () => {
 		const primary = createPrimaryProvider([
 			{ content: [{ type: "text", text: "CANCEL-INTERVAL-ONE" }] },
