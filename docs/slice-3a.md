@@ -26,7 +26,8 @@ It also does not implement Advisor context compaction or re-prime, optional full
 ## Persisted lifecycle state
 
 The custom entry type is `pi-advisor-runtime-state`, schema version `1`.
-It is appended to the owning Pi session JSONL and remains outside model context through Pi's public custom-entry API.
+It is appended through Pi's public non-context custom-entry API.
+File-backed sessions persist successful appends in their session JSONL, in-memory sessions have no JSONL, and append failure does not alter Advisor delivery.
 
 Each snapshot contains only:
 
@@ -42,7 +43,7 @@ The parser validates schema version, object shapes, safe integer and timestamp b
 It rejects the latest incompatible or malformed state without falling back to an older snapshot.
 It never stores Executor or Advisor reasoning, Advisor transcript messages, observed transcript updates, provider payloads, protected tool results, suppressed or rejected notes, or raw failure text.
 Optional full Advisor transcript persistence remains false and independent.
-Deleting the Pi session deletes this lifecycle state.
+For file-backed sessions, deleting the Pi session deletes successfully appended lifecycle state.
 
 ## Persisted dedupe measurement
 
@@ -62,6 +63,28 @@ The implementation uses only Pi 0.80.7 public APIs already covered by compatibil
 
 No private import, queued-message cancellation fallback, or primary execution block is introduced.
 
+## Opus 4.8 review response
+
+### R1 - Memory delivered and admitted persistence invariant
+
+The cited 4 MiB trimming path is not a source of `deliveredCount > admittedCount` in reachable runtime state.
+A Memory suggestion increments `memorySuggestionAdmissions` exactly once after it enters either the active or deferred bounded queue.
+Deferred delivery increments `memorySuggestionsDelivered` only after dequeuing an item from that admitted queue.
+Active acknowledgement occurs only for an item retained in the active queue after admission; the measured active Pi path queues a steer while streaming, and its later message lifecycle acknowledgement cannot run inside the synchronous enqueue call before admission is recorded.
+Restored deferred items come only from a snapshot that already passed the strict `deliveredCount <= admittedCount` parser invariant, and their original admissions remain in the restored count.
+No runtime path decrements admissions.
+The 4 MiB loop trims only the copied `state.deferredAdvice` tail and does not mutate the in-memory queue, `admittedCount`, or `deliveredCount`, so trimming can conservatively retain admissions for notes omitted from disk but cannot invert the accounting inequality.
+
+A targeted regression seeds a reachable accounting shape with 490 admitted Memory suggestions, one already delivered and 489 still deferred, whose escaped JSON exceeds 4 MiB, then forces persistence trimming and resumes from the resulting snapshot.
+It proves that the tail is trimmed, serialized state remains within 4 MiB, persisted counts remain `admittedCount: 490` and `deliveredCount: 1`, and resume restores one delivered count, 510 remaining admissions under a 1,000 cap, and the retained deferred prefix.
+The unit parser also explicitly rejects a synthetic `deliveredCount: 1, admittedCount: 0` snapshot.
+No production clamp was added because it would mask an unreachable internal accounting violation and under-report delivered Memory suggestions rather than repair a trim defect.
+
+### R2 - File-backed persistence wording
+
+README, the public behavior contract, and this evidence now distinguish non-context Pi session custom entries from file persistence.
+They state that file-backed sessions write successful appends to their JSONL, in-memory sessions have no JSONL, and append failures do not affect Advisor delivery.
+
 ## Verification
 
 Final validation commands and results:
@@ -69,10 +92,11 @@ Final validation commands and results:
 - `pnpm typecheck` - pass.
 - `pnpm lint` - pass.
 - `pnpm format:check` - pass.
-- `pnpm test` - pass; 141 tests across 15 unit, contract, and integration files.
+- `pnpm test` - pass; 142 tests across 15 unit, contract, and integration files after review response.
 - `pnpm test:e2e` - pass; packed Pi 0.80.7 installation and startup.
 - `pnpm pack:validate` - pass; 26 package files validated and generated artifacts removed.
-- `pnpm exec vitest run tests/unit/lifecycle-state.test.ts tests/integration/lifecycle-spikes.test.ts tests/integration/lifecycle-resilience.test.ts tests/integration/session-replacement-spike.test.ts tests/integration/advisor-safety.test.ts tests/integration/memory-suggestions.test.ts --reporter=dot` - pass; 89 focused branch, compaction, replacement, resume, dedupe, and Memory lifecycle tests across 6 files.
+- `pnpm exec vitest run tests/unit/lifecycle-state.test.ts tests/integration/lifecycle-resilience.test.ts --reporter=verbose` - pass; 14 targeted persistence invariant and lifecycle tests across 2 files.
+- `pnpm exec vitest run tests/unit/lifecycle-state.test.ts tests/integration/lifecycle-spikes.test.ts tests/integration/lifecycle-resilience.test.ts tests/integration/session-replacement-spike.test.ts tests/integration/advisor-safety.test.ts tests/integration/memory-suggestions.test.ts --reporter=dot` - pass before review response; 89 focused branch, compaction, replacement, resume, dedupe, and Memory lifecycle tests across 6 files.
 - `pnpm exec tsx /tmp/pi-advisor-manual-smoke.mts` - pass; manual public `SessionManager` tree mismatch and compatible-resume state smoke printed `PASS manual tree-navigation and compatible-resume state smoke` and removed its temporary file.
 - `git diff --check` - pass.
 

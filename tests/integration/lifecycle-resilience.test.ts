@@ -437,6 +437,143 @@ describe.sequential("Slice 3A branch, compaction, and persistence lifecycle", ()
 		}
 	});
 
+	it("preserves valid Memory accounting when oversized deferred snapshots trim their tail before resume", async () => {
+		const manager = SessionManager.inMemory();
+		const firstPrimary = createPrimaryProvider([]);
+		const firstAdvisor = createAdvisorProvider([]);
+		let firstRuntime: AdvisorRuntime | undefined;
+		let firstHarness: Awaited<ReturnType<typeof createSessionHarness>> | undefined;
+		let resumedHarness: Awaited<ReturnType<typeof createSessionHarness>> | undefined;
+		try {
+			firstHarness = await createSessionHarness({
+				provider: firstPrimary,
+				advisorProvider: firstAdvisor,
+				sessionManager: manager,
+				extensions: [
+					extensionFor(
+						configFor(firstAdvisor, (config) => {
+							config.memorySuggestions.sessionSuggestionCap = 1_000;
+						}),
+						(value) => (firstRuntime = value),
+					),
+				],
+				tools: [],
+				mode: "rpc",
+			});
+			if (firstRuntime === undefined) throw new Error("Expected trim fixture runtime");
+			const activeRuntime = firstRuntime;
+			const pendingAdvice = Reflect.get(activeRuntime, "pendingAdvice") as {
+				enqueue(
+					key: string,
+					value: {
+						advice: AcceptedAdvice;
+						stale: boolean;
+						branchWindow: ReturnType<typeof cursorAtTail>;
+						displayedInEntry: boolean;
+					},
+					bytes: number,
+				): "accepted" | "duplicate" | "capacity";
+				length: number;
+			};
+			const branchWindow = cursorAtTail(manager.getBranch());
+			const pendingCount = 489;
+			const admittedCount = pendingCount + 1;
+			for (let index = 0; index < pendingCount; index++) {
+				const rationale = "\u0001".repeat(1_990);
+				const memoryText = `Durable trim fixture ${String(index)}`;
+				const advice: AcceptedAdvice = {
+					intent: "memory-suggestion",
+					note: rationale,
+					memory: {
+						text: memoryText,
+						category: "project",
+						basis: "project-constraint",
+					},
+					truncated: false,
+					originalCharacters: rationale.length,
+					originalEstimatedTokens: Math.ceil(rationale.length / 4),
+					createdAt: Date.now(),
+				};
+				expect(
+					pendingAdvice.enqueue(
+						adviceDedupeKey(advice),
+						{
+							advice,
+							stale: false,
+							branchWindow,
+							displayedInEntry: false,
+						},
+						Buffer.byteLength(rationale, "utf8") + Buffer.byteLength(memoryText, "utf8"),
+					),
+				).toBe("accepted");
+			}
+			Reflect.set(activeRuntime, "meaningfulTurnCount", admittedCount);
+			Reflect.set(activeRuntime, "memorySuggestionAdmissions", admittedCount);
+			Reflect.set(activeRuntime, "lastMemorySuggestionTurn", admittedCount);
+			Reflect.set(activeRuntime, "lastMemorySuggestionAt", Date.now());
+			const status = Reflect.get(activeRuntime, "status") as {
+				memorySuggestionsDelivered: number;
+				notesDelivered: number;
+			};
+			status.memorySuggestionsDelivered = 1;
+			status.notesDelivered = 1;
+			const persistState = Reflect.get(activeRuntime, "persistState") as () => void;
+			persistState.call(activeRuntime);
+
+			const latest = [...manager.getBranch()]
+				.reverse()
+				.find(
+					(entry) =>
+						entry.type === "custom" && entry.customType === ADVISOR_RUNTIME_STATE_ENTRY_TYPE,
+				);
+			if (latest?.type !== "custom") throw new Error("Expected trimmed persisted state");
+			const persisted = latest.data as PersistedAdvisorRuntimeState;
+			expect(persisted.deferredAdvice.length).toBeGreaterThan(0);
+			expect(persisted.deferredAdvice.length).toBeLessThan(pendingCount);
+			expect(Buffer.byteLength(JSON.stringify(persisted), "utf8")).toBeLessThanOrEqual(
+				4 * 1_024 * 1_024,
+			);
+			expect(persisted.memorySuggestions).toMatchObject({
+				meaningfulTurnCount: admittedCount,
+				admittedCount,
+				deliveredCount: 1,
+			});
+			expect(persisted.memorySuggestions.deliveredCount).toBeLessThanOrEqual(
+				persisted.memorySuggestions.admittedCount,
+			);
+
+			await activeRuntime.shutdown();
+			await firstHarness.dispose();
+			firstHarness = undefined;
+			const resumedPrimary = createPrimaryProvider([]);
+			const resumedAdvisor = createAdvisorProvider([]);
+			let resumedRuntime: AdvisorRuntime | undefined;
+			resumedHarness = await createSessionHarness({
+				provider: resumedPrimary,
+				advisorProvider: resumedAdvisor,
+				sessionManager: manager,
+				extensions: [
+					extensionFor(
+						configFor(resumedAdvisor, (config) => {
+							config.memorySuggestions.sessionSuggestionCap = 1_000;
+						}),
+						(value) => (resumedRuntime = value),
+					),
+				],
+				tools: [],
+				mode: "rpc",
+			});
+			expect(resumedRuntime?.getStatus()).toMatchObject({
+				memorySuggestionsDelivered: 1,
+				memorySuggestionsRemaining: 510,
+				deferredNotesPending: persisted.deferredAdvice.length,
+			});
+		} finally {
+			await firstHarness?.dispose();
+			await resumedHarness?.dispose();
+		}
+	});
+
 	it("writes no deferred note content to lifecycle snapshots when retention is zero", async () => {
 		const note = "Do not retain this note across exit when retention is zero.";
 		const primary = createPrimaryProvider([

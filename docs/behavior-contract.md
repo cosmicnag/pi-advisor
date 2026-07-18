@@ -165,8 +165,9 @@ Exceeding the context limit or reaching a session token or reported-cost cap pau
 
 ## Lifecycle persistence
 
-Pi Advisor appends versioned `pi-advisor-runtime-state` custom entries to the owning Pi session.
+Pi Advisor attempts to append versioned `pi-advisor-runtime-state` custom entries to the active Pi session state.
 Pi custom entries do not participate in model context.
+A file-backed Pi session persists successful appends in its JSONL, while an in-memory session has no JSONL and an append failure does not alter Advisor delivery.
 Each snapshot is bounded to 4 MiB and stores the Pi session ID, save timestamp, active-branch cursor, retained deferred accepted notes, at most 128 lowercase SHA-256 dedupe hashes, delivered-note count, and Memory suggestion meaningful-turn count, admission count, delivered count, last-admission turn and timestamp, and session-cap state.
 Deferred notes retain only their already bounded redacted accepted-note shape, branch window, staleness and display flags, and restored-after-resume marker.
 Snapshots never contain Executor or Advisor reasoning, Advisor transcript messages, observed transcript updates, provider payloads, protected tool output, suppressed or rejected notes, or raw failure text.
@@ -175,7 +176,7 @@ The latest state entry on the active branch is authoritative.
 A genuinely new or forked Pi session receives a new session ID and cannot restore copied state from its parent.
 Compatible resume restores unexpired deferred notes as potentially stale, reports their age, shows a restored marker, and materializes them only after the next user prompt.
 Delivered, expired, branch-incompatible, over-capacity, and retention-disabled deferred notes are discarded.
-Lifecycle state is stored in Pi's ordinary session JSONL and is deleted by deleting that session through Pi or removing its session file.
+For a file-backed session, successfully appended lifecycle state is deleted by deleting that session through Pi or removing its session file.
 
 ## Privacy and telemetry
 

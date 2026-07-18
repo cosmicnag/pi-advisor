@@ -177,9 +177,10 @@ The protected `grep` tool uses `rg` when available; without `rg`, explicit liter
 Protected-path checks cover direct and symlink-resolved access, but neither path protection nor redaction can guarantee that every secret is excluded.
 Automatic review creates additional provider usage and cost, bounded by configured session governors and the active package hard maxima for notes, turns, tool calls, and pending bytes.
 Optional full Advisor transcript persistence remains disabled and unimplemented in Slice 3A.
-Pi Advisor always stores bounded lifecycle-only custom entries in the active Pi session JSONL, including a branch cursor, retained deferred accepted notes, up to 128 dedupe hashes, delivery counts, and Memory suggestion cadence and cap state.
+Pi Advisor records bounded lifecycle-only custom entries in the active Pi session state, including a branch cursor, retained deferred accepted notes, up to 128 dedupe hashes, delivery counts, and Memory suggestion cadence and cap state.
 These custom entries are outside model context and contain no Executor or Advisor reasoning, provider payloads, transcript updates, suppressed notes, or raw failure text.
-They are deleted with the owning Pi session file.
+When the Pi session is file-backed and the append succeeds, Pi persists the entries in that session's JSONL and deleting the session file deletes them.
+In-memory sessions have no lifecycle-state JSONL, and an append failure does not alter Advisor delivery.
 Retention `0` prevents deferred note content from being written into new lifecycle snapshots, while disabling optional full transcript persistence does not disable lifecycle state required for correctness.
 
 ## Telemetry

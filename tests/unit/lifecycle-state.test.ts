@@ -91,6 +91,19 @@ describe("Slice 3A lifecycle state primitives", () => {
 		).toBeUndefined();
 		expect(
 			parsePersistedAdvisorRuntimeState(
+				{
+					...valid,
+					memorySuggestions: {
+						...valid.memorySuggestions,
+						deliveredCount: 1,
+					},
+				},
+				manager.getSessionId(),
+				branch,
+			),
+		).toBeUndefined();
+		expect(
+			parsePersistedAdvisorRuntimeState(
 				{ ...valid, cursor: { lastEntryId: "missing", expectedIndex: 1 } },
 				manager.getSessionId(),
 				branch,
