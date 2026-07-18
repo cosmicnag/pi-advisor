@@ -1,10 +1,13 @@
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import {
 	calculateContextTokens,
+	estimateContextTokens,
+	estimateTokens as estimatePiMessageTokens,
+	type AgentMessage,
+} from "@earendil-works/pi-agent-core";
+import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
+import {
 	createAgentSession,
 	DefaultResourceLoader,
-	estimateTokens as estimatePiMessageTokens,
 	getAgentDir,
 	SessionManager,
 	SettingsManager,
@@ -145,42 +148,71 @@ function validAssistantUsage(message: AgentMessage): message is AssistantMessage
 	);
 }
 
+interface AdvisorToolSchema {
+	name: string;
+	description: string;
+	parameters: unknown;
+}
+
+function estimateAdvisorToolSchemaTokens(tools: readonly AdvisorToolSchema[]): number {
+	if (tools.length === 0) return 0;
+	const serialized = JSON.stringify(
+		tools.map((tool) => ({
+			name: tool.name,
+			description: tool.description,
+			parameters: tool.parameters,
+		})),
+	);
+	return estimatePiMessageTokens({
+		role: "user",
+		content: serialized,
+		timestamp: 0,
+	});
+}
+
+function withoutUsageAnchors(messages: readonly AgentMessage[]): AgentMessage[] {
+	return messages.map((message) => {
+		if (message.role !== "assistant") return message;
+		return {
+			...message,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+		};
+	});
+}
+
 /** Estimate the next Advisor request using Pi's public usage and token-estimation APIs. */
 export function estimateAdvisorContext(
 	messages: readonly AgentMessage[],
 	pendingUpdate: string,
 	systemPrompt: string,
 	allowUsageAnchor = true,
+	tools: readonly AdvisorToolSchema[] = [],
 ): AdvisorContextEstimate {
 	const pendingMessage: AgentMessage = {
 		role: "user",
 		content: pendingUpdate,
 		timestamp: Date.now(),
 	};
-	if (allowUsageAnchor) {
-		for (let index = messages.length - 1; index >= 0; index--) {
-			const message = messages[index];
-			if (message === undefined || !validAssistantUsage(message)) continue;
-			let trailingEstimateTokens = estimatePiMessageTokens(pendingMessage);
-			for (let trailing = index + 1; trailing < messages.length; trailing++) {
-				const trailingMessage = messages[trailing];
-				if (trailingMessage !== undefined) {
-					trailingEstimateTokens += estimatePiMessageTokens(trailingMessage);
-				}
-			}
-			const usageTokens = calculateContextTokens(message.usage);
-			return {
-				tokens: usageTokens + trailingEstimateTokens,
-				usageTokens,
-				trailingEstimateTokens,
-				source: "usage-plus-estimate",
-			};
-		}
+	const estimatedMessages = allowUsageAnchor ? messages : withoutUsageAnchors(messages);
+	const estimate = estimateContextTokens([...estimatedMessages, pendingMessage]);
+	if (allowUsageAnchor && estimate.lastUsageIndex !== null) {
+		return {
+			tokens: estimate.tokens,
+			usageTokens: estimate.usageTokens,
+			trailingEstimateTokens: estimate.trailingTokens,
+			source: "usage-plus-estimate",
+		};
 	}
-	const trailingEstimateTokens =
-		estimateTextTokens(systemPrompt) +
-		estimatePiMessageTokens(pendingMessage) +
-		messages.reduce((total, message) => total + estimatePiMessageTokens(message), 0);
+	const fixedRequestTokens =
+		estimateTextTokens(systemPrompt) + estimateAdvisorToolSchemaTokens(tools);
+	const trailingEstimateTokens = estimate.trailingTokens + fixedRequestTokens;
 	return {
 		tokens: trailingEstimateTokens,
 		usageTokens: 0,
@@ -477,6 +509,7 @@ export class AdvisorRuntime {
 	private cursor: AdvisorCursor = { expectedIndex: 0 };
 	private pendingUpdate?: QueuedAdvisorUpdate;
 	private throttledUpdate?: QueuedAdvisorUpdate;
+	private cadenceTimer?: ReturnType<typeof setTimeout>;
 	private lifecycleResetEpoch?: number;
 	private meaningfulTurnCount = 0;
 	private lastReviewSubmittedTurn?: number;
@@ -998,23 +1031,78 @@ export class AdvisorRuntime {
 		return turnsEligible && timeEligible;
 	}
 
+	private clearCadenceTimer(): void {
+		if (this.cadenceTimer === undefined) return;
+		clearTimeout(this.cadenceTimer);
+		delete this.cadenceTimer;
+	}
+
+	private armCadenceTimer(): void {
+		const update = this.throttledUpdate;
+		if (
+			update === undefined ||
+			this.cadenceTimer !== undefined ||
+			this.lastReviewSubmittedAt === undefined ||
+			(this.lastReviewSubmittedTurn !== undefined &&
+				update.turnNumber - this.lastReviewSubmittedTurn <
+					this.config.limits.minTurnsBetweenReviews)
+		) {
+			return;
+		}
+		const remaining = this.config.limits.minIntervalMs - (Date.now() - this.lastReviewSubmittedAt);
+		if (remaining <= 0) {
+			this.submitThrottledUpdate(Date.now());
+			return;
+		}
+		const epoch = this.status.epoch;
+		this.cadenceTimer = setTimeout(
+			() => {
+				delete this.cadenceTimer;
+				if (
+					epoch !== this.status.epoch ||
+					!this.status.enabled ||
+					!this.status.active ||
+					this.status.paused ||
+					this.disposed
+				) {
+					return;
+				}
+				const now = Date.now();
+				if (!this.submitThrottledUpdate(now)) this.armCadenceTimer();
+			},
+			Math.min(remaining, 2_147_483_647),
+		);
+		this.cadenceTimer.unref();
+	}
+
+	private submitThrottledUpdate(now: number): boolean {
+		const update = this.throttledUpdate;
+		if (
+			update === undefined ||
+			this.draining ||
+			!this.reviewCadenceEligible(update.turnNumber, now)
+		) {
+			return false;
+		}
+		this.clearCadenceTimer();
+		delete this.throttledUpdate;
+		this.lastReviewSubmittedTurn = update.turnNumber;
+		this.lastReviewSubmittedAt = now;
+		this.updateBacklogStatus();
+		this.enqueue(update);
+		return true;
+	}
+
 	private scheduleCadencedUpdate(update: QueuedAdvisorUpdate): void {
 		if (this.draining) {
 			this.enqueue(update);
 			return;
 		}
 		this.throttledUpdate = this.coalescePending(this.throttledUpdate, update);
-		const now = Date.now();
-		if (!this.reviewCadenceEligible(update.turnNumber, now)) {
+		if (!this.submitThrottledUpdate(Date.now())) {
 			this.updateBacklogStatus();
-			return;
+			this.armCadenceTimer();
 		}
-		const submitted = this.throttledUpdate;
-		delete this.throttledUpdate;
-		this.lastReviewSubmittedTurn = update.turnNumber;
-		this.lastReviewSubmittedAt = now;
-		this.updateBacklogStatus();
-		this.enqueue(submitted);
 	}
 
 	async observeTurn(event: TurnEndEvent, ctx: ExtensionContext): Promise<void> {
@@ -1123,6 +1211,7 @@ export class AdvisorRuntime {
 		} finally {
 			this.draining = false;
 			this.updateBacklogStatus();
+			this.armCadenceTimer();
 		}
 	}
 
@@ -1209,6 +1298,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			submittedPrompt,
 			buildAdvisorSystemPrompt(this.config),
 			allowUsageAnchor,
+			session.agent.state.tools,
 		);
 	}
 
@@ -1749,6 +1839,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		this.status.pauseReason = reason;
 		this.status.retryPending = false;
 		this.status.retryDelayMs = 0;
+		this.clearCadenceTimer();
 		delete this.pendingUpdate;
 		delete this.throttledUpdate;
 		this.warn(`${reason}. Automatic Advisor review is paused.`);
@@ -1776,6 +1867,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		this.status.branchResets++;
 		this.status.retryPending = false;
 		this.status.retryDelayMs = 0;
+		this.clearCadenceTimer();
 		delete this.pendingUpdate;
 		delete this.throttledUpdate;
 		delete this.lastReviewSubmittedTurn;
@@ -1815,6 +1907,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		this.status.retryPending = false;
 		this.status.retryDelayMs = 0;
 		delete this.status.pauseReason;
+		this.clearCadenceTimer();
 		delete this.pendingUpdate;
 		delete this.throttledUpdate;
 		delete this.lastReviewSubmittedTurn;
@@ -1837,6 +1930,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		this.status.active = false;
 		this.status.retryPending = false;
 		this.status.retryDelayMs = 0;
+		this.clearCadenceTimer();
 		delete this.pendingUpdate;
 		delete this.throttledUpdate;
 		this.persistState();
@@ -1852,6 +1946,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 	}
 
 	private async disposeNestedSession(): Promise<void> {
+		this.clearCadenceTimer();
 		delete this.submittedProjectContext;
 		this.sessionUnsubscribe?.();
 		delete this.sessionUnsubscribe;

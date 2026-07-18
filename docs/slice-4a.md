@@ -8,13 +8,13 @@ Issues #15 and #16 remain open until the PR is merged.
 
 ## Behavior comparison
 
-| Deliverable                                             | Result | Evidence                                                                                                                                                                                                                                                                                                                                                                                             |
-| ------------------------------------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Advisor usage and context estimation                    | Pass   | The next request uses the latest successful Advisor assistant usage as an exact anchor and Pi's public token estimator for trailing private messages plus the incoming bounded update. With no valid anchor, including immediately after compaction, the entire private message context and bounded system prompt are estimated. Status distinguishes reported usage from estimated trailing tokens. |
-| Maximum context fraction, response reserve, and cadence | Pass   | The existing `context.maxFraction`, `context.reserveTokens`, `limits.minTurnsBetweenReviews`, and `limits.minIntervalMs` values actively govern submissions. Cadence-held turns are redacted, bounded, and coalesced rather than discarded.                                                                                                                                                          |
-| Bounded serialization                                   | Pass   | Updates and pending transcript retain their configured bounds. Each tool result is redacted before independent 2,000-line, 64 KiB, configured update-token, and final update bounds. `renderAdvisorReprimeSnapshot()` establishes the same configured redacted snapshot boundary for Batch B without invoking re-prime early.                                                                        |
-| Public nested compaction                                | Pass   | Over-policy context calls the nested public `AgentSession.compact()` API with continuity-focused instructions. Lifecycle invalidation aborts in-progress nested compaction through the public API.                                                                                                                                                                                                   |
-| Post-compaction recalculation                           | Pass   | Old provider usage anchors are invalidated after compaction. The compacted private messages and pending update are re-estimated before submission, and a still-unsafe result pauses Advisor once instead of entering Batch B fallback behavior.                                                                                                                                                      |
+| Deliverable                                             | Result | Evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Advisor usage and context estimation                    | Pass   | The next request uses Pi's public context estimator, anchored to the latest successful Advisor assistant usage with only trailing private messages and the incoming bounded update estimated. Successful usage already contains the fixed request shape, so tool schemas are not double-counted. With no valid anchor, including immediately after compaction, the private message context, bounded system prompt, and fixed Advisor tool schemas are estimated. Status distinguishes reported usage from estimated trailing tokens. |
+| Maximum context fraction, response reserve, and cadence | Pass   | The existing `context.maxFraction`, `context.reserveTokens`, `limits.minTurnsBetweenReviews`, and `limits.minIntervalMs` values actively govern submissions. Cadence-held turns are redacted, bounded, and coalesced rather than discarded. A single epoch-guarded timer flushes a final update held only by elapsed time and is canceled by submission or lifecycle invalidation.                                                                                                                                                   |
+| Bounded serialization                                   | Pass   | Updates and pending transcript retain their configured bounds. Each tool result is redacted before independent 2,000-line, 64 KiB, configured update-token, and final update bounds. `renderAdvisorReprimeSnapshot()` establishes the same configured redacted snapshot boundary for Batch B without invoking re-prime early.                                                                                                                                                                                                        |
+| Public nested compaction                                | Pass   | Over-policy context calls the nested public `AgentSession.compact()` API with continuity-focused instructions. Lifecycle invalidation aborts in-progress nested compaction through the public API.                                                                                                                                                                                                                                                                                                                                   |
+| Post-compaction recalculation                           | Pass   | Old provider usage anchors are invalidated after compaction. The compacted private messages and pending update are re-estimated before submission, and a still-unsafe result pauses Advisor once instead of entering Batch B fallback behavior.                                                                                                                                                                                                                                                                                      |
 
 ## Long-context and defaults revalidation
 
@@ -28,10 +28,11 @@ These checks revalidate the existing release defaults without changing them.
 
 ## Tests
 
-- Exact usage anchoring plus trailing estimation, and estimate-only fallback.
+- Exact usage anchoring through Pi's public context estimator plus trailing estimation without fixed-schema double-counting.
+- Estimate-only fallback including bounded system-prompt and fixed Advisor tool-schema cost.
 - Redaction and independent line, byte, token-oriented, update, pending, and re-prime serialization bounds.
 - Minimum-turn cadence with retained multi-turn coalescing.
-- Minimum-elapsed-time cadence with retained coalescing.
+- Minimum-elapsed-time cadence with a final held update flushing without another turn and disablement canceling the pending timer.
 - Public nested compaction with a planted pre-compaction requirement and later violation finding.
 - Post-compaction estimate-only recalculation below policy.
 - Primary-context isolation after accepted compacted-context advice.
@@ -42,14 +43,17 @@ These checks revalidate the existing release defaults without changing them.
 - `pnpm typecheck` - passed.
 - `pnpm lint` - passed.
 - `pnpm format:check` - passed.
-- `pnpm exec vitest run tests/unit/advisor-policy.test.ts tests/integration/context-policy.test.ts tests/integration/advisor-safety.test.ts --reporter=dot` - passed 79 focused policy, serialization, cadence, compaction, and safety tests across 3 files.
-- `pnpm verify` - passed typecheck, lint, formatting, and 154 unit, contract, and integration tests across 17 files.
+- `pnpm exec vitest run tests/unit/advisor-policy.test.ts tests/integration/context-policy.test.ts tests/integration/advisor-safety.test.ts --reporter=dot` - passed 80 focused policy, serialization, cadence, compaction, and safety tests across 3 files.
+- `for run in 1 2 3 4 5; do pnpm exec vitest run tests/integration/context-policy.test.ts -t 'flushes the final bounded update|cancels an elapsed-time cadence flush' --reporter=dot || exit 1; done` - passed both timer lifecycle regressions in all five runs.
+- `pnpm verify` - passed typecheck, lint, formatting, and 155 unit, contract, and integration tests across 17 files.
 - `pnpm test:e2e` - passed the packed-package Pi install and inactive-default scenario.
 - `pnpm pack:validate` - passed with 29 package files validated.
 - `git diff --check` - passed.
 
 ## Deviations and residual risks
 
+Pi's public context estimator covers messages and usage anchors but does not accept request tool schemas.
+The runtime estimates the fixed schema serialization only when provider usage does not already account for it, avoiding double-counting while keeping the estimate conservative around a successful anchor.
 Pi 0.80.7's public `AgentSession.compact()` result and session events do not expose the summarization request's provider usage or cost.
 Review-request usage remains exact in session totals, while context status accounts for compaction through post-compaction message estimation.
 The public compaction implementation may make more than one summarization provider request when Pi splits a turn prefix; the deterministic fixture covers that behavior.

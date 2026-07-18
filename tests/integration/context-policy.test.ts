@@ -159,11 +159,10 @@ describe.sequential("Slice 4A token-aware Advisor context", () => {
 		}
 	});
 
-	it("holds a bounded update until the configured elapsed-time cadence is eligible", async () => {
+	it("flushes the final bounded update when elapsed-time cadence becomes eligible", async () => {
 		const primary = createPrimaryProvider([
 			{ content: [{ type: "text", text: "INTERVAL-ONE" }] },
 			{ content: [{ type: "text", text: "INTERVAL-TWO" }] },
-			{ content: [{ type: "text", text: "INTERVAL-THREE" }] },
 		]);
 		const advisor = new ScriptedProvider({
 			providerId: "pi-advisor-fixture-advisor",
@@ -178,7 +177,7 @@ describe.sequential("Slice 4A token-aware Advisor context", () => {
 			extensions: [
 				extensionFor(
 					configFor(advisor, (config) => {
-						config.limits.minIntervalMs = 50;
+						config.limits.minIntervalMs = 500;
 					}),
 					(value) => (runtime = value),
 				),
@@ -191,12 +190,52 @@ describe.sequential("Slice 4A token-aware Advisor context", () => {
 			await waitFor(() => runtime?.getStatus().reviewsCompleted === 1);
 			await harness.session.prompt("interval two");
 			expect(advisor.requests).toHaveLength(1);
-			await new Promise<void>((resolve) => setTimeout(resolve, 60));
-			await harness.session.prompt("interval three");
+			expect(runtime?.getStatus().backlog).toBe(true);
+
 			await waitFor(() => runtime?.getStatus().reviewsCompleted === 2);
-			const coalesced = JSON.stringify(advisor.requests[1]?.context.messages);
-			expect(coalesced).toContain("INTERVAL-TWO");
-			expect(coalesced).toContain("INTERVAL-THREE");
+			const finalReview = JSON.stringify(advisor.requests[1]?.context.messages);
+			expect(finalReview).toContain("INTERVAL-TWO");
+			expect(runtime?.getStatus().pendingTranscriptBytes).toBe(0);
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("cancels an elapsed-time cadence flush when Advisor is disabled", async () => {
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "CANCEL-INTERVAL-ONE" }] },
+			{ content: [{ type: "text", text: "CANCEL-INTERVAL-TWO" }] },
+		]);
+		const advisor = new ScriptedProvider({
+			providerId: "pi-advisor-fixture-advisor",
+			modelId: "advisor-scripted",
+			api: ADVISOR_SCRIPTED_API,
+			responses: [{ content: [] }, { content: [] }],
+		});
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [
+				extensionFor(
+					configFor(advisor, (config) => {
+						config.limits.minIntervalMs = 500;
+					}),
+					(value) => (runtime = value),
+				),
+			],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("interval one");
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 1);
+			await harness.session.prompt("interval two");
+			expect(runtime?.getStatus().backlog).toBe(true);
+			await runtime?.disable();
+			await new Promise<void>((resolve) => setTimeout(resolve, 600));
+			expect(advisor.requests).toHaveLength(1);
+			expect(runtime?.getStatus()).toMatchObject({ active: false, backlog: false });
 		} finally {
 			await harness.dispose();
 		}

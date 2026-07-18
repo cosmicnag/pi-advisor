@@ -42,9 +42,9 @@ Slice 1 does not add a collision warning, so users must identify the intended co
 - New sessions, incompatible branches, expired notes, already delivered notes, and retention `0` do not restore deferred delivery.
 - Protected `read`, `grep`, `find`, and `ls` tools, with no mutating Advisor tools.
 - Explicit update, pending-byte, context, token, cost, tool-call, and turn governors.
-- Context estimates use the latest successful provider usage plus Pi's public estimator for trailing messages, with full estimation when no valid usage anchor exists.
+- Context estimates use Pi's public context estimator with the latest successful provider usage plus trailing messages, and include bounded system-prompt and fixed tool-schema estimates when no valid usage anchor exists.
 - Configured context fraction and response reserve trigger public nested `AgentSession.compact()` maintenance and post-compaction recalculation before another review request.
-- Ordinary minimum-turn and elapsed-time cadence settings actively coalesce skipped updates until eligible.
+- Ordinary minimum-turn and elapsed-time cadence settings actively coalesce skipped updates until eligible, with a lifecycle-safe timer flushing a final time-held update without requiring another Executor turn.
 - Every Executor tool result is redacted before independent 2,000-line, 64 KiB, configured update-token, and final update bounds.
 - Single-flight review with bounded coalescing while Advisor is busy.
 - Epoch invalidation on disablement, branch mismatch, compaction, tree navigation, session replacement, and shutdown.

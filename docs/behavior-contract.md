@@ -152,8 +152,10 @@ Compatible resume restores only state whose Pi session ID and cursor match the a
 Update, pending-byte, context, turn, tool-call, note, session-token, and reported-cost governors remain enabled by default.
 Ordinary review cadence uses the configured minimum meaningful-turn distance and elapsed interval.
 Skipped updates are redacted, bounded, and coalesced until both cadence gates are eligible rather than discarded.
-Before every Advisor submission, context estimation uses the latest successful provider usage when available and Pi's public token estimator for trailing messages and the incoming bounded update.
-When no valid usage anchor exists, including immediately after compaction, the whole private context is estimated with Pi's public estimator plus a bounded system-prompt heuristic.
+A single epoch-guarded timer flushes a final update held only by elapsed-time cadence without waiting for another Executor turn, and lifecycle invalidation cancels that timer.
+Before every Advisor submission, context estimation uses Pi's public context estimator, including the latest successful provider usage when available plus trailing messages and the incoming bounded update.
+Because successful provider usage already accounts for the fixed request shape, the runtime does not add tool-schema cost to a usage-anchored estimate.
+When no valid usage anchor exists, including immediately after compaction, the whole private context is estimated with Pi's public estimator plus bounded system-prompt and fixed Advisor tool-schema estimates.
 If the configured context fraction and response reserve would be exceeded, Slice 4A calls the nested `AgentSession.compact()` public API and recalculates policy from the compacted messages before submission.
 Compaction failure or a still-over-policy recalculation pauses Advisor once because bounded re-prime fallback belongs to Batch B.
 Optional full transcript persistence remains reserved and has no Slice 4A runtime effect.

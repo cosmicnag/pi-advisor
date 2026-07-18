@@ -1,3 +1,4 @@
+import { estimateContextTokens } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { SessionManager, type TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
@@ -242,22 +243,58 @@ describe("Slice 4A usage estimation and bounded transcript serialization", () =>
 				timestamp: 2,
 			},
 		];
-		const estimate = estimateAdvisorContext(messages, "next bounded update", "system policy");
-		expect(estimate).toMatchObject({
-			usageTokens: 115,
+		const toolSchemas = [
+			{
+				name: "schema_heavy_tool",
+				description: "A fixed Advisor tool with enough schema text to affect estimation.",
+				parameters: {
+					type: "object",
+					properties: {
+						query: { type: "string", description: "A deliberately explicit query value." },
+					},
+					required: ["query"],
+				},
+			},
+		];
+		const estimate = estimateAdvisorContext(
+			messages,
+			"next bounded update",
+			"system policy",
+			true,
+			toolSchemas,
+		);
+		const publicEstimate = estimateContextTokens([
+			...messages,
+			{ role: "user" as const, content: "next bounded update", timestamp: 3 },
+		]);
+		expect(estimate).toEqual({
+			tokens: publicEstimate.tokens,
+			usageTokens: publicEstimate.usageTokens,
+			trailingEstimateTokens: publicEstimate.trailingTokens,
 			source: "usage-plus-estimate",
 		});
+		expect(estimate.usageTokens).toBe(115);
 		expect(estimate.trailingEstimateTokens).toBeGreaterThan(0);
-		expect(estimate.tokens).toBe(115 + estimate.trailingEstimateTokens);
+		expect(
+			estimateAdvisorContext(messages, "next bounded update", "system policy", true, []).tokens,
+		).toBe(estimate.tokens);
 
-		const heuristic = estimateAdvisorContext(
+		const heuristicWithoutTools = estimateAdvisorContext(
 			messages,
 			"next bounded update",
 			"system policy",
 			false,
 		);
+		const heuristic = estimateAdvisorContext(
+			messages,
+			"next bounded update",
+			"system policy",
+			false,
+			toolSchemas,
+		);
 		expect(heuristic.source).toBe("estimate-only");
 		expect(heuristic.usageTokens).toBe(0);
+		expect(heuristic.tokens).toBeGreaterThan(heuristicWithoutTools.tokens);
 	});
 
 	it("redacts and independently bounds each large tool result before update and re-prime bounds", () => {
