@@ -1,4 +1,4 @@
-import type { InlineExtension } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type InlineExtension } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -38,6 +38,34 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 	await expect.poll(predicate, { timeout: 5_000, interval: 10 }).toBe(true);
 }
 
+function createBarrier(): { promise: Promise<void>; release: () => void } {
+	let release: () => void = () => undefined;
+	const promise = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	return { promise, release };
+}
+
+function scriptedAssistant(text: string) {
+	return {
+		role: "assistant" as const,
+		content: [{ type: "text" as const, text }],
+		api: "pi-advisor-scripted",
+		provider: "fixture",
+		model: "fixture",
+		usage: {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop" as const,
+		timestamp: Date.now(),
+	};
+}
+
 describe.sequential("Slice 4B optional transcript persistence", () => {
 	it("does not append transcript records with the default-disabled policy", async () => {
 		const primary = createPrimaryProvider([
@@ -69,6 +97,76 @@ describe.sequential("Slice 4B optional transcript persistence", () => {
 				transcriptPersistenceFailures: 0,
 			});
 		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("keeps invalidated attempt records off the replacement branch", async () => {
+		const advisorBarrier = createBarrier();
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "original branch answer" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			{
+				content: [
+					{
+						type: "toolCall",
+						id: "invalidated-attempt-read",
+						name: "read",
+						arguments: { path: "does-not-exist.txt" },
+					},
+				],
+				stopReason: "toolUse",
+				usage: { input: 10, output: 2, costUsd: 0.01 },
+				waitFor: advisorBarrier.promise,
+			},
+			{ content: [], usage: { input: 20, output: 3, costUsd: 0.02 } },
+		]);
+		const manager = SessionManager.inMemory();
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			sessionManager: manager,
+			extensions: [extensionFor(configFor(advisor, true), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("create an attempt to invalidate");
+			await waitFor(() => advisor.activeRequests === 1);
+			const originalUser = manager
+				.getBranch()
+				.find((entry) => entry.type === "message" && entry.message.role === "user");
+			if (originalUser === undefined) throw new Error("Expected original user entry");
+			manager.branch(originalUser.id);
+			manager.appendMessage(scriptedAssistant("replacement branch answer"));
+
+			advisorBarrier.release();
+			await waitFor(() => runtime?.getStatus().branchResets === 1);
+			await waitFor(() => advisor.activeRequests === 0);
+
+			const activeRecordKinds = manager
+				.getBranch()
+				.filter(
+					(entry) => entry.type === "custom" && entry.customType === ADVISOR_TRANSCRIPT_ENTRY_TYPE,
+				)
+				.map((entry) => {
+					if (entry.type !== "custom" || typeof entry.data !== "object" || entry.data === null) {
+						return undefined;
+					}
+					return (entry.data as Record<string, unknown>).kind;
+				});
+			expect(activeRecordKinds).not.toContain("advisor-tool-call");
+			expect(activeRecordKinds).not.toContain("advisor-tool-result");
+			expect(activeRecordKinds).not.toContain("usage");
+			expect(runtime?.getStatus()).toMatchObject({
+				reviewRequests: 1,
+				reviewsCompleted: 0,
+				usage: { input: 30, output: 5, total: 35, costUsd: 0.03 },
+			});
+		} finally {
+			advisorBarrier.release();
 			await harness.dispose();
 		}
 	});

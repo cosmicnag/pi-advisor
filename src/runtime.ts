@@ -1581,13 +1581,26 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		return undefined;
 	}
 
+	private updateCanContinue(session: AgentSession): boolean {
+		return (
+			this.session === session &&
+			this.status.enabled &&
+			this.status.active &&
+			!this.status.paused &&
+			!this.disposed
+		);
+	}
+
 	private async maintainContextPolicy(
 		session: AgentSession,
 		submittedPrompt: string,
-	): Promise<string | undefined> {
+		branchWindow: AdvisorCursor,
+	): Promise<{ prompt: string; epoch: number } | undefined> {
 		let estimate = this.estimateNextAdvisorContext(session, submittedPrompt);
 		this.updateContextEstimate(estimate);
-		if (estimate.tokens <= this.status.contextLimitTokens) return submittedPrompt;
+		if (estimate.tokens <= this.status.contextLimitTokens) {
+			return { prompt: submittedPrompt, epoch: this.status.epoch };
+		}
 
 		const epoch = this.status.epoch;
 		let compactionFailure: string | undefined;
@@ -1595,24 +1608,27 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			await session.compact(
 				"Preserve current task goals, explicit constraints, unresolved risks, key decisions, and planted requirements needed to review the next Executor update.",
 			);
-			this.status.compactionsCompleted++;
 		} catch (error) {
-			if (epoch !== this.status.epoch || this.session !== session || this.disposed)
-				return undefined;
-			this.status.compactionFailures++;
 			compactionFailure = `Advisor context compaction failed: ${boundedReason(error)}`;
-		} finally {
-			if (epoch === this.status.epoch && this.session === session && !this.disposed) {
-				this.status.compactionUsageUnavailable++;
-			}
 		}
 		if (epoch !== this.status.epoch || this.session !== session || this.disposed) return undefined;
+		const branchAfterCompaction = this.hostContext?.sessionManager.getBranch();
+		if (branchAfterCompaction === undefined) return undefined;
+		if (!cursorMatches(branchAfterCompaction, branchWindow)) {
+			await this.resetForBranchMismatch(branchAfterCompaction);
+			return undefined;
+		}
+		this.status.compactionUsageUnavailable++;
+		if (compactionFailure === undefined) this.status.compactionsCompleted++;
+		else this.status.compactionFailures++;
 
 		if (compactionFailure === undefined) {
 			this.usageAnchorInvalidated = true;
 			estimate = this.estimateNextAdvisorContext(session, submittedPrompt, false);
 			this.updateContextEstimate(estimate);
-			if (estimate.tokens <= this.status.contextLimitTokens) return submittedPrompt;
+			if (estimate.tokens <= this.status.contextLimitTokens) {
+				return { prompt: submittedPrompt, epoch: this.status.epoch };
+			}
 		}
 
 		let reprimePrompt: string | undefined;
@@ -1623,7 +1639,9 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				`Advisor bounded re-prime snapshot failed: ${boundedReason(error)}`,
 			);
 		}
-		if (reprimePrompt !== undefined) return reprimePrompt;
+		if (reprimePrompt !== undefined) {
+			return { prompt: reprimePrompt, epoch: this.status.epoch };
+		}
 		return this.pauseForUnsafeReprime(
 			compactionFailure ??
 				"Advisor context remains over policy after compaction and the bounded re-prime snapshot remains unsafe",
@@ -1664,8 +1682,16 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			await this.resetForBranchMismatch(currentBranch);
 			return;
 		}
-		const maintainedPrompt = await this.maintainContextPolicy(session, submittedPrompt);
-		if (maintainedPrompt === undefined) return;
+		const maintenance = await this.maintainContextPolicy(session, submittedPrompt, update.window);
+		if (maintenance?.epoch !== this.status.epoch || !this.updateCanContinue(session)) {
+			return;
+		}
+		const maintainedPrompt = maintenance.prompt;
+		const branchAfterMaintenance = ctx.sessionManager.getBranch();
+		if (!cursorMatches(branchAfterMaintenance, update.window)) {
+			await this.resetForBranchMismatch(branchAfterMaintenance);
+			return;
+		}
 		this.persistTranscriptDetails({
 			kind: "update",
 			text: update.persistedText,
@@ -1705,6 +1731,13 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			this.status.usage.cacheWrite += run.usage.cacheWrite;
 			this.status.usage.total += run.usage.total;
 			this.status.usage.costUsd += run.usage.costUsd;
+			if (this.status.enabled && !this.disposed) this.applySessionSoftCaps();
+			if (epoch !== this.status.epoch || !this.status.enabled || this.disposed) return;
+			const branchAfterAttempt = ctx.sessionManager.getBranch();
+			if (!cursorMatches(branchAfterAttempt, update.window)) {
+				await this.resetForBranchMismatch(branchAfterAttempt);
+				return;
+			}
 			for (const record of run.transcriptRecords) this.appendTranscriptRecord(record);
 			this.persistTranscriptDetails({
 				kind: "usage",
@@ -1716,13 +1749,6 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				costUsd: run.usage.costUsd,
 				stopReason: boundedPersistedValue(run.stopReason, 256),
 			});
-			if (this.status.enabled && !this.disposed) this.applySessionSoftCaps();
-			if (epoch !== this.status.epoch || !this.status.enabled || this.disposed) return;
-			const branchAfterAttempt = ctx.sessionManager.getBranch();
-			if (!cursorMatches(branchAfterAttempt, update.window)) {
-				await this.resetForBranchMismatch(branchAfterAttempt);
-				return;
-			}
 			const stale = branchHasNewerExecutorState(branchAfterAttempt, update.window);
 			const failure =
 				thrownFailure ?? run.governorFailure ?? run.toolFailure ?? run.providerFailure;

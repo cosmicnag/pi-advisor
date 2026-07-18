@@ -1,5 +1,6 @@
 import {
 	defineTool,
+	SessionManager,
 	type ExtensionContext,
 	type InlineExtension,
 } from "@earendil-works/pi-coding-agent";
@@ -44,6 +45,34 @@ function extensionFor(
 
 async function waitFor(predicate: () => boolean): Promise<void> {
 	await expect.poll(predicate, { timeout: 5_000, interval: 10 }).toBe(true);
+}
+
+function createBarrier(): { promise: Promise<void>; release: () => void } {
+	let release: () => void = () => undefined;
+	const promise = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	return { promise, release };
+}
+
+function scriptedAssistant(text: string) {
+	return {
+		role: "assistant" as const,
+		content: [{ type: "text" as const, text }],
+		api: "pi-advisor-scripted",
+		provider: "fixture",
+		model: "fixture",
+		usage: {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop" as const,
+		timestamp: Date.now(),
+	};
 }
 
 function acceptedAdvice(note: string): ScriptedResponse {
@@ -365,6 +394,77 @@ describe.sequential("Token-aware Advisor context through Slice 4B", () => {
 			expect(advisor.requests).toHaveLength(1);
 			expect(runtime?.getStatus()).toMatchObject({ active: false, backlog: false });
 		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("drops a stale update when the primary branch changes during nested compaction", async () => {
+		const compactionBarrier = createBarrier();
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "ORIGINAL-BRANCH-CONTEXT" }] },
+			{ content: [{ type: "text", text: "SECOND-PENDING-COMPACTION-UPDATE" }] },
+		]);
+		const advisor = new ScriptedProvider({
+			providerId: "pi-advisor-fixture-advisor",
+			modelId: "advisor-scripted-pending-compaction",
+			api: ADVISOR_SCRIPTED_API,
+			contextWindow: 4_000,
+			maxTokens: 512,
+			responses: [
+				{
+					content: [{ type: "text", text: `private-before-compaction-${"x".repeat(5_000)}` }],
+					usage: { input: 2_500, output: 500, costUsd: 0.03 },
+				},
+				{
+					content: [{ type: "text", text: "bounded compaction summary" }],
+					waitFor: compactionBarrier.promise,
+				},
+				{ content: [{ type: "text", text: "bounded suffix summary" }] },
+				{ content: [] },
+			],
+		});
+		const manager = SessionManager.inMemory();
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			sessionManager: manager,
+			extensions: [
+				extensionFor(
+					configFor(advisor, (config) => {
+						config.context.maxFraction = 0.65;
+						config.context.reserveTokens = 300;
+					}),
+					(value) => (runtime = value),
+				),
+			],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("create original branch context");
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 1);
+			await harness.session.prompt("start update that requires compaction");
+			await waitFor(() => advisor.requests.length >= 2 && advisor.activeRequests === 1);
+
+			const originalUser = manager
+				.getBranch()
+				.find((entry) => entry.type === "message" && entry.message.role === "user");
+			if (originalUser === undefined) throw new Error("Expected original user entry");
+			manager.branch(originalUser.id);
+			manager.appendMessage(scriptedAssistant("ALTERNATE-BRANCH-CONTEXT"));
+
+			compactionBarrier.release();
+			await waitFor(() => advisor.activeRequests === 0);
+			await waitFor(() => runtime?.getStatus().branchResets === 1);
+			expect(runtime?.getStatus().reviewRequests).toBe(1);
+			expect(
+				advisor.requests.some((request) =>
+					JSON.stringify(request.context.messages).includes("SECOND-PENDING-COMPACTION-UPDATE"),
+				),
+			).toBe(false);
+		} finally {
+			compactionBarrier.release();
 			await harness.dispose();
 		}
 	});
