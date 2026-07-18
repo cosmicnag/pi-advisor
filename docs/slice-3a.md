@@ -73,6 +73,7 @@ Final validation commands and results:
 - `pnpm test:e2e` - pass; packed Pi 0.80.7 installation and startup.
 - `pnpm pack:validate` - pass; 26 package files validated and generated artifacts removed.
 - `pnpm exec vitest run tests/unit/lifecycle-state.test.ts tests/integration/lifecycle-spikes.test.ts tests/integration/lifecycle-resilience.test.ts tests/integration/session-replacement-spike.test.ts tests/integration/advisor-safety.test.ts tests/integration/memory-suggestions.test.ts --reporter=dot` - pass; 89 focused branch, compaction, replacement, resume, dedupe, and Memory lifecycle tests across 6 files.
+- `pnpm exec tsx /tmp/pi-advisor-manual-smoke.mts` - pass; manual public `SessionManager` tree mismatch and compatible-resume state smoke printed `PASS manual tree-navigation and compatible-resume state smoke` and removed its temporary file.
 - `git diff --check` - pass.
 
 ## Deviations and residual risks
