@@ -1,13 +1,14 @@
 import { estimateContextTokens } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { SessionManager, type TurnEndEvent } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
 	adviceDedupeKey,
 	boundAdvice,
 	BoundedAdviceDedupe,
 	BoundedKeyedByteFifo,
+	ADVISOR_CUSTOM_TYPE,
 	DEFAULT_ADVISOR_CONFIG,
 	estimateAdvisorContext,
 	estimateTokens,
@@ -325,6 +326,59 @@ describe("Slice 4A usage estimation and bounded transcript serialization", () =>
 		const reprime = renderAdvisorReprimeSnapshot(manager.getBranch(), 16);
 		expect(Buffer.byteLength(reprime.text, "utf8")).toBeLessThanOrEqual(64);
 		expect(reprime.text).not.toContain("tool-result-secret");
+	});
+
+	it("collects only a bounded redacted tail across many older large entries", () => {
+		const manager = SessionManager.inMemory();
+		for (let index = 0; index < 24; index++) {
+			manager.appendMessage({
+				role: "toolResult",
+				toolCallId: `large-result-${String(index)}`,
+				toolName: "read",
+				content: [
+					{
+						type: "text",
+						text: `Bearer older-secret-value-${String(index)}\n${Array.from(
+							{ length: MAX_ADVISOR_TOOL_RESULT_LINES + 100 },
+							() => "x",
+						).join("\n")}${"z".repeat(3_000)}`,
+					},
+				],
+				isError: false,
+				timestamp: index + 1,
+			});
+		}
+		manager.appendCustomMessageEntry(ADVISOR_CUSTOM_TYPE, "excluded advisor note", true);
+		manager.appendMessage({
+			role: "user",
+			content: "NEWEST-EXECUTOR-TAIL",
+			timestamp: 100,
+		});
+
+		const originalByteLength = Buffer.byteLength.bind(Buffer);
+		const byteLengthSpy = vi.spyOn(Buffer, "byteLength").mockImplementation((value, encoding) => {
+			const bytes = originalByteLength(value, encoding);
+			if (typeof value === "string" && bytes > 10_000) {
+				throw new Error("rendering assembled an unbounded intermediate string");
+			}
+			return bytes;
+		});
+		let rendered: ReturnType<typeof renderAdvisorDelta>;
+		try {
+			rendered = renderAdvisorDelta(manager.getBranch(), 256);
+		} finally {
+			byteLengthSpy.mockRestore();
+		}
+
+		expect(Buffer.byteLength(rendered.text, "utf8")).toBeLessThanOrEqual(1_024);
+		expect(rendered.text).toContain("[Older Advisor update content truncated");
+		expect(rendered.text).toContain("[Tool result truncated to per-result limit]");
+		expect(rendered.text).toContain("NEWEST-EXECUTOR-TAIL");
+		expect(rendered.text).not.toContain("excluded advisor note");
+		expect(rendered.text).not.toContain("older-secret-value");
+		expect(rendered.redactions).toBe(24);
+		expect(rendered.entryCount).toBe(manager.getBranch().length);
+		expect(rendered.truncated).toBe(true);
 	});
 });
 

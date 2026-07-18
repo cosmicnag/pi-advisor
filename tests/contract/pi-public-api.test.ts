@@ -1,3 +1,4 @@
+import { estimateContextTokens } from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -77,6 +78,7 @@ describe("pinned Pi 0.80.7 public API contract", () => {
 	it("exports the required SDK constructors and methods", () => {
 		expect(createAgentSession).toBeTypeOf("function");
 		expect(calculateContextTokens).toBeTypeOf("function");
+		expect(estimateContextTokens).toBeTypeOf("function");
 		expect(estimateTokens).toBeTypeOf("function");
 		expect(DefaultResourceLoader).toBeTypeOf("function");
 		expectMethod(SessionManager, "inMemory");

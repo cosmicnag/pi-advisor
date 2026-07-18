@@ -30,7 +30,7 @@ These checks revalidate the existing release defaults without changing them.
 
 - Exact usage anchoring through Pi's public context estimator plus trailing estimation without fixed-schema double-counting.
 - Estimate-only fallback including bounded system-prompt and fixed Advisor tool-schema cost.
-- Redaction and independent line, byte, token-oriented, update, pending, and re-prime serialization bounds.
+- Incremental redacted tail collection plus independent line, byte, token-oriented, update, pending, and re-prime serialization bounds.
 - Minimum-turn cadence with retained multi-turn coalescing.
 - Minimum-elapsed-time cadence with a final held update flushing without another turn, explicit budget reset clearing and re-evaluating the held timer without loss or duplication, inactive runtime activation retaining held work until the nested session is ready, and disablement canceling the pending timer.
 - Public nested compaction with a planted pre-compaction requirement and later violation finding.
@@ -43,10 +43,10 @@ These checks revalidate the existing release defaults without changing them.
 - `pnpm typecheck` - passed.
 - `pnpm lint` - passed.
 - `pnpm format:check` - passed.
-- `pnpm exec vitest run tests/unit/advisor-policy.test.ts tests/integration/context-policy.test.ts tests/integration/advisor-safety.test.ts --reporter=dot` - passed 82 focused policy, serialization, cadence, compaction, and safety tests across 3 files.
+- `pnpm exec vitest run tests/unit/advisor-policy.test.ts tests/integration/context-policy.test.ts tests/integration/advisor-safety.test.ts --reporter=dot` - passed 83 focused policy, serialization, cadence, compaction, and safety tests across 3 files.
 - `for run in 1 2 3 4 5; do pnpm exec vitest run tests/integration/context-policy.test.ts -t 'flushes the final bounded update|cancels an elapsed-time cadence flush' --reporter=dot || exit 1; done` - passed both timer lifecycle regressions in all five runs.
 - `for run in 1 2 3 4 5; do pnpm exec vitest run tests/integration/context-policy.test.ts -t 're-evaluates a held elapsed-time update after an explicit budget reset|retains a held elapsed-time update until inactive runtime activation completes' --reporter=dot || exit 1; done` - passed both active and inactive budget-reset timer regressions in all five runs.
-- `pnpm verify` - passed typecheck, lint, formatting, and 157 unit, contract, and integration tests across 17 files.
+- `pnpm verify` - passed typecheck, lint, formatting, and 158 unit, contract, and integration tests across 17 files.
 - `pnpm test:e2e` - passed the packed-package Pi install and inactive-default scenario.
 - `pnpm pack:validate` - passed with 29 package files validated.
 - `git diff --check` - passed.

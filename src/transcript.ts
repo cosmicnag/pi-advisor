@@ -141,13 +141,34 @@ function serializeEntry(entry: SessionEntry): SerializedEntry | undefined {
 	return undefined;
 }
 
-function boundToolResult(text: string, maximumBytes: number): string {
-	const lines = text.split("\n");
-	const lineBounded =
-		lines.length <= MAX_ADVISOR_TOOL_RESULT_LINES
-			? text
-			: `${lines.slice(0, MAX_ADVISOR_TOOL_RESULT_LINES).join("\n")}${TOOL_RESULT_TRUNCATION_MARKER}`;
-	return truncateUtf8Bytes(lineBounded, maximumBytes, TOOL_RESULT_TRUNCATION_MARKER);
+interface BoundedText {
+	text: string;
+	truncated: boolean;
+}
+
+function boundToolResult(text: string, maximumBytes: number): BoundedText {
+	let lineEnd = -1;
+	let searchFrom = 0;
+	for (let line = 0; line < MAX_ADVISOR_TOOL_RESULT_LINES; line++) {
+		lineEnd = text.indexOf("\n", searchFrom);
+		if (lineEnd === -1) break;
+		searchFrom = lineEnd + 1;
+	}
+	const lineTruncated = lineEnd !== -1;
+	const lineBounded = lineTruncated
+		? `${text.slice(0, lineEnd)}${TOOL_RESULT_TRUNCATION_MARKER}`
+		: text;
+	const byteBounded = truncateUtf8Bytes(lineBounded, maximumBytes, TOOL_RESULT_TRUNCATION_MARKER);
+	return {
+		text: byteBounded,
+		truncated: lineTruncated || byteBounded !== lineBounded,
+	};
+}
+
+function addTailTruncationMarker(text: string, maximumBytes: number, marker: string): string {
+	const boundedMarker = truncateUtf8Bytes(marker, maximumBytes, "");
+	const availableBytes = Math.max(0, maximumBytes - Buffer.byteLength(boundedMarker, "utf8"));
+	return `${boundedMarker}${truncateUtf8TailBytes(text, availableBytes, "")}`;
 }
 
 function renderBoundedEntries(
@@ -158,22 +179,46 @@ function renderBoundedEntries(
 	const maximumBytes = Math.max(1, maximumTokens * 4);
 	const perToolResultBytes = Math.min(maximumBytes, MAX_ADVISOR_TOOL_RESULT_BYTES);
 	let redactions = 0;
-	const serialized = entries
-		.map(serializeEntry)
-		.filter((value): value is SerializedEntry => value !== undefined)
-		.map((value) => {
-			const redacted = redactSecrets(value.text);
-			redactions += redacted.redactions;
-			return value.toolResult ? boundToolResult(redacted.text, perToolResultBytes) : redacted.text;
-		});
-	const joined = serialized.join("\n\n");
-	const text = truncateUtf8TailBytes(joined, maximumBytes, truncationMarker);
+	let retained = "";
+	let hasRetainedEntry = false;
+	let overallTruncated = false;
+	let toolResultTruncated = false;
+
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if (entry === undefined) continue;
+		const serialized = serializeEntry(entry);
+		if (serialized === undefined) continue;
+		const redacted = redactSecrets(serialized.text);
+		redactions += redacted.redactions;
+		const bounded = serialized.toolResult
+			? boundToolResult(redacted.text, perToolResultBytes)
+			: { text: redacted.text, truncated: false };
+		toolResultTruncated ||= bounded.truncated;
+		if (overallTruncated) continue;
+
+		const entryBytes = Buffer.byteLength(bounded.text, "utf8");
+		const collectionText =
+			entryBytes > maximumBytes
+				? truncateUtf8TailBytes(bounded.text, maximumBytes, "")
+				: bounded.text;
+		const candidate = hasRetainedEntry ? `${collectionText}\n\n${retained}` : collectionText;
+		if (entryBytes > maximumBytes || Buffer.byteLength(candidate, "utf8") > maximumBytes) {
+			retained = truncateUtf8TailBytes(candidate, maximumBytes, "");
+			overallTruncated = true;
+		} else {
+			retained = candidate;
+		}
+		hasRetainedEntry = true;
+	}
+
 	return {
-		text,
+		text: overallTruncated
+			? addTailTruncationMarker(retained, maximumBytes, truncationMarker)
+			: retained,
 		redactions,
 		entryCount: entries.length,
-		truncated:
-			text !== joined || serialized.some((value) => value.includes(TOOL_RESULT_TRUNCATION_MARKER)),
+		truncated: overallTruncated || toolResultTruncated,
 	};
 }
 
