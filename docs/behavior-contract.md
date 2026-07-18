@@ -136,7 +136,8 @@ Any future enabled persistence must exclude Executor and Advisor reasoning and s
 The package sends no product analytics, usage telemetry, or automatic crash reports.
 The user-selected model provider receives only the bounded content required for Advisor requests.
 Support diagnostics require explicit `/advisor dump` action and never export automatically.
-The dump is bounded to 16 KiB, recursively redacts every included string, and excludes Executor and Advisor transcripts, reasoning, Advisory note content, instructions, and protected paths.
+The dump is bounded to 16 KiB, recursively redacts every included string, and excludes Executor and Advisor transcripts, reasoning, Advisory note content, instructions, protected paths, and raw failure text.
+Boolean fields report whether review or delivery failure details exist without serializing those details.
 
 ## Scope boundary
 

@@ -8,7 +8,10 @@ import {
 	escapeXmlText,
 	formatAdviceForDelivery,
 	formatAdvisorDiagnosticsDump,
+	HARD_LIMITS,
 	MAX_ADVISOR_DUMP_BYTES,
+	MAX_DEFERRED_DELIVERY_BYTES,
+	MAX_PENDING_ADVICE_ITEMS,
 	renderAdviceCards,
 	renderAdviceMessage,
 	type AdvicePresentationNote,
@@ -122,7 +125,7 @@ describe("Slice 2 Batch B presentation and diagnostics", () => {
 		}
 	});
 
-	it("falls back to Pi rendering when message details are missing or malformed", () => {
+	it("falls back to Pi rendering when message details are malformed or oversized", () => {
 		expect(
 			renderAdviceMessage(
 				{
@@ -153,12 +156,39 @@ describe("Slice 2 Batch B presentation and diagnostics", () => {
 				fixtureTheme(false),
 			),
 		).toBeUndefined();
+		const baseMessage = {
+			role: "custom" as const,
+			customType: "pi-advisor-note",
+			content: "oversized details",
+			display: true,
+			timestamp: 1_700_000_000_000,
+		};
+		for (const notes of [
+			[presentationNote({ note: "x".repeat(HARD_LIMITS.maxAdviceCharacters + 1) })],
+			Array.from({ length: MAX_PENDING_ADVICE_ITEMS + 1 }, () => presentationNote({ note: "x" })),
+			Array.from({ length: Math.floor(MAX_DEFERRED_DELIVERY_BYTES / 100) + 1 }, () =>
+				presentationNote({ note: "x".repeat(100) }),
+			),
+			Array.from({ length: Math.floor(MAX_DEFERRED_DELIVERY_BYTES / 512) + 1 }, () =>
+				presentationNote({ note: "", deliveryId: "x".repeat(512) }),
+			),
+		]) {
+			expect(
+				renderAdviceMessage(
+					{ ...baseMessage, details: { notes } },
+					{ expanded: false },
+					fixtureTheme(false),
+				),
+			).toBeUndefined();
+		}
 	});
 
 	it("creates a bounded redacted dump without transcripts, notes, instructions, or paths", () => {
 		const status = runtimeStatus();
-		status.lastFailure = "Bearer dump-secret-token-value";
-		status.lastDeliveryFailure = "TOKEN=dump-delivery-secret-value";
+		status.lastFailure =
+			"Bearer dump-secret-token-value private review instruction private/project/path";
+		status.lastDeliveryFailure =
+			"TOKEN=dump-delivery-secret-value private review instruction private/project/path";
 		const config = structuredClone(DEFAULT_ADVISOR_CONFIG);
 		config.model = "provider/sk-test-abcdefghijklmnop";
 		config.instructions = "private review instruction";
@@ -174,14 +204,13 @@ describe("Slice 2 Batch B presentation and diagnostics", () => {
 		expect(dump).not.toContain("private/project/path");
 		expect(dump).toContain('"executorTranscriptIncluded": false');
 		expect(dump).toContain('"noteContentIncluded": false');
+		expect(dump).toContain('"hasLastFailure": true');
+		expect(dump).toContain('"hasLastDeliveryFailure": true');
 		expect(() => {
 			JSON.parse(dump.slice(dump.indexOf("\n") + 1));
 		}).not.toThrow();
 
-		status.nestedActiveTools = Array.from(
-			{ length: 5_000 },
-			(_, index) => `oversized-tool-${String(index)}`,
-		);
+		status.model = `provider/${"x".repeat(MAX_ADVISOR_DUMP_BYTES)}`;
 		const fallbackDump = formatAdvisorDiagnosticsDump(status, config, 1_700_000_000_000);
 		const fallback: unknown = JSON.parse(fallbackDump.slice(fallbackDump.indexOf("\n") + 1));
 		expect(Buffer.byteLength(fallbackDump, "utf8")).toBeLessThanOrEqual(MAX_ADVISOR_DUMP_BYTES);

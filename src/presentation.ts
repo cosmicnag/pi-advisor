@@ -2,6 +2,8 @@ import type { CustomEntry, MessageRenderer, Theme } from "@earendil-works/pi-cod
 import { Box, Container, Spacer, Text, type Component } from "@earendil-works/pi-tui";
 
 import type { AdviceDelivery, AdviceSeverity } from "./advice.js";
+import { HARD_LIMITS } from "./config.js";
+import { MAX_DEFERRED_DELIVERY_BYTES, MAX_PENDING_ADVICE_ITEMS } from "./delivery.js";
 
 export const ADVISOR_LATE_ENTRY_TYPE = "pi-advisor-late-note";
 
@@ -82,12 +84,19 @@ function isRenderableTimestamp(value: unknown): value is number {
 	return isFiniteNonNegative(value) && value <= 8_640_000_000_000_000;
 }
 
+function noteFitsPresentationBound(value: unknown): value is string {
+	if (typeof value !== "string" || value.length > HARD_LIMITS.maxAdviceCharacters * 2) {
+		return false;
+	}
+	return Array.from(value).length <= HARD_LIMITS.maxAdviceCharacters;
+}
+
 function parsePresentationNote(value: unknown): AdvicePresentationNote | undefined {
 	if (typeof value !== "object" || value === null) return undefined;
 	const note = value as Record<string, unknown>;
 	if (
 		note.intent !== "review" ||
-		typeof note.note !== "string" ||
+		!noteFitsPresentationBound(note.note) ||
 		!isAdviceSeverity(note.severity) ||
 		!isAdviceDelivery(note.delivery) ||
 		typeof note.truncated !== "boolean" ||
@@ -107,7 +116,9 @@ function parsePresentationNote(value: unknown): AdvicePresentationNote | undefin
 		originalCharacters: note.originalCharacters,
 		originalEstimatedTokens: note.originalEstimatedTokens,
 		createdAt: note.createdAt,
-		...(typeof note.deliveryId === "string" ? { deliveryId: note.deliveryId } : {}),
+		...(typeof note.deliveryId === "string" && note.deliveryId.length <= 512
+			? { deliveryId: note.deliveryId }
+			: {}),
 		...(note.displayedInEntry === true ? { displayedInEntry: true } : {}),
 	};
 }
@@ -115,10 +126,18 @@ function parsePresentationNote(value: unknown): AdvicePresentationNote | undefin
 export function adviceNotesFromDetails(details: unknown): AdvicePresentationNote[] {
 	if (typeof details !== "object" || details === null) return [];
 	const values = (details as Record<string, unknown>).notes;
-	if (!Array.isArray(values)) return [];
-	return values
-		.map((value) => parsePresentationNote(value))
-		.filter((value): value is AdvicePresentationNote => value !== undefined);
+	if (!Array.isArray(values) || values.length > MAX_PENDING_ADVICE_ITEMS) return [];
+	const notes: AdvicePresentationNote[] = [];
+	let retainedBytes = Buffer.byteLength("[]", "utf8");
+	for (const value of values) {
+		const note = parsePresentationNote(value);
+		if (note === undefined) return [];
+		const separatorBytes = notes.length === 0 ? 0 : Buffer.byteLength(",", "utf8");
+		retainedBytes += separatorBytes + Buffer.byteLength(JSON.stringify(note), "utf8");
+		if (retainedBytes > MAX_DEFERRED_DELIVERY_BYTES) return [];
+		notes.push(note);
+	}
+	return notes;
 }
 
 function formatAge(createdAt: number, now: number): string {

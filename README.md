@@ -40,7 +40,7 @@ Slice 1 does not add a collision warning, so users must identify the intended co
 - Epoch invalidation on disablement, branch mismatch, and shutdown.
 - Three consecutive failed updates pause Advisor and warn once.
 - Delivery attempts are single-shot, count separately, retain only one bounded redacted last-failure reason, and never enter a retry loop.
-- Explicit `/advisor dump` diagnostics exclude transcripts, notes, reasoning, instructions, and protected paths, redact included string fields, and stay within 16 KiB.
+- Explicit `/advisor dump` diagnostics exclude transcripts, notes, reasoning, instructions, protected paths, and raw failure text, redact included string fields, and stay within 16 KiB.
 - Fail-safe inactive behavior when the configured model or credentials are unavailable.
 - No product telemetry.
 
@@ -77,7 +77,7 @@ An approved release change must remove that guard before the manual trusted-publ
 - `/advisor on` enables review for the current session when the configured `provider/model` is available and authenticated.
 - `/advisor off` disables review, invalidates in-flight work, clears the bounded transcript backlog, pending advice, and dedupe history, and disposes the nested session.
 - `/advisor status` reports activation, model, backlog, context, usage, review, delivery-failure, active-pending, delivered, deferred, suppressed, pause, and last-failure state.
-- `/advisor dump` explicitly emits a redacted, bounded diagnostic snapshot without transcripts, notes, reasoning, instructions, or protected paths.
+- `/advisor dump` explicitly emits a redacted, bounded diagnostic snapshot without transcripts, notes, reasoning, instructions, protected paths, or raw failure text.
 - `--advisor` requests activation for the current session in every Pi mode.
 - `defaultEnabled: true` applies only to TUI and RPC sessions, while JSON and print sessions require explicit activation.
 
