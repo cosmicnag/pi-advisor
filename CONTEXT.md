@@ -2,9 +2,9 @@
 
 Pi Advisor provides automatic secondary review of a primary Pi agent session while keeping reviewer state separate from the primary conversation.
 
-## Slice 3A terminology status
+## Slice 3B terminology status
 
-The implemented runtime provides Executor, Advisor, Advisor update, active-branch Cursor, Epoch, Meaningful Executor turn, Executor reasoning, Advisory note, Memory suggestion, retained Deferred advice, compatible resume, lifecycle-only persisted state, Advice card, Session activation, in-memory caller configuration, Fixed Advisor policy, User instructions, tagged Project instructions, Protected path, Protected-path exception, and Destructive-command guard boundaries.
+The implemented runtime provides Executor, Advisor, Advisor update, Advisor retry, active-branch Cursor, Epoch, Meaningful Executor turn, Executor reasoning, Advisory note, Memory suggestion, retained Deferred advice, compatible resume, lifecycle-only persisted state, Advice card, Session activation, in-memory caller configuration, Fixed Advisor policy, User instructions, tagged Project instructions, Protected path, Protected-path exception, and Destructive-command guard boundaries.
 Re-prime, durable User configuration, durable Project configuration, and optional Persisted Advisor transcript remain reserved later-slice terms.
 
 ## Language
@@ -28,6 +28,11 @@ _Avoid_: Message count, file pointer, pagination cursor
 **Epoch**:
 The runtime generation that invalidates asynchronous Advisor work created before a branch reset, disablement, shutdown, or future configuration apply.
 _Avoid_: Version, session number, retry count
+
+**Advisor retry**:
+One resubmission of the same bounded Advisor update after a provider or nested-prompt failure, exact private-message rollback, stale nested-queue extraction, and a fixed 250 millisecond delay.
+Each failed attempt participates in the existing consecutive-failure pause state, while an epoch change invalidates the retry continuation.
+_Avoid_: Pi auto-retry, replaying failed messages, re-prime
 
 **Re-prime**:
 A reset of private Advisor context followed by a bounded snapshot of the Executor's current active branch.
