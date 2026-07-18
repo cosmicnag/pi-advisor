@@ -1468,9 +1468,12 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			await harness.session.prompt("exhaust context policy");
 			await waitFor(() => runtime?.getStatus().paused === true);
 			expect(runtime?.getStatus()).toMatchObject({
-				pauseReason: "Advisor context fraction or response reserve reached",
+				pauseReason: "Advisor re-prime snapshot could not be built safely",
 				compactionsCompleted: 0,
 				compactionFailures: 1,
+				contextReprimesCompleted: 0,
+				contextReprimeFailures: 1,
+				warnings: 1,
 			});
 			expect(runtime?.getStatus().lastFailure).toContain("context compaction failed");
 			expect(advisor.requests).toHaveLength(0);

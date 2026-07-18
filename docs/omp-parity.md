@@ -20,7 +20,7 @@
 | Immediate late-advice presentation                 | implemented            | TUI-only custom entries render accepted idle advice immediately without entering model context                           |
 | Advice card rendering                              | implemented            | Theme-aware custom message and entry renderers show severity, delivery, age, and staleness within terminal width         |
 | XML-safe model delivery                            | implemented            | Structured note and guidance elements escape content and attributes and replace invalid XML characters                   |
-| Explicit support diagnostics                       | implemented            | `/advisor dump` emits at most 16 KiB and excludes transcripts, notes, reasoning, instructions, and protected paths       |
+| Explicit support diagnostics                       | implemented            | `/advisor dump` emits at most 16 KiB, redacts previews, and excludes reasoning, instructions, and protected paths        |
 | Cross-update dedupe                                | implemented            | A severity-scoped conservative-normalization 4,096-key FIFO preserves operators and case inside matched backtick spans   |
 | Staleness annotation                               | implemented            | Advice is potentially stale after branch advance or when the pending user prompt triggers deferred materialization       |
 | Hard interruption of an in-flight tool             | intentional difference | Pi steering reaches the next assistant boundary and does not abort the current tool                                      |
@@ -39,8 +39,8 @@
 | OMP `glob` Advisor tool                            | intentional difference | Pi 0.80.7 exposes `find`, which the current runtime protects and bounds                                                  |
 | Read-only Advisor tools                            | implemented            | Activates only protected `read`, `grep`, `find`, and `ls`, plus exclusive internal `advise`                              |
 | Protected sensitive paths                          | implemented            | Checks normalized requests and canonical targets and filters traversal results                                           |
-| Private Advisor transcript persistence             | deferred               | Optional full transcripts stay disabled; bounded lifecycle-only Pi custom entries persist independently                  |
-| Context compaction and bounded re-prime            | partial                | Public nested compaction and post-compaction recalculation are implemented; bounded re-prime invocation remains Batch B  |
+| Private Advisor transcript persistence             | intentional difference | Opt-in bounded redacted reasoning-free custom records; raw transcripts remain prohibited                                 |
+| Context compaction and bounded re-prime            | implemented            | Public compaction recalculates policy, then one bounded current-branch re-prime falls back or pauses safely              |
 | Reduced ordinary review cadence                    | implemented            | Configured turn and elapsed-time gates retain one bounded coalesced update until both gates are eligible                 |
 | Usage-aware context estimation                     | implemented            | Latest successful provider usage anchors context, while public Pi estimation bounds trailing or post-compaction content  |
 | Multiple Advisors                                  | deferred               | Requires production evidence and separate approval                                                                       |

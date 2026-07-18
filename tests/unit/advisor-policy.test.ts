@@ -9,11 +9,13 @@ import {
 	BoundedAdviceDedupe,
 	BoundedKeyedByteFifo,
 	ADVISOR_CUSTOM_TYPE,
+	ADVISOR_TRANSCRIPT_RECORD_VERSION,
 	DEFAULT_ADVISOR_CONFIG,
 	estimateAdvisorContext,
 	estimateTokens,
 	formatAdviceForDelivery,
 	formatAdvisorEnableStatus,
+	formatAdvisorStatus,
 	HARD_LIMITS,
 	isContentFreeAdvice,
 	isMeaningfulExecutorTurn,
@@ -22,10 +24,12 @@ import {
 	MAX_DEFERRED_DELIVERY_BYTES,
 	normalizeAdviceForDedupe,
 	normalizeAdvisorConfig,
+	parsePersistedAdvisorTranscriptRecord,
 	PROPOSED_ADVISOR_CONFIG,
 	redactSecrets,
 	renderAdvisorDelta,
 	renderAdvisorReprimeSnapshot,
+	renderPersistedAdvisorUpdate,
 	successfulMemoryToolTexts,
 	takeRenderedPrefix,
 	type AdviceDedupeIdentity,
@@ -81,7 +85,11 @@ function runtimeStatus(): AdvisorRuntimeStatus {
 		contextEstimateSource: "estimate-only",
 		compactionsCompleted: 0,
 		compactionFailures: 0,
+		compactionUsageUnavailable: 0,
+		contextReprimesCompleted: 0,
+		contextReprimeFailures: 0,
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, costUsd: 0 },
+		reviewRequests: 0,
 		reviewsCompleted: 0,
 		silentReviews: 0,
 		failedReviews: 0,
@@ -105,6 +113,9 @@ function runtimeStatus(): AdvisorRuntimeStatus {
 		branchResets: 0,
 		staleQueuedMessagesDiscarded: 0,
 		warnings: 0,
+		transcriptPersistenceEnabled: false,
+		transcriptRecordsPersisted: 0,
+		transcriptPersistenceFailures: 0,
 		epoch: 0,
 		nestedActiveTools: [],
 	};
@@ -179,6 +190,37 @@ describe("Slice 1 configuration and emission policy", () => {
 		expect(output).toContain("Session tokens: 0");
 	});
 
+	it("reports complete review usage, maintenance, suppression, and persistence accounting", () => {
+		const status = runtimeStatus();
+		status.reviewRequests = 4;
+		status.reviewsCompleted = 3;
+		status.failedReviews = 1;
+		status.contextReprimesCompleted = 2;
+		status.contextReprimeFailures = 1;
+		status.compactionUsageUnavailable = 2;
+		status.usage = {
+			input: 100,
+			output: 20,
+			cacheRead: 30,
+			cacheWrite: 5,
+			total: 155,
+			costUsd: 0.125,
+		};
+		status.notesSuppressed = 7;
+		status.transcriptPersistenceEnabled = true;
+		status.transcriptRecordsPersisted = 9;
+		status.transcriptPersistenceFailures = 1;
+		const output = formatAdvisorStatus(status);
+		expect(output).toContain("2 operations with usage unavailable through Pi public APIs");
+		expect(output).toContain("Context re-prime: 2 completed, 1 failed");
+		expect(output).toContain(
+			"Session tokens: 155 total (100 input, 20 output, 30 cache read, 5 cache write)",
+		);
+		expect(output).toContain("Reviews: 4 requests, 3 completed");
+		expect(output).toContain("7 suppressed");
+		expect(output).toContain("Transcript persistence: enabled, 9 records available, 1");
+	});
+
 	it("keeps even extremely small configured note bounds within their limit", () => {
 		const config = structuredClone(DEFAULT_ADVISOR_CONFIG);
 		config.limits.maxAdviceCharacters = 3;
@@ -221,7 +263,7 @@ describe("Slice 1 configuration and emission policy", () => {
 	});
 });
 
-describe("Slice 4A usage estimation and bounded transcript serialization", () => {
+describe("Usage estimation and bounded transcript serialization through Slice 4B", () => {
 	it("anchors context to the latest exact successful usage and estimates only trailing content", () => {
 		const exact = assistant([{ type: "text", text: "prior private response" }]);
 		exact.usage = {
@@ -326,6 +368,44 @@ describe("Slice 4A usage estimation and bounded transcript serialization", () =>
 		const reprime = renderAdvisorReprimeSnapshot(manager.getBranch(), 16);
 		expect(Buffer.byteLength(reprime.text, "utf8")).toBeLessThanOrEqual(64);
 		expect(reprime.text).not.toContain("tool-result-secret");
+	});
+
+	it("removes Executor reasoning from redacted bounded persistence updates", () => {
+		const manager = SessionManager.inMemory();
+		manager.appendMessage({
+			role: "assistant",
+			content: [
+				{ type: "thinking", thinking: "EXECUTOR-REASONING-MUST-NOT-PERSIST" },
+				{ type: "text", text: "Visible Executor conclusion." },
+			],
+			api: "test" as AssistantMessage["api"],
+			provider: "test",
+			model: "test",
+			usage: assistant([]).usage,
+			stopReason: "stop",
+			timestamp: 1,
+		});
+		const rendered = renderPersistedAdvisorUpdate(manager.getBranch(), 128);
+		expect(rendered.text).toContain("Visible Executor conclusion");
+		expect(rendered.text).not.toContain("EXECUTOR-REASONING-MUST-NOT-PERSIST");
+		expect(rendered.text).not.toContain("[reasoning]");
+
+		const record = {
+			version: ADVISOR_TRANSCRIPT_RECORD_VERSION,
+			sessionId: "session-1",
+			savedAt: 1,
+			kind: "update" as const,
+			text: rendered.text,
+			entryCount: rendered.entryCount,
+			truncated: rendered.truncated,
+		};
+		expect(parsePersistedAdvisorTranscriptRecord(record, "session-1")).toEqual(record);
+		expect(
+			parsePersistedAdvisorTranscriptRecord(
+				{ ...record, text: "API_KEY=unsafe-persisted-secret" },
+				"session-1",
+			),
+		).toBeUndefined();
 	});
 
 	it("collects only a bounded redacted tail across many older large entries", () => {
