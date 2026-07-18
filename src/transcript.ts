@@ -7,10 +7,15 @@ import type {
 
 import { normalizeMemoryTextForDedupe } from "./advice.js";
 import { HARD_LIMITS } from "./config.js";
-import { redactSecrets, truncateUtf8TailBytes } from "./redaction.js";
+import { redactSecrets, truncateUtf8Bytes, truncateUtf8TailBytes } from "./redaction.js";
 
 export const ADVISOR_CUSTOM_TYPE = "pi-advisor-note";
 const UPDATE_TRUNCATION_MARKER = "[Older Advisor update content truncated to configured limit]\n";
+const REPRIME_TRUNCATION_MARKER =
+	"[Older Advisor re-prime content truncated to configured limit]\n";
+const TOOL_RESULT_TRUNCATION_MARKER = "\n[Tool result truncated to per-result limit]";
+export const MAX_ADVISOR_TOOL_RESULT_BYTES = 64 * 1_024;
+export const MAX_ADVISOR_TOOL_RESULT_LINES = 2_000;
 const MAX_MEMORY_TOOL_CANDIDATE_ITEMS = 4_096;
 const MAX_MEMORY_TOOL_CANDIDATE_BYTES = HARD_LIMITS.maxPendingTranscriptBytes;
 const MAX_MEMORY_TOOL_TEXT_INPUT_UTF16_UNITS = HARD_LIMITS.maxProposedMemoryCharacters * 2;
@@ -79,24 +84,38 @@ function contentText(content: unknown): string {
 		.join("\n");
 }
 
-function serializeMessage(message: AgentMessage): string | undefined {
+interface SerializedEntry {
+	text: string;
+	toolResult: boolean;
+}
+
+function serializeMessage(message: AgentMessage): SerializedEntry | undefined {
 	switch (message.role) {
 		case "user":
-			return `[Executor user]\n${contentText(message.content)}`;
+			return { text: `[Executor user]\n${contentText(message.content)}`, toolResult: false };
 		case "assistant":
-			return `[Executor assistant]\n${contentText(message.content)}`;
+			return { text: `[Executor assistant]\n${contentText(message.content)}`, toolResult: false };
 		case "toolResult":
-			return `[Executor tool result ${message.toolName}${message.isError ? " error" : ""}]\n${contentText(message.content)}`;
+			return {
+				text: `[Executor tool result ${message.toolName}${message.isError ? " error" : ""}]\n${contentText(message.content)}`,
+				toolResult: true,
+			};
 		case "custom":
 			if (message.customType === ADVISOR_CUSTOM_TYPE) return undefined;
-			return `[Executor extension context ${message.customType}]\n${contentText(message.content)}`;
+			return {
+				text: `[Executor extension context ${message.customType}]\n${contentText(message.content)}`,
+				toolResult: false,
+			};
 		case "bashExecution":
 			if (message.excludeFromContext) return undefined;
-			return `[Executor user bash]\n$ ${message.command}\n${message.output}`;
+			return {
+				text: `[Executor user bash]\n$ ${message.command}\n${message.output}`,
+				toolResult: true,
+			};
 		case "branchSummary":
-			return `[Executor branch summary]\n${message.summary}`;
+			return { text: `[Executor branch summary]\n${message.summary}`, toolResult: false };
 		case "compactionSummary":
-			return `[Executor compaction summary]\n${message.summary}`;
+			return { text: `[Executor compaction summary]\n${message.summary}`, toolResult: false };
 	}
 }
 
@@ -104,15 +123,103 @@ function isMessageEntry(entry: SessionEntry): entry is SessionMessageEntry {
 	return entry.type === "message";
 }
 
-function serializeEntry(entry: SessionEntry): string | undefined {
+function serializeEntry(entry: SessionEntry): SerializedEntry | undefined {
 	if (isMessageEntry(entry)) return serializeMessage(entry.message);
 	if (entry.type === "custom_message") {
 		if (entry.customType === ADVISOR_CUSTOM_TYPE) return undefined;
-		return `[Executor extension context ${entry.customType}]\n${contentText(entry.content)}`;
+		return {
+			text: `[Executor extension context ${entry.customType}]\n${contentText(entry.content)}`,
+			toolResult: false,
+		};
 	}
-	if (entry.type === "compaction") return `[Executor compaction summary]\n${entry.summary}`;
-	if (entry.type === "branch_summary") return `[Executor branch summary]\n${entry.summary}`;
+	if (entry.type === "compaction") {
+		return { text: `[Executor compaction summary]\n${entry.summary}`, toolResult: false };
+	}
+	if (entry.type === "branch_summary") {
+		return { text: `[Executor branch summary]\n${entry.summary}`, toolResult: false };
+	}
 	return undefined;
+}
+
+interface BoundedText {
+	text: string;
+	truncated: boolean;
+}
+
+function boundToolResult(text: string, maximumBytes: number): BoundedText {
+	let lineEnd = -1;
+	let searchFrom = 0;
+	for (let line = 0; line < MAX_ADVISOR_TOOL_RESULT_LINES; line++) {
+		lineEnd = text.indexOf("\n", searchFrom);
+		if (lineEnd === -1) break;
+		searchFrom = lineEnd + 1;
+	}
+	const lineTruncated = lineEnd !== -1;
+	const lineBounded = lineTruncated
+		? `${text.slice(0, lineEnd)}${TOOL_RESULT_TRUNCATION_MARKER}`
+		: text;
+	const byteBounded = truncateUtf8Bytes(lineBounded, maximumBytes, TOOL_RESULT_TRUNCATION_MARKER);
+	return {
+		text: byteBounded,
+		truncated: lineTruncated || byteBounded !== lineBounded,
+	};
+}
+
+function addTailTruncationMarker(text: string, maximumBytes: number, marker: string): string {
+	const boundedMarker = truncateUtf8Bytes(marker, maximumBytes, "");
+	const availableBytes = Math.max(0, maximumBytes - Buffer.byteLength(boundedMarker, "utf8"));
+	return `${boundedMarker}${truncateUtf8TailBytes(text, availableBytes, "")}`;
+}
+
+function renderBoundedEntries(
+	entries: SessionEntry[],
+	maximumTokens: number,
+	truncationMarker: string,
+): RenderedAdvisorDelta {
+	const maximumBytes = Math.max(1, maximumTokens * 4);
+	const perToolResultBytes = Math.min(maximumBytes, MAX_ADVISOR_TOOL_RESULT_BYTES);
+	let redactions = 0;
+	let retained = "";
+	let hasRetainedEntry = false;
+	let overallTruncated = false;
+	let toolResultTruncated = false;
+
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if (entry === undefined) continue;
+		const serialized = serializeEntry(entry);
+		if (serialized === undefined) continue;
+		const redacted = redactSecrets(serialized.text);
+		redactions += redacted.redactions;
+		const bounded = serialized.toolResult
+			? boundToolResult(redacted.text, perToolResultBytes)
+			: { text: redacted.text, truncated: false };
+		toolResultTruncated ||= bounded.truncated;
+		if (overallTruncated) continue;
+
+		const entryBytes = Buffer.byteLength(bounded.text, "utf8");
+		const collectionText =
+			entryBytes > maximumBytes
+				? truncateUtf8TailBytes(bounded.text, maximumBytes, "")
+				: bounded.text;
+		const candidate = hasRetainedEntry ? `${collectionText}\n\n${retained}` : collectionText;
+		if (entryBytes > maximumBytes || Buffer.byteLength(candidate, "utf8") > maximumBytes) {
+			retained = truncateUtf8TailBytes(candidate, maximumBytes, "");
+			overallTruncated = true;
+		} else {
+			retained = candidate;
+		}
+		hasRetainedEntry = true;
+	}
+
+	return {
+		text: overallTruncated
+			? addTailTruncationMarker(retained, maximumBytes, truncationMarker)
+			: retained,
+		redactions,
+		entryCount: entries.length,
+		truncated: overallTruncated || toolResultTruncated,
+	};
 }
 
 export function isMeaningfulExecutorTurn(event: TurnEndEvent, entries: SessionEntry[]): boolean {
@@ -236,16 +343,16 @@ export function renderAdvisorDelta(
 	entries: SessionEntry[],
 	maxUpdateTokens: number,
 ): RenderedAdvisorDelta {
-	const serialized = entries
-		.map(serializeEntry)
-		.filter((value): value is string => value !== undefined);
-	const redacted = redactSecrets(serialized.join("\n\n"));
-	const maxBytes = Math.max(1, maxUpdateTokens * 4);
-	const text = truncateUtf8TailBytes(redacted.text, maxBytes, UPDATE_TRUNCATION_MARKER);
-	return {
-		text,
-		redactions: redacted.redactions,
-		entryCount: entries.length,
-		truncated: text !== redacted.text,
-	};
+	return renderBoundedEntries(entries, maxUpdateTokens, UPDATE_TRUNCATION_MARKER);
+}
+
+/**
+ * Serialize a bounded current-branch snapshot for Slice 4 re-prime consumers.
+ * Slice 4A establishes the redaction and serialization boundary; fallback invocation is Batch B.
+ */
+export function renderAdvisorReprimeSnapshot(
+	entries: SessionEntry[],
+	maxReprimeTokens: number,
+): RenderedAdvisorDelta {
+	return renderBoundedEntries(entries, maxReprimeTokens, REPRIME_TRUNCATION_MARKER);
 }

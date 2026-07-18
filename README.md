@@ -13,7 +13,7 @@ This package is designed for automatic background observation that does not depe
 Both packages register `/advisor`, and Pi 0.80.7 assigns `/advisor:1` and `/advisor:2` in extension load order when both are installed.
 Slice 1 does not add a collision warning, so users must identify the intended command from Pi's command list.
 
-## Implemented behavior through Slice 3
+## Implemented behavior through Slice 4A
 
 - One explicitly selected Advisor model, with no fallback to the Executor model.
 - Automatic review after meaningful completed Executor turns.
@@ -42,6 +42,10 @@ Slice 1 does not add a collision warning, so users must identify the intended co
 - New sessions, incompatible branches, expired notes, already delivered notes, and retention `0` do not restore deferred delivery.
 - Protected `read`, `grep`, `find`, and `ls` tools, with no mutating Advisor tools.
 - Explicit update, pending-byte, context, token, cost, tool-call, and turn governors.
+- Context estimates use Pi's public context estimator with the latest successful provider usage plus trailing messages, and include bounded system-prompt and fixed tool-schema estimates when no valid usage anchor exists.
+- Configured context fraction and response reserve trigger public nested `AgentSession.compact()` maintenance and post-compaction recalculation before another review request.
+- Ordinary minimum-turn and elapsed-time cadence settings actively coalesce skipped updates until eligible, with a lifecycle-safe timer flushing a final time-held update without requiring another Executor turn.
+- Every Executor tool result is redacted before independent 2,000-line, 64 KiB, configured update-token, and final update bounds.
 - Single-flight review with bounded coalescing while Advisor is busy.
 - Epoch invalidation on disablement, branch mismatch, compaction, tree navigation, session replacement, and shutdown.
 - A provider or thrown nested-runtime failure rolls the failed turn out of private Advisor context, extracts stale nested queued messages, waits a fixed bounded 250 milliseconds, and retries the same bounded update once.
@@ -50,7 +54,7 @@ Slice 1 does not add a collision warning, so users must identify the intended co
 - Branch, compaction, tree, disable, replacement, and shutdown epoch changes invalidate retry-delay continuations before another provider request.
 - Delivery, malformed internal tool, and governor failures remain single-shot.
   Delivery failures count separately and retain only one bounded redacted last-failure reason.
-- Status reports queued transcript bytes, pending retry delay, total retry attempts, consecutive and total failures, branch resets, and the count of stale nested queued messages discarded without retaining their content.
+- Status reports queued transcript bytes, reported and estimated context components, context policy limit, completed and failed compactions, pending retry delay, total retry attempts, consecutive and total failures, branch resets, and the count of stale nested queued messages discarded without retaining their content.
 - Explicit `/advisor dump` diagnostics exclude transcripts, notes, reasoning, instructions, protected paths, and raw failure text, redact included string fields, and stay within 16 KiB.
 - Fail-safe inactive behavior when the configured model or credentials are unavailable.
 - Optional Memory suggestions activate only while an Executor tool named `memory_suggest` is active and its public schema explicitly supports required string `text`, `preference` and `project` categories, and `status: "pending"`.
@@ -64,7 +68,8 @@ Slice 1 does not add a collision warning, so users must identify the intended co
 - Pi Advisor never imports Memory Lane, invokes `memory_save` or `memory_suggest`, writes memory storage, or approves a memory.
 - No product telemetry.
 
-Advisor context compaction or branch re-prime, WATCHDOG files, and optional full Advisor transcript persistence remain outside Slice 3.
+Bounded branch re-prime invocation and unsafe-snapshot handling remain Slice 4B.
+WATCHDOG files and optional full Advisor transcript persistence also remain unimplemented.
 
 The normative public contract is in [`docs/behavior-contract.md`](docs/behavior-contract.md).
 The measured OMP parity position is tracked in [`docs/omp-parity.md`](docs/omp-parity.md).
@@ -78,6 +83,7 @@ Full Slice 2 acceptance and closure evidence is in [`docs/slice-2-verification.m
 Slice 3A lifecycle and persistence evidence is in [`docs/slice-3a.md`](docs/slice-3a.md).
 Slice 3B retry and recovery evidence is in [`docs/slice-3b.md`](docs/slice-3b.md).
 Full Slice 3 acceptance and closure evidence is in [`docs/slice-3-verification.md`](docs/slice-3-verification.md).
+Slice 4A context-policy and compaction evidence is in [`docs/slice-4a.md`](docs/slice-4a.md).
 
 ## Install the package locally
 
@@ -133,7 +139,9 @@ The hard maxima are 4,000 characters and approximately 1,024 estimated tokens.
 Its 4,096-key dedupe history, 4,096-note and 1,000,000-byte deferred queue, and 64 KiB deferred delivery batch are fixed protocol bounds.
 A full deferred queue rejects newer advice, increments the suppressed-note count, and warns once per session.
 `deferredAdviceRetentionHours` now controls cross-exit deferred-note restoration, with `0` disabling it and the 24-hour default applying on compatible resume.
-`maxReprimeTokens`, review cadence, optional full transcript `persistence`, `AdvisorProjectConfig`, and `CONFIG_VALIDATION_STRATEGY` remain reserved and do not change Slice 3B runtime behavior.
+`minTurnsBetweenReviews` and `minIntervalMs` now throttle ordinary reviews while retaining a bounded coalesced update until both gates are eligible.
+`maxReprimeTokens` now bounds the exported redacted current-branch snapshot serializer, but invoking bounded re-prime remains Slice 4B.
+Optional full transcript `persistence`, `AdvisorProjectConfig`, and `CONFIG_VALIDATION_STRATEGY` remain reserved.
 `DEFAULT_ADVISOR_CONFIG` is deeply frozen; clone it before editing configuration.
 `PROPOSED_ADVISOR_CONFIG` remains a deprecated compatibility alias containing an independent mutable clone of the canonical defaults.
 Programmatic hooks are intended for embedding and tests: `onRuntime` exposes the instance, `onStatus` receives status snapshots, and `onWarning` receives runtime warnings.

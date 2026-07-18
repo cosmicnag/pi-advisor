@@ -1,25 +1,31 @@
+import { estimateContextTokens } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { SessionManager, type TurnEndEvent } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
 	adviceDedupeKey,
 	boundAdvice,
 	BoundedAdviceDedupe,
 	BoundedKeyedByteFifo,
+	ADVISOR_CUSTOM_TYPE,
 	DEFAULT_ADVISOR_CONFIG,
+	estimateAdvisorContext,
 	estimateTokens,
 	formatAdviceForDelivery,
 	formatAdvisorEnableStatus,
 	HARD_LIMITS,
 	isContentFreeAdvice,
 	isMeaningfulExecutorTurn,
+	MAX_ADVISOR_TOOL_RESULT_BYTES,
+	MAX_ADVISOR_TOOL_RESULT_LINES,
 	MAX_DEFERRED_DELIVERY_BYTES,
 	normalizeAdviceForDedupe,
 	normalizeAdvisorConfig,
 	PROPOSED_ADVISOR_CONFIG,
 	redactSecrets,
 	renderAdvisorDelta,
+	renderAdvisorReprimeSnapshot,
 	successfulMemoryToolTexts,
 	takeRenderedPrefix,
 	type AdviceDedupeIdentity,
@@ -70,6 +76,11 @@ function runtimeStatus(): AdvisorRuntimeStatus {
 		retryAttempts: 0,
 		contextEstimateTokens: 0,
 		contextLimitTokens: 10_000,
+		contextUsageTokens: 0,
+		contextTrailingEstimateTokens: 0,
+		contextEstimateSource: "estimate-only",
+		compactionsCompleted: 0,
+		compactionFailures: 0,
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, costUsd: 0 },
 		reviewsCompleted: 0,
 		silentReviews: 0,
@@ -207,6 +218,167 @@ describe("Slice 1 configuration and emission policy", () => {
 		expect(result.note).not.toContain(discarded);
 		expect(Array.from(result.note).length).toBeLessThanOrEqual(80);
 		expect(result.originalCharacters).toBeGreaterThan(Array.from(result.note).length);
+	});
+});
+
+describe("Slice 4A usage estimation and bounded transcript serialization", () => {
+	it("anchors context to the latest exact successful usage and estimates only trailing content", () => {
+		const exact = assistant([{ type: "text", text: "prior private response" }]);
+		exact.usage = {
+			input: 80,
+			output: 20,
+			cacheRead: 10,
+			cacheWrite: 5,
+			totalTokens: 115,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		const messages = [
+			{ role: "user" as const, content: "older content", timestamp: 1 },
+			exact,
+			{
+				role: "toolResult" as const,
+				toolCallId: "read-1",
+				toolName: "read",
+				content: [{ type: "text" as const, text: "trailing tool result" }],
+				isError: false,
+				timestamp: 2,
+			},
+		];
+		const toolSchemas = [
+			{
+				name: "schema_heavy_tool",
+				description: "A fixed Advisor tool with enough schema text to affect estimation.",
+				parameters: {
+					type: "object",
+					properties: {
+						query: { type: "string", description: "A deliberately explicit query value." },
+					},
+					required: ["query"],
+				},
+			},
+		];
+		const estimate = estimateAdvisorContext(
+			messages,
+			"next bounded update",
+			"system policy",
+			true,
+			toolSchemas,
+		);
+		const publicEstimate = estimateContextTokens([
+			...messages,
+			{ role: "user" as const, content: "next bounded update", timestamp: 3 },
+		]);
+		expect(estimate).toEqual({
+			tokens: publicEstimate.tokens,
+			usageTokens: publicEstimate.usageTokens,
+			trailingEstimateTokens: publicEstimate.trailingTokens,
+			source: "usage-plus-estimate",
+		});
+		expect(estimate.usageTokens).toBe(115);
+		expect(estimate.trailingEstimateTokens).toBeGreaterThan(0);
+		expect(
+			estimateAdvisorContext(messages, "next bounded update", "system policy", true, []).tokens,
+		).toBe(estimate.tokens);
+
+		const heuristicWithoutTools = estimateAdvisorContext(
+			messages,
+			"next bounded update",
+			"system policy",
+			false,
+		);
+		const heuristic = estimateAdvisorContext(
+			messages,
+			"next bounded update",
+			"system policy",
+			false,
+			toolSchemas,
+		);
+		expect(heuristic.source).toBe("estimate-only");
+		expect(heuristic.usageTokens).toBe(0);
+		expect(heuristic.tokens).toBeGreaterThan(heuristicWithoutTools.tokens);
+	});
+
+	it("redacts and independently bounds each large tool result before update and re-prime bounds", () => {
+		const manager = SessionManager.inMemory();
+		manager.appendMessage({ role: "user", content: "keep this request", timestamp: 1 });
+		manager.appendMessage({
+			role: "toolResult",
+			toolCallId: "large-result",
+			toolName: "read",
+			content: [
+				{
+					type: "text",
+					text: `API_KEY=tool-result-secret\n${Array.from(
+						{ length: MAX_ADVISOR_TOOL_RESULT_LINES + 50 },
+						(_, index) => `line-${String(index)}`,
+					).join("\n")}${"z".repeat(MAX_ADVISOR_TOOL_RESULT_BYTES)}`,
+				},
+			],
+			isError: false,
+			timestamp: 2,
+		});
+		const rendered = renderAdvisorDelta(manager.getBranch(), 24_000);
+		expect(rendered.text).toContain("[Tool result truncated to per-result limit]");
+		expect(rendered.text).toContain("[REDACTED]");
+		expect(rendered.text).not.toContain("tool-result-secret");
+		expect(Buffer.byteLength(rendered.text, "utf8")).toBeLessThanOrEqual(24_000 * 4);
+
+		const reprime = renderAdvisorReprimeSnapshot(manager.getBranch(), 16);
+		expect(Buffer.byteLength(reprime.text, "utf8")).toBeLessThanOrEqual(64);
+		expect(reprime.text).not.toContain("tool-result-secret");
+	});
+
+	it("collects only a bounded redacted tail across many older large entries", () => {
+		const manager = SessionManager.inMemory();
+		for (let index = 0; index < 24; index++) {
+			manager.appendMessage({
+				role: "toolResult",
+				toolCallId: `large-result-${String(index)}`,
+				toolName: "read",
+				content: [
+					{
+						type: "text",
+						text: `Bearer older-secret-value-${String(index)}\n${Array.from(
+							{ length: MAX_ADVISOR_TOOL_RESULT_LINES + 100 },
+							() => "x",
+						).join("\n")}${"z".repeat(3_000)}`,
+					},
+				],
+				isError: false,
+				timestamp: index + 1,
+			});
+		}
+		manager.appendCustomMessageEntry(ADVISOR_CUSTOM_TYPE, "excluded advisor note", true);
+		manager.appendMessage({
+			role: "user",
+			content: "NEWEST-EXECUTOR-TAIL",
+			timestamp: 100,
+		});
+
+		const originalByteLength = Buffer.byteLength.bind(Buffer);
+		const byteLengthSpy = vi.spyOn(Buffer, "byteLength").mockImplementation((value, encoding) => {
+			const bytes = originalByteLength(value, encoding);
+			if (typeof value === "string" && bytes > 10_000) {
+				throw new Error("rendering assembled an unbounded intermediate string");
+			}
+			return bytes;
+		});
+		let rendered: ReturnType<typeof renderAdvisorDelta>;
+		try {
+			rendered = renderAdvisorDelta(manager.getBranch(), 256);
+		} finally {
+			byteLengthSpy.mockRestore();
+		}
+
+		expect(Buffer.byteLength(rendered.text, "utf8")).toBeLessThanOrEqual(1_024);
+		expect(rendered.text).toContain("[Older Advisor update content truncated");
+		expect(rendered.text).toContain("[Tool result truncated to per-result limit]");
+		expect(rendered.text).toContain("NEWEST-EXECUTOR-TAIL");
+		expect(rendered.text).not.toContain("excluded advisor note");
+		expect(rendered.text).not.toContain("older-secret-value");
+		expect(rendered.redactions).toBe(24);
+		expect(rendered.entryCount).toBe(manager.getBranch().length);
+		expect(rendered.truncated).toBe(true);
 	});
 });
 
