@@ -790,6 +790,46 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 		}
 	});
 
+	it("enforces elapsed-time cadence before admitting another distinct suggestion", async () => {
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "answer one" }] },
+			{ content: [{ type: "text", text: "answer two" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			memorySuggestion(proposed, "interval-one"),
+			memorySuggestion("A second durable project procedure.", "interval-two"),
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [
+				extensionFor(
+					configFor(advisor, (config) => {
+						config.memorySuggestions.minIntervalMs = 60_000;
+					}),
+					(value) => (runtime = value),
+				),
+			],
+			customTools: [compatibleMemoryTool()],
+			tools: ["memory_suggest"],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("first interval suggestion");
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			await harness.session.prompt("too-soon interval suggestion");
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 2);
+			expect(runtime?.getStatus()).toMatchObject({
+				memorySuggestionsDelivered: 1,
+				memorySuggestionsLimitSuppressed: 1,
+			});
+			expect(runtime?.getStatus().memorySuggestionNextEligibleAt).toBeGreaterThan(Date.now());
+		} finally {
+			await harness.dispose();
+		}
+	});
+
 	it("deduplicates repeated proposed memory independently of rationale wording", async () => {
 		const primary = createPrimaryProvider([
 			{ content: [{ type: "text", text: "answer one" }] },

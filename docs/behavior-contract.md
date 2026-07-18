@@ -3,7 +3,7 @@
 ## Status
 
 This document defines the intended public behavior of `@ribbons-digital/pi-advisor`.
-Slice 2 Batch C extends the safe automatic core with optional compatible Memory suggestions, strict proposal policy and governors, distinct rendering, and delivery-time capability rechecks.
+Slice 2 completes the safe automatic core's state-aware delivery, dedupe, themed presentation, bounded diagnostics, and optional compatible Memory suggestions with strict proposal policy and delivery-time capability rechecks.
 Durable configuration, cross-exit lifecycle restoration, context compaction, and transcript persistence remain deferred to their separately approved slices.
 
 ## Roles
@@ -30,7 +30,7 @@ A follow-up containing an Advisory note but no new Executor user message is trea
 Silence is the successful normal result when no material issue exists.
 At most one Advisory note is accepted from one Advisor update.
 Normalized content-free approval phrases are suppressed, while an oversized material note is redacted, truncated to both configured note bounds with a marker as space permits, and tagged with truncation metadata.
-Batch C considers Memory suggestions only when the compatible capability and strict policy gates are active.
+Slice 2 considers Memory suggestions only when the compatible capability and strict policy gates are active.
 
 ## Isolation and context
 
@@ -144,9 +144,9 @@ Active-branch entry IDs, not message counts, anchor minimal cursor validation.
 Obvious tree-navigation or branch mismatches reset private Advisor context, while disablement and shutdown invalidate stale work.
 Batch A does not reconstruct equal-length branches or restore advice across process or session exits.
 Update, pending-byte, context, turn, tool-call, note, session-token, and reported-cost governors remain enabled by default.
-Review cadence, re-prime, deferred-retention, and persistence settings remain reserved and have no Batch C runtime effect.
-Memory suggestion cadence, session cap, and proposed-text bounds are active in Batch C.
-In particular, `deferredAdviceRetentionHours` does not expire in-memory Batch C advice and remains reserved for cross-exit lifecycle work.
+Review cadence, re-prime, deferred-retention, and persistence settings remain reserved and have no Slice 2 runtime effect.
+Memory suggestion cadence, session cap, and proposed-text bounds are active in Slice 2.
+In particular, `deferredAdviceRetentionHours` does not expire in-memory Slice 2 advice and remains reserved for cross-exit lifecycle work.
 Batches A and B add no user-configurable field.
 Its 4,096-key dedupe history, 4,096-note and 1,000,000-byte deferred queue, and 64 KiB delivery batch are fixed protocol bounds.
 Provider, malformed internal tool, governor, and delivery failures are not retried, and failed update messages are removed from private Advisor context.
