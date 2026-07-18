@@ -1,7 +1,7 @@
 {
 	"name": "@ribbons-digital/pi-advisor",
-	"version": "0.0.0",
-	"description": "Automatic isolated secondary review for Pi sessions",
+	"version": "0.1.0",
+	"description": "Automatic isolated secondary review for Pi coding agent sessions",
 	"license": "MIT",
 	"author": "Ribbons Digital",
 	"type": "module",
@@ -23,8 +23,11 @@
 	"keywords": [
 		"pi-package",
 		"pi-extension",
+		"pi",
 		"advisor",
-		"code-review"
+		"automatic-review",
+		"code-review",
+		"ai-agent"
 	],
 	"publishConfig": {
 		"access": "public",
@@ -35,7 +38,10 @@
 		"README.md",
 		"LICENSE",
 		"THIRD_PARTY_NOTICES.md",
-		"docs/*.md"
+		"docs/behavior-contract.md",
+		"docs/configuration.md",
+		"docs/omp-parity.md",
+		"docs/security.md"
 	],
 	"pi": {
 		"extensions": [

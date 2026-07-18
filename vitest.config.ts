@@ -1,7 +1,13 @@
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
 	test: {
+		env: {
+			PI_CODING_AGENT_DIR: join(tmpdir(), "pi-advisor-vitest-agent"),
+		},
 		coverage: {
 			enabled: false,
 			provider: "v8",

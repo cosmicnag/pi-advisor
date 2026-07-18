@@ -2,10 +2,8 @@
 
 ## Status
 
-This document defines the intended public behavior of `@ribbons-digital/pi-advisor`.
-Slice 4A extends the safe automatic core with usage-anchored context estimation, active ordinary review cadence, per-tool-result serialization bounds, public nested-session compaction, and post-compaction recalculation.
-Slice 4B adds bounded current-branch re-prime fallback, unsafe-snapshot pause behavior, complete public-API accounting, optional private transcript records, and repeated long-session coverage.
-Slice 5 adds versioned durable WATCHDOG loading, trusted Project narrowing, bounded Markdown instructions, atomic User saves, immediate configuration rebuild, explicit external-edit reload behavior, model and reasoning selection, approved read-only tool selection, multiline User-instruction editing, a complete configuration reference, coexistence warning, and publishable package metadata.
+This document defines the public behavior of `@ribbons-digital/pi-advisor` version 0.1.
+The implementation provides automatic isolated review, bounded delivery, lifecycle recovery, token-aware context maintenance, optional reasoning-free transcript records, and versioned WATCHDOG configuration.
 
 ## Roles
 
@@ -27,13 +25,13 @@ While Advisor is enabled, an additive compact footer status shows active, inacti
 
 ## Review and silence
 
-The Slice 1 core reviews each meaningful completed internal Executor turn by default.
+Advisor reviews each meaningful completed internal Executor turn by default.
 Aborted and empty turns are excluded.
 A follow-up containing an Advisory note but no new Executor user message is treated as Advisor-generated and excluded, while a later user-driven turn remains eligible even when `before_agent_start` injects deferred advice.
 Silence is the successful normal result when no material issue exists.
 At most one Advisory note is accepted from one Advisor update.
 Normalized content-free approval phrases are suppressed, while an oversized material note is redacted, truncated to both configured note bounds with a marker as space permits, and tagged with truncation metadata.
-Slice 2 considers Memory suggestions only when the compatible capability and strict policy gates are active.
+Memory suggestions are considered only when the compatible capability and strict policy gates are active.
 
 ## Isolation and context
 
@@ -49,7 +47,7 @@ When compaction fails or remains over policy, the runtime clears the private nes
 The snapshot is reduced until the estimate fits the same context policy.
 Re-prime increments the runtime epoch, remains bounded by `maxReprimeTokens`, and cannot recursively compact or re-prime within the same maintenance pass.
 If no non-empty snapshot and pending update can fit safely, Advisor pauses and warns once.
-Optional transcript records persist only reasoning-free redacted bounded shapes when explicitly enabled in Slice 4B.
+Optional transcript records persist only reasoning-free redacted bounded shapes when explicitly enabled.
 Lifecycle-only custom entries persist outside model context independently of optional transcript persistence.
 
 ## Delivery
@@ -63,7 +61,7 @@ The active-pending and deferred queues each reject new advice when admission wou
 A rejection preserves older FIFO entries, increments the suppressed-note count, and emits at most one queue-capacity warning per session.
 Pi 0.80.7 exposes no public abort cause, so every public abort signal or aborted Executor stop reason forces advice already being reviewed to use deferred delivery, and aborted Executor turns are excluded from new review.
 Pi 0.80.7 also exposes no public method to cancel an already queued `nextTurn` custom message after branch navigation, so deferred delivery uses the documented `before_agent_start` injection fallback.
-Slice 3B preserves Slice 3A retained deferred-advice persistence and applies `deferredAdviceRetentionHours` only when restoring a compatible session.
+Cross-exit deferred-advice persistence applies `deferredAdviceRetentionHours` only when restoring a compatible session.
 Retention `0` excludes deferred note content from new persisted snapshots.
 An incompatible active-branch cursor invalidates in-flight review and clears deferred advice before delivery, while disablement, compaction, tree navigation, session replacement, and shutdown invalidate the runtime epoch.
 Every delivered item is visible and is framed as guidance to weigh rather than obey blindly.
@@ -83,7 +81,7 @@ An unacknowledged active TUI delivery recovered at settlement uses the same late
 
 ## Tools and protected paths
 
-The Slice 1 Advisor uses only verified read-only Pi tools.
+The Advisor uses only verified read-only Pi tools.
 Mutating tools are unavailable.
 Protected `grep` uses `rg` for regex and literal searches when available.
 Without `rg`, regex searches report that they are unavailable and explicit literal searches use a bounded in-process fallback.
@@ -183,8 +181,7 @@ An unsafe fallback pauses only Advisor and emits one warning.
 Optional transcript records remain disabled unless `persistence.transcript` is explicitly enabled.
 Memory suggestion cadence, session cap, proposed-text bounds, and cross-exit cadence and cap restoration are active.
 `deferredAdviceRetentionHours` applies during cross-exit restoration but does not expire a live in-memory queue.
-Slice 3B adds no user-configurable field.
-Its 4,096-key dedupe history, 4,096-note and 1,000,000-byte deferred queue, and 64 KiB delivery batch remain fixed protocol bounds.
+Its 4,096-key dedupe history, 4,096-note and 1,000,000-byte deferred queue, and 64 KiB delivery batch are fixed protocol bounds.
 A provider-reported failure or exception thrown by the nested prompt restores the exact private Advisor message snapshot from before that attempt, extracts and discards stale nested steering and follow-up messages, and retries the same already bounded update once.
 The retry waits a fixed 250 milliseconds, and no automatic retry delay or update receives more than that one fixed wait.
 An epoch change during the provider request or retry delay invalidates the continuation before another request or delivery.
@@ -236,7 +233,7 @@ The custom entries remain outside model context.
 Disabling transcript persistence prevents future record writes but does not delete existing records.
 File-backed records remain in the Pi session JSONL until the session is deleted through Pi or its session file is removed.
 In-memory records do not survive process exit.
-There is no time-based optional-transcript retention in Slice 4B, so disk use grows with bounded records until old Pi sessions are deleted.
+There is no time-based optional-transcript retention, so disk use grows with bounded records until old Pi sessions are deleted.
 
 ## Privacy and telemetry
 
