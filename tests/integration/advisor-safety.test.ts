@@ -1445,9 +1445,13 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 		}
 	});
 
-	it("pauses before submission when the configured context fraction and reserve are exhausted", async () => {
-		const primary = createPrimaryProvider([{ content: [{ type: "text", text: "answer" }] }]);
+	it("pauses before submission and warns once when no safe re-prime can fit", async () => {
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "answer" }] },
+			{ content: [{ type: "text", text: "answer while paused" }] },
+		]);
 		const advisor = createAdvisorProvider([]);
+		const warnings: string[] = [];
 		let runtime: AdvisorRuntime | undefined;
 		const harness = await createSessionHarness({
 			provider: primary,
@@ -1459,6 +1463,7 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 						config.context.reserveTokens = advisor.model.contextWindow;
 					}),
 					(value) => (runtime = value),
+					(message) => warnings.push(message),
 				),
 			],
 			tools: [],
@@ -1476,6 +1481,17 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 				warnings: 1,
 			});
 			expect(runtime?.getStatus().lastFailure).toContain("context compaction failed");
+			expect(warnings).toHaveLength(1);
+			expect(advisor.requests).toHaveLength(0);
+
+			await harness.session.prompt("continue while Advisor remains paused");
+			expect(runtime?.getStatus()).toMatchObject({
+				paused: true,
+				compactionFailures: 1,
+				contextReprimeFailures: 1,
+				warnings: 1,
+			});
+			expect(warnings).toHaveLength(1);
 			expect(advisor.requests).toHaveLength(0);
 		} finally {
 			await harness.dispose();

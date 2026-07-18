@@ -3,7 +3,7 @@
 `@ribbons-digital/pi-advisor` is an independent Pi extension for automatic, isolated secondary review of an Executor session.
 The implemented core observes meaningful completed Executor turns in the background, stays silent when work is sound, and delivers only bounded actionable notes.
 
-> Slice 3 status: the safe automatic core now includes branch and session isolation, lifecycle-only compatible resume, clean provider retry, bounded retry delay, pause-state recovery, expanded backlog and failure status, and stale nested-queue extraction.
+> Slice 4 status: the safe automatic core now includes token-aware context estimation, review cadence, nested compaction, bounded branch re-prime, complete public status accounting, and optional reasoning-free transcript records.
 > The installed default remains off and has no model selection until the durable WATCHDOG configuration and `/advisor configure` workflow arrive in a later approved slice.
 
 ## Not the same as rpiv-advisor
@@ -13,7 +13,7 @@ This package is designed for automatic background observation that does not depe
 Both packages register `/advisor`, and Pi 0.80.7 assigns `/advisor:1` and `/advisor:2` in extension load order when both are installed.
 Slice 1 does not add a collision warning, so users must identify the intended command from Pi's command list.
 
-## Implemented behavior through Slice 4A
+## Implemented behavior through Slice 4
 
 - One explicitly selected Advisor model, with no fallback to the Executor model.
 - Automatic review after meaningful completed Executor turns.
@@ -86,6 +86,7 @@ Slice 3B retry and recovery evidence is in [`docs/slice-3b.md`](docs/slice-3b.md
 Full Slice 3 acceptance and closure evidence is in [`docs/slice-3-verification.md`](docs/slice-3-verification.md).
 Slice 4A context-policy and compaction evidence is in [`docs/slice-4a.md`](docs/slice-4a.md).
 Slice 4B re-prime, accounting, persistence, and long-session evidence is in [`docs/slice-4b.md`](docs/slice-4b.md).
+Full Slice 4 acceptance and closure evidence is in [`docs/slice-4-verification.md`](docs/slice-4-verification.md).
 
 ## Install the package locally
 
