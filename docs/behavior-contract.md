@@ -3,8 +3,8 @@
 ## Status
 
 This document defines the intended public behavior of `@ribbons-digital/pi-advisor`.
-Slice 3A extends the safe automatic core with active-branch cursor validation, eager lifecycle invalidation, strict session replacement isolation, and bounded compatible-resume state.
-Durable configuration, provider retry, Advisor context compaction and re-prime, and optional full transcript persistence remain deferred to their separately approved slices.
+Slice 3B extends the safe automatic core with clean provider retry, bounded retry delay, pause-state recovery, expanded backlog and failure status, and stale nested-queue extraction.
+Durable configuration, Advisor context compaction and re-prime, and optional full transcript persistence remain deferred to their separately approved slices.
 
 ## Roles
 
@@ -41,7 +41,7 @@ Image payloads are omitted.
 Executor reasoning is included only when Pi or the provider exposes it, after redaction and bounding.
 Executor and Advisor reasoning is never persisted by Pi Advisor.
 Advisor updates, coalesced pending deltas, protected tool results, and accepted notes are bounded.
-Re-prime snapshots and optional full Advisor transcript records are not implemented in Slice 3A.
+Re-prime snapshots and optional full Advisor transcript records are not implemented in Slice 3B.
 Lifecycle-only custom entries persist outside model context independently of optional transcript persistence.
 
 ## Delivery
@@ -55,7 +55,7 @@ The active-pending and deferred queues each reject new advice when admission wou
 A rejection preserves older FIFO entries, increments the suppressed-note count, and emits at most one queue-capacity warning per session.
 Pi 0.80.7 exposes no public abort cause, so every public abort signal or aborted Executor stop reason forces advice already being reviewed to use deferred delivery, and aborted Executor turns are excluded from new review.
 Pi 0.80.7 also exposes no public method to cancel an already queued `nextTurn` custom message after branch navigation, so deferred delivery uses the documented `before_agent_start` injection fallback.
-Slice 3A persists retained deferred advice in branch-aware lifecycle state and applies `deferredAdviceRetentionHours` only when restoring a compatible session.
+Slice 3B preserves Slice 3A retained deferred-advice persistence and applies `deferredAdviceRetentionHours` only when restoring a compatible session.
 Retention `0` excludes deferred note content from new persisted snapshots.
 An incompatible active-branch cursor invalidates in-flight review and clears deferred advice before delivery, while disablement, compaction, tree navigation, session replacement, and shutdown invalidate the runtime epoch.
 Every delivered item is visible and is framed as guidance to weigh rather than obey blindly.
@@ -148,17 +148,24 @@ The cursor validator distinguishes transcript shrink from an equal-length ancest
 Entry identity remains authoritative when no lifecycle hint is observed.
 Compatible resume restores only state whose Pi session ID and cursor match the active branch.
 Update, pending-byte, context, turn, tool-call, note, session-token, and reported-cost governors remain enabled by default.
-Review cadence, re-prime, and optional full transcript persistence remain reserved and have no Slice 3A runtime effect.
+Review cadence, re-prime, and optional full transcript persistence remain reserved and have no Slice 3B runtime effect.
 Memory suggestion cadence, session cap, proposed-text bounds, and cross-exit cadence and cap restoration are active.
 `deferredAdviceRetentionHours` applies during cross-exit restoration but does not expire a live in-memory queue.
-Slice 3A adds no user-configurable field.
-Its 4,096-key dedupe history, 4,096-note and 1,000,000-byte deferred queue, and 64 KiB delivery batch are fixed protocol bounds.
-Provider, malformed internal tool, governor, and delivery failures are not retried, and failed update messages are removed from private Advisor context.
+Slice 3B adds no user-configurable field.
+Its 4,096-key dedupe history, 4,096-note and 1,000,000-byte deferred queue, and 64 KiB delivery batch remain fixed protocol bounds.
+A provider-reported failure or exception thrown by the nested prompt restores the exact private Advisor message snapshot from before that attempt, extracts and discards stale nested steering and follow-up messages, and retries the same already bounded update once.
+The retry waits a fixed 250 milliseconds, and no automatic retry delay or update receives more than that one fixed wait.
+An epoch change during the provider request or retry delay invalidates the continuation before another request or delivery.
+The retry does not replay failed assistant, tool-call, or tool-result messages as valid Advisor context.
+Malformed internal tool, governor, and delivery failures are not retried.
 Active message-send failures count as both one failed review and one delivery failure, remove the active-pending copy, and retain only a bounded redacted reason.
 A failed TUI late-entry append counts once but leaves next-turn delivery available and does not retry the entry append.
 A well-formed read-only tool error remains ordinary review feedback rather than failing the update by itself.
 If a turn or tool-call governor fires after one valid note has already been accepted, that one bounded note may still be delivered while the update counts as failed.
-Three consecutive failed updates pause Advisor and produce one pause warning, while a successful review resets the consecutive-failure count.
+Every failed attempt increments total and consecutive-failure state.
+A successful initial attempt or retry resets consecutive failures, while the third consecutive failed attempt pauses Advisor and produces one pause warning.
+Status exposes whether retry delay or coalesced transcript work is pending, queued transcript bytes, retry delay, started retry-attempt count, total and consecutive failures, last bounded failure reason, branch resets, and the count of stale nested queued messages discarded.
+Only the discard count is retained; queued message content is not added to status, diagnostics, persistence, or model context.
 Programmatic status and warning observers are isolated so observer exceptions cannot alter review outcomes, counters, queue admission, built-in UI warning publication, or later status publication.
 The custom message and entry renderers use current theme colors, sanitize terminal control characters, render age and delivery metadata, and keep every line within the supplied terminal width.
 Exceeding the context limit or reaching a session token or reported-cost cap pauses only Advisor and never interrupts Executor.
@@ -180,7 +187,7 @@ For a file-backed session, successfully appended lifecycle state is deleted by d
 
 ## Privacy and telemetry
 
-Optional full Advisor transcript persistence is unimplemented and cannot be enabled in Slice 3A.
+Optional full Advisor transcript persistence is unimplemented and cannot be enabled in Slice 3B.
 Any future enabled transcript persistence must exclude Executor and Advisor reasoning and store only redacted bounded records.
 The package sends no product analytics, usage telemetry, or automatic crash reports.
 The user-selected model provider receives only the bounded content required for Advisor requests.

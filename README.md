@@ -3,7 +3,7 @@
 `@ribbons-digital/pi-advisor` is an independent Pi extension for automatic, isolated secondary review of an Executor session.
 The implemented core observes meaningful completed Executor turns in the background, stays silent when work is sound, and delivers only bounded actionable notes.
 
-> Slice 3A status: the safe automatic core now includes branch-identity validation, eager compaction and tree invalidation, strict session isolation, and bounded branch-aware resume state in addition to Slice 2 delivery and Memory suggestion behavior.
+> Slice 3B status: the safe automatic core now adds clean provider retry, bounded retry delay, pause-state recovery, expanded backlog and failure status, and stale nested-queue extraction to Slice 3A lifecycle and persistence behavior.
 > The installed default remains off and has no model selection until the durable WATCHDOG configuration and `/advisor configure` workflow arrive in a later approved slice.
 
 ## Not the same as rpiv-advisor
@@ -13,7 +13,7 @@ This package is designed for automatic background observation that does not depe
 Both packages register `/advisor`, and Pi 0.80.7 assigns `/advisor:1` and `/advisor:2` in extension load order when both are installed.
 Slice 1 does not add a collision warning, so users must identify the intended command from Pi's command list.
 
-## Implemented behavior through Slice 3A
+## Implemented behavior through Slice 3B
 
 - One explicitly selected Advisor model, with no fallback to the Executor model.
 - Automatic review after meaningful completed Executor turns.
@@ -44,8 +44,13 @@ Slice 1 does not add a collision warning, so users must identify the intended co
 - Explicit update, pending-byte, context, token, cost, tool-call, and turn governors.
 - Single-flight review with bounded coalescing while Advisor is busy.
 - Epoch invalidation on disablement, branch mismatch, compaction, tree navigation, session replacement, and shutdown.
-- Three consecutive failed updates pause Advisor and warn once.
-- Delivery attempts are single-shot, count separately, retain only one bounded redacted last-failure reason, and never enter a retry loop.
+- A provider or thrown nested-runtime failure rolls the failed turn out of private Advisor context, extracts stale nested queued messages, waits a fixed bounded 250 milliseconds, and retries the same bounded update once.
+- Every failed attempt increments consecutive and total failure state.
+  A successful retry resets consecutive failures, while a third consecutive failed attempt pauses Advisor and warns once.
+- Branch, compaction, tree, disable, replacement, and shutdown epoch changes invalidate retry-delay continuations before another provider request.
+- Delivery, malformed internal tool, and governor failures remain single-shot.
+  Delivery failures count separately and retain only one bounded redacted last-failure reason.
+- Status reports queued transcript bytes, pending retry delay, total retry attempts, consecutive and total failures, branch resets, and the count of stale nested queued messages discarded without retaining their content.
 - Explicit `/advisor dump` diagnostics exclude transcripts, notes, reasoning, instructions, protected paths, and raw failure text, redact included string fields, and stay within 16 KiB.
 - Fail-safe inactive behavior when the configured model or credentials are unavailable.
 - Optional Memory suggestions activate only while an Executor tool named `memory_suggest` is active and its public schema explicitly supports required string `text`, `preference` and `project` categories, and `status: "pending"`.
@@ -59,7 +64,7 @@ Slice 1 does not add a collision warning, so users must identify the intended co
 - Pi Advisor never imports Memory Lane, invokes `memory_save` or `memory_suggest`, writes memory storage, or approves a memory.
 - No product telemetry.
 
-Provider retry, retry and pause integration, backlog or failure status expansion, Advisor context compaction or re-prime, WATCHDOG files, and optional full Advisor transcript persistence remain outside Slice 3A.
+Advisor context compaction or branch re-prime, WATCHDOG files, and optional full Advisor transcript persistence remain outside Slice 3B.
 
 The normative public contract is in [`docs/behavior-contract.md`](docs/behavior-contract.md).
 The measured OMP parity position is tracked in [`docs/omp-parity.md`](docs/omp-parity.md).
@@ -71,6 +76,7 @@ Slice 2 Batch B implementation evidence is in [`docs/slice-2-batch-b.md`](docs/s
 Slice 2 Batch C implementation evidence is in [`docs/slice-2-batch-c.md`](docs/slice-2-batch-c.md).
 Full Slice 2 acceptance and closure evidence is in [`docs/slice-2-verification.md`](docs/slice-2-verification.md).
 Slice 3A lifecycle and persistence evidence is in [`docs/slice-3a.md`](docs/slice-3a.md).
+Slice 3B retry and recovery evidence is in [`docs/slice-3b.md`](docs/slice-3b.md).
 
 ## Install the package locally
 
@@ -94,7 +100,7 @@ An approved release change must remove that guard before the manual trusted-publ
 
 - `/advisor on` enables review for the current session when the configured `provider/model` is available and authenticated.
 - `/advisor off` disables review, invalidates in-flight work, clears the bounded transcript backlog, pending advice, and dedupe history, and disposes the nested session.
-- `/advisor status` reports activation, model, backlog, context, usage, review, delivery-failure, active-pending, delivered, deferred, suppressed, Memory suggestion capability and governors, pause, and last-failure state.
+- `/advisor status` reports activation, model, queued transcript and retry backlog, context, usage, total and consecutive review failures, retry attempts, stale nested-queue discards, delivery-failure, active-pending, delivered, deferred, suppressed, Memory suggestion capability and governors, pause, and last-failure state.
 - `/advisor dump` explicitly emits a redacted, bounded diagnostic snapshot without transcripts, notes, reasoning, instructions, protected paths, or raw failure text.
 - `--advisor` requests activation for the current session in every Pi mode.
 - `defaultEnabled: true` applies only to TUI and RPC sessions, while JSON and print sessions require explicit activation.
@@ -126,7 +132,7 @@ The hard maxima are 4,000 characters and approximately 1,024 estimated tokens.
 Its 4,096-key dedupe history, 4,096-note and 1,000,000-byte deferred queue, and 64 KiB deferred delivery batch are fixed protocol bounds.
 A full deferred queue rejects newer advice, increments the suppressed-note count, and warns once per session.
 `deferredAdviceRetentionHours` now controls cross-exit deferred-note restoration, with `0` disabling it and the 24-hour default applying on compatible resume.
-`maxReprimeTokens`, review cadence, optional full transcript `persistence`, `AdvisorProjectConfig`, and `CONFIG_VALIDATION_STRATEGY` remain reserved and do not change Slice 3A runtime behavior.
+`maxReprimeTokens`, review cadence, optional full transcript `persistence`, `AdvisorProjectConfig`, and `CONFIG_VALIDATION_STRATEGY` remain reserved and do not change Slice 3B runtime behavior.
 `DEFAULT_ADVISOR_CONFIG` is deeply frozen; clone it before editing configuration.
 `PROPOSED_ADVISOR_CONFIG` remains a deprecated compatibility alias containing an independent mutable clone of the canonical defaults.
 Programmatic hooks are intended for embedding and tests: `onRuntime` exposes the instance, `onStatus` receives status snapshots, and `onWarning` receives runtime warnings.
@@ -159,7 +165,7 @@ The factory, runtime hooks, status formatters, and policy helpers support contro
 
 ## Compatibility
 
-Development, compatibility evidence, and the automatic core through Slice 3A target `@earendil-works/pi-coding-agent` 0.80.7.
+Development, compatibility evidence, and the automatic core through Slice 3B target `@earendil-works/pi-coding-agent` 0.80.7.
 The peer range is `>=0.80.7 <0.81.0`, with 0.80.7 as the only tested version.
 The supported Pi host supplies the coding-agent and TUI peer packages; standalone runtime imports without those host peers are unsupported.
 A missing or unavailable configured Advisor model leaves Advisor inactive without fallback or partial nested runtime construction.
@@ -176,7 +182,7 @@ Results returned by Advisor's allowed read-only tools, including allowed file co
 The protected `grep` tool uses `rg` when available; without `rg`, explicit literal searches use a bounded in-process fallback while regex searches report that they are unavailable.
 Protected-path checks cover direct and symlink-resolved access, but neither path protection nor redaction can guarantee that every secret is excluded.
 Automatic review creates additional provider usage and cost, bounded by configured session governors and the active package hard maxima for notes, turns, tool calls, and pending bytes.
-Optional full Advisor transcript persistence remains disabled and unimplemented in Slice 3A.
+Optional full Advisor transcript persistence remains disabled and unimplemented in Slice 3B.
 Pi Advisor records bounded lifecycle-only custom entries in the active Pi session state, including a branch cursor, retained deferred accepted notes, up to 128 dedupe hashes, delivery counts, and Memory suggestion cadence and cap state.
 These custom entries are outside model context and contain no Executor or Advisor reasoning, provider payloads, transcript updates, suppressed notes, or raw failure text.
 When the Pi session is file-backed and the append succeeds, Pi persists the entries in that session's JSONL and deleting the session file deletes them.

@@ -73,6 +73,8 @@ const PENDING_TRUNCATION_MARKER =
 	"[Older coalesced Advisor update content discarded at pending-byte limit]\n";
 const PENDING_MEMORY_METADATA_FRACTION = 0.5;
 const FAILURE_PAUSE_COUNT = 3;
+export const MAX_ADVISOR_RETRIES_PER_UPDATE = 1;
+export const ADVISOR_RETRY_DELAY_MS = 250;
 export const MAX_ADVISOR_DUMP_BYTES = 16 * 1_024;
 
 function utf8TextSetBytes(values: ReadonlySet<string>): number {
@@ -137,6 +139,9 @@ export interface AdvisorRuntimeStatus {
 	backlog: boolean;
 	pendingTranscriptBytes: number;
 	maxPendingTranscriptBytesObserved: number;
+	retryPending: boolean;
+	retryDelayMs: number;
+	retryAttempts: number;
 	contextEstimateTokens: number;
 	contextLimitTokens: number;
 	usage: AdvisorUsageTotals;
@@ -161,6 +166,7 @@ export interface AdvisorRuntimeStatus {
 	redactions: number;
 	consecutiveFailures: number;
 	branchResets: number;
+	staleQueuedMessagesDiscarded: number;
 	warnings: number;
 	lastFailure?: string;
 	lastDeliveryFailure?: string;
@@ -258,6 +264,9 @@ export function formatAdvisorDiagnosticsDump(
 		backlog: status.backlog,
 		pendingTranscriptBytes: status.pendingTranscriptBytes,
 		maxPendingTranscriptBytesObserved: status.maxPendingTranscriptBytesObserved,
+		retryPending: status.retryPending,
+		retryDelayMs: status.retryDelayMs,
+		retryAttempts: status.retryAttempts,
 		contextEstimateTokens: status.contextEstimateTokens,
 		contextLimitTokens: status.contextLimitTokens,
 		usage: status.usage,
@@ -282,6 +291,7 @@ export function formatAdvisorDiagnosticsDump(
 		redactions: status.redactions,
 		consecutiveFailures: status.consecutiveFailures,
 		branchResets: status.branchResets,
+		staleQueuedMessagesDiscarded: status.staleQueuedMessagesDiscarded,
 		warnings: status.warnings,
 		hasLastFailure: status.lastFailure !== undefined,
 		hasLastDeliveryFailure: status.lastDeliveryFailure !== undefined,
@@ -431,6 +441,9 @@ export class AdvisorRuntime {
 			backlog: false,
 			pendingTranscriptBytes: 0,
 			maxPendingTranscriptBytesObserved: 0,
+			retryPending: false,
+			retryDelayMs: 0,
+			retryAttempts: 0,
 			contextEstimateTokens: 0,
 			contextLimitTokens: 0,
 			usage: emptyUsage(),
@@ -458,6 +471,7 @@ export class AdvisorRuntime {
 			redactions: 0,
 			consecutiveFailures: 0,
 			branchResets: 0,
+			staleQueuedMessagesDiscarded: 0,
 			warnings: 0,
 			epoch: 0,
 			nestedActiveTools: [],
@@ -1004,6 +1018,55 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		return `${prefix}${boundedExecutor}${suffix}`;
 	}
 
+	private resetCollectorForAttempt(
+		update: QueuedAdvisorUpdate,
+		capability: MemorySuggestCapability,
+	): void {
+		delete this.collector.accepted;
+		this.collector.validCalls = 0;
+		this.collector.suppressedCalls = 0;
+		this.collector.memoryPolicySuppressedCalls = 0;
+		this.collector.memoryLimitSuppressedCalls = 0;
+		this.collector.memoryPolicy = {
+			enabled: this.config.memorySuggestions.enabled,
+			capabilityAvailable: capability.state === "available",
+			turnNumber: update.turnNumber,
+			now: Date.now(),
+			admittedCount: this.memorySuggestionAdmissions,
+			...(this.lastMemorySuggestionTurn === undefined
+				? {}
+				: { lastDeliveredTurn: this.lastMemorySuggestionTurn }),
+			...(this.lastMemorySuggestionAt === undefined
+				? {}
+				: { lastDeliveredAt: this.lastMemorySuggestionAt }),
+			successfulMemoryTexts: update.successfulMemoryTexts,
+		};
+	}
+
+	private extractStaleNestedQueue(session: AgentSession): number {
+		const queued = session.clearQueue();
+		const discarded = queued.steering.length + queued.followUp.length;
+		this.status.staleQueuedMessagesDiscarded += discarded;
+		return discarded;
+	}
+
+	private rollbackNestedAttempt(session: AgentSession, messages: AgentMessage[]): void {
+		session.state.messages = messages;
+		this.extractStaleNestedQueue(session);
+	}
+
+	private async waitForRetry(epoch: number): Promise<boolean> {
+		this.status.retryPending = true;
+		this.status.retryDelayMs = ADVISOR_RETRY_DELAY_MS;
+		this.updateBacklogStatus();
+		await new Promise<void>((resolve) => setTimeout(resolve, ADVISOR_RETRY_DELAY_MS));
+		if (epoch !== this.status.epoch) return false;
+		this.status.retryPending = false;
+		this.status.retryDelayMs = 0;
+		this.updateBacklogStatus();
+		return this.status.enabled && this.status.active && !this.status.paused && !this.disposed;
+	}
+
 	private async runUpdate(update: QueuedAdvisorUpdate): Promise<void> {
 		const session = this.session;
 		const ctx = this.hostContext;
@@ -1028,84 +1091,88 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			return;
 		}
 		const epoch = this.status.epoch;
-		delete this.collector.accepted;
-		this.collector.validCalls = 0;
-		this.collector.suppressedCalls = 0;
-		this.collector.memoryPolicySuppressedCalls = 0;
-		this.collector.memoryLimitSuppressedCalls = 0;
-		this.collector.memoryPolicy = {
-			enabled: this.config.memorySuggestions.enabled,
-			capabilityAvailable: capability.state === "available",
-			turnNumber: update.turnNumber,
-			now: Date.now(),
-			admittedCount: this.memorySuggestionAdmissions,
-			...(this.lastMemorySuggestionTurn === undefined
-				? {}
-				: { lastDeliveredTurn: this.lastMemorySuggestionTurn }),
-			...(this.lastMemorySuggestionAt === undefined
-				? {}
-				: { lastDeliveredAt: this.lastMemorySuggestionAt }),
-			successfulMemoryTexts: update.successfulMemoryTexts,
-		};
-		const messageCount = session.messages.length;
-		const run: CurrentRun = {
-			epoch,
-			turns: 0,
-			toolCalls: 0,
-			deferAdvice: false,
-			usage: emptyUsage(),
-		};
-		this.currentRun = run;
-		let thrownFailure: string | undefined;
-		try {
-			await session.prompt(`<advisor-update>\n${submittedUpdate}\n</advisor-update>`, {
-				expandPromptTemplates: false,
-				source: "extension",
-			});
-		} catch (error) {
-			thrownFailure = boundedReason(error);
-		} finally {
-			delete this.currentRun;
-			delete this.collector.memoryPolicy;
-		}
-		this.status.usage.input += run.usage.input;
-		this.status.usage.output += run.usage.output;
-		this.status.usage.cacheRead += run.usage.cacheRead;
-		this.status.usage.cacheWrite += run.usage.cacheWrite;
-		this.status.usage.total += run.usage.total;
-		this.status.usage.costUsd += run.usage.costUsd;
-		if (this.status.enabled && !this.disposed) this.applySessionSoftCaps();
-		if (epoch !== this.status.epoch || !this.status.enabled || this.disposed) return;
-		const currentBranch = ctx.sessionManager.getBranch();
-		if (!cursorMatches(currentBranch, update.window)) {
-			await this.resetForBranchMismatch(currentBranch);
-			return;
-		}
-		const stale = branchHasNewerExecutorState(currentBranch, update.window);
-		const failure = thrownFailure ?? run.governorFailure ?? run.toolFailure ?? run.providerFailure;
-		const accepted = this.getAcceptedAdvice();
-		if (failure !== undefined) {
-			session.state.messages = session.state.messages.slice(0, messageCount);
-			if (run.governorFailure !== undefined && accepted?.intent === "review") {
-				this.deliver(accepted, ctx, stale, run.deferAdvice, update.turnNumber);
-			}
-			this.recordFailure(failure);
-		} else {
-			let delivered: boolean;
+		for (let attempt = 0; attempt <= MAX_ADVISOR_RETRIES_PER_UPDATE; attempt++) {
+			this.resetCollectorForAttempt(update, capability);
+			const messagesBeforeAttempt = structuredClone(session.messages);
+			const run: CurrentRun = {
+				epoch,
+				turns: 0,
+				toolCalls: 0,
+				deferAdvice: false,
+				usage: emptyUsage(),
+			};
+			this.currentRun = run;
+			let thrownFailure: string | undefined;
 			try {
-				delivered =
-					accepted !== undefined &&
-					this.deliver(accepted, ctx, stale, run.deferAdvice, update.turnNumber);
+				await session.prompt(`<advisor-update>\n${submittedUpdate}\n</advisor-update>`, {
+					expandPromptTemplates: false,
+					source: "extension",
+				});
 			} catch (error) {
-				session.state.messages = session.state.messages.slice(0, messageCount);
-				throw error;
+				thrownFailure = boundedReason(error);
+			} finally {
+				delete this.currentRun;
+				delete this.collector.memoryPolicy;
 			}
-			this.status.reviewsCompleted++;
-			this.status.consecutiveFailures = 0;
-			this.status.notesSuppressed += this.collector.suppressedCalls;
-			this.status.memorySuggestionsPolicySuppressed += this.collector.memoryPolicySuppressedCalls;
-			this.status.memorySuggestionsLimitSuppressed += this.collector.memoryLimitSuppressedCalls;
-			if (!delivered) this.status.silentReviews++;
+			this.status.usage.input += run.usage.input;
+			this.status.usage.output += run.usage.output;
+			this.status.usage.cacheRead += run.usage.cacheRead;
+			this.status.usage.cacheWrite += run.usage.cacheWrite;
+			this.status.usage.total += run.usage.total;
+			this.status.usage.costUsd += run.usage.costUsd;
+			if (this.status.enabled && !this.disposed) this.applySessionSoftCaps();
+			if (epoch !== this.status.epoch || !this.status.enabled || this.disposed) return;
+			const currentBranch = ctx.sessionManager.getBranch();
+			if (!cursorMatches(currentBranch, update.window)) {
+				await this.resetForBranchMismatch(currentBranch);
+				return;
+			}
+			const stale = branchHasNewerExecutorState(currentBranch, update.window);
+			const failure =
+				thrownFailure ?? run.governorFailure ?? run.toolFailure ?? run.providerFailure;
+			const accepted = this.getAcceptedAdvice();
+			if (failure === undefined) {
+				let delivered: boolean;
+				try {
+					delivered =
+						accepted !== undefined &&
+						this.deliver(accepted, ctx, stale, run.deferAdvice, update.turnNumber);
+				} catch (error) {
+					this.rollbackNestedAttempt(session, messagesBeforeAttempt);
+					this.recordFailure(boundedReason(error));
+					break;
+				}
+				this.status.reviewsCompleted++;
+				this.status.consecutiveFailures = 0;
+				this.status.notesSuppressed += this.collector.suppressedCalls;
+				this.status.memorySuggestionsPolicySuppressed += this.collector.memoryPolicySuppressedCalls;
+				this.status.memorySuggestionsLimitSuppressed += this.collector.memoryLimitSuppressedCalls;
+				if (!delivered) this.status.silentReviews++;
+				break;
+			}
+
+			this.rollbackNestedAttempt(session, messagesBeforeAttempt);
+			if (run.governorFailure !== undefined && accepted?.intent === "review") {
+				try {
+					this.deliver(accepted, ctx, stale, run.deferAdvice, update.turnNumber);
+				} catch {
+					// The delivery failure is recorded by deliver; preserve the governor failure below.
+				}
+			}
+			const pausedForFailure = this.recordFailure(failure);
+			const retryable =
+				thrownFailure !== undefined ||
+				(run.governorFailure === undefined &&
+					run.toolFailure === undefined &&
+					run.providerFailure !== undefined);
+			if (!retryable || attempt >= MAX_ADVISOR_RETRIES_PER_UPDATE || pausedForFailure) {
+				break;
+			}
+			if (!(await this.waitForRetry(epoch))) {
+				if (epoch !== this.status.epoch) return;
+				break;
+			}
+			this.status.retryAttempts++;
 		}
 		this.applySessionSoftCaps();
 		this.persistState();
@@ -1464,13 +1531,14 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		this.status.lastDeliveryFailure = boundedReason(error);
 	}
 
-	private recordFailure(reason: string): void {
+	private recordFailure(reason: string): boolean {
 		this.status.failedReviews++;
 		this.status.consecutiveFailures++;
 		this.status.lastFailure = reason;
 		if (this.status.consecutiveFailures >= FAILURE_PAUSE_COUNT) {
 			this.pause("Three consecutive Advisor updates failed");
 		}
+		return this.status.paused;
 	}
 
 	private applySessionSoftCaps(): void {
@@ -1490,6 +1558,8 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		if (this.status.paused) return;
 		this.status.paused = true;
 		this.status.pauseReason = reason;
+		this.status.retryPending = false;
+		this.status.retryDelayMs = 0;
 		delete this.pendingUpdate;
 		this.warn(`${reason}. Automatic Advisor review is paused.`);
 	}
@@ -1514,6 +1584,8 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 	): Promise<void> {
 		this.status.epoch++;
 		this.status.branchResets++;
+		this.status.retryPending = false;
+		this.status.retryDelayMs = 0;
 		delete this.pendingUpdate;
 		this.pendingAdvice.clear();
 		this.activeAdvice.clear();
@@ -1529,6 +1601,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			}
 		}
 		if (session !== undefined) {
+			this.extractStaleNestedQueue(session);
 			session.state.messages = [];
 			session.sessionManager.resetLeaf();
 		}
@@ -1544,6 +1617,8 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		this.status.enabled = false;
 		this.status.active = false;
 		this.status.paused = false;
+		this.status.retryPending = false;
+		this.status.retryDelayMs = 0;
 		delete this.status.pauseReason;
 		delete this.pendingUpdate;
 		this.pendingAdvice.clear();
@@ -1562,6 +1637,8 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		this.status.epoch++;
 		this.status.enabled = false;
 		this.status.active = false;
+		this.status.retryPending = false;
+		this.status.retryDelayMs = 0;
 		delete this.pendingUpdate;
 		this.persistState();
 		this.pendingAdvice.clear();
@@ -1597,7 +1674,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			Buffer.byteLength(this.pendingUpdate?.text ?? "", "utf8") +
 			utf8TextSetBytes(this.pendingUpdate?.successfulMemoryTexts ?? new Set());
 		this.status.pendingTranscriptBytes = bytes;
-		this.status.backlog = bytes > 0;
+		this.status.backlog = bytes > 0 || this.status.retryPending;
 		this.status.maxPendingTranscriptBytesObserved = Math.max(
 			this.status.maxPendingTranscriptBytesObserved,
 			bytes,
@@ -1636,12 +1713,14 @@ export function formatAdvisorStatus(status: AdvisorRuntimeStatus): string {
 		`Advisor: ${state}`,
 		`Model: ${status.model ?? "not configured"}`,
 		`Effort: ${status.effort}`,
-		`Backlog: ${String(status.pendingTranscriptBytes)} bytes`,
+		`Backlog: ${String(status.pendingTranscriptBytes)} bytes${status.retryPending ? `, retry pending for ${String(status.retryDelayMs)} ms` : ""}`,
 		`Context estimate: ${String(status.contextEstimateTokens)}/${String(status.contextLimitTokens)} tokens`,
 		`Session tokens: ${String(status.usage.total)}`,
 		`Session cost: $${status.usage.costUsd.toFixed(4)}`,
 		`Reviews: ${String(status.reviewsCompleted)} completed, ${String(status.silentReviews)} silent, ${String(status.failedReviews)} failed`,
+		`Failures: ${String(status.consecutiveFailures)} consecutive, ${String(status.retryAttempts)} retry attempts`,
 		`Delivery failures: ${String(status.deliveryFailures)}`,
+		`Lifecycle: ${String(status.branchResets)} resets, ${String(status.staleQueuedMessagesDiscarded)} stale queued messages discarded`,
 		`Notes: ${String(status.notesDelivered)} delivered, ${String(status.activeNotesPending)} active pending, ${String(status.deferredNotesPending)} deferred (${String(status.restoredDeferredNotesPending)} restored), oldest deferred age ${String(status.oldestDeferredAdviceAgeMs)} ms, ${String(status.notesSuppressed)} suppressed`,
 		`Memory suggestions: ${status.memorySuggestionsEnabled ? "enabled" : "disabled"}, capability ${status.memorySuggestionCapability.state}, ${String(status.memorySuggestionsDelivered)} delivered, ${String(status.memorySuggestionsRemaining)} remaining, ${String(status.memorySuggestionsPolicySuppressed)} policy-suppressed, ${String(status.memorySuggestionsLimitSuppressed)} limit-suppressed`,
 		`Memory suggestion next eligibility: turn ${String(status.memorySuggestionNextEligibleTurn)}, ${new Date(status.memorySuggestionNextEligibleAt).toISOString()}`,
