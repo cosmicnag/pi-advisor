@@ -56,6 +56,7 @@ Use Pi's command list to identify each suffix, and disable or uninstall one pack
 - Delivery, malformed internal tool, and governor failures remain single-shot.
   Delivery failures count separately and retain only one bounded redacted last-failure reason.
 - Status reports queued transcript bytes, reported and estimated context components, context policy limit, compaction and re-prime outcomes, exact review-request token and cost totals, pending retry delay, suppression, delivery, persistence, consecutive and total failures, branch resets, and the count of stale nested queued messages discarded without retaining their content.
+- While Advisor is enabled, a compact additive footer status shows active, inactive, or paused state and queued bytes when applicable without replacing Pi's built-in footer.
 - Explicit `/advisor dump` diagnostics redact included strings and stay within 16 KiB.
   When optional transcript persistence is enabled or existing records remain, the dump includes a bounded recent-record preview but never includes Executor or Advisor reasoning.
 - Fail-safe inactive behavior when the configured model or credentials are unavailable.
@@ -90,6 +91,7 @@ Slice 4B re-prime, accounting, persistence, and long-session evidence is in [`do
 Full Slice 4 acceptance and closure evidence is in [`docs/slice-4-verification.md`](docs/slice-4-verification.md).
 Slice 5A WATCHDOG configuration and runtime-apply evidence is in [`docs/slice-5a.md`](docs/slice-5a.md).
 Slice 5B public configuration and package UX evidence is in [`docs/slice-5b.md`](docs/slice-5b.md).
+Full Slice 5 acceptance and closure evidence is in [`docs/slice-5-verification.md`](docs/slice-5-verification.md).
 The complete field and ownership reference is in [`docs/configuration.md`](docs/configuration.md).
 
 ## Install the package locally

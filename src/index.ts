@@ -26,6 +26,7 @@ import { ADVISOR_CUSTOM_TYPE } from "./transcript.js";
 import {
 	AdvisorRuntime,
 	formatAdvisorEnableStatus,
+	formatAdvisorFooterStatus,
 	formatAdvisorStatus,
 	type AdvisorRuntimeHooks,
 } from "./runtime.js";
@@ -217,7 +218,20 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 	const fallbackUserConfig = normalizeAdvisorConfig(
 		structuredClone(options.config ?? DEFAULT_ADVISOR_CONFIG),
 	);
-	const runtime = new AdvisorRuntime(pi, fallbackUserConfig, options.hooks);
+	let statusContext: Parameters<AdvisorRuntime["startSession"]>[0] | undefined;
+	const runtime = new AdvisorRuntime(pi, fallbackUserConfig, {
+		...options.hooks,
+		onStatus: (status) => {
+			if (statusContext?.hasUI) {
+				try {
+					statusContext.ui.setStatus("pi-advisor", formatAdvisorFooterStatus(status));
+				} catch {
+					// Keep runtime status publication independent from optional TUI rendering.
+				}
+			}
+			options.hooks?.onStatus?.(status);
+		},
+	});
 	options.hooks?.onRuntime?.(runtime);
 
 	pi.registerFlag("advisor", {
@@ -269,6 +283,7 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		statusContext = ctx;
 		if (!coexistenceWarningPublished && ctx.hasUI && hasAdvisorCommandCollision(pi.getCommands())) {
 			coexistenceWarningPublished = true;
 			ctx.ui.notify(
@@ -324,7 +339,9 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 	pi.on("session_compact", (_event, ctx) => runtime.handleBranchChange(ctx));
 	pi.on("session_before_tree", (_event, ctx) => runtime.handleLifecycleHint(ctx));
 	pi.on("session_tree", (_event, ctx) => runtime.handleBranchChange(ctx));
-	pi.on("session_shutdown", async () => {
+	pi.on("session_shutdown", async (_event, ctx) => {
+		if (ctx.hasUI) ctx.ui.setStatus("pi-advisor", undefined);
+		statusContext = undefined;
 		await runtime.shutdown();
 	});
 }

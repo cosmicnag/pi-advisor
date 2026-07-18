@@ -22,6 +22,8 @@ The persisted User `defaultEnabled` value applies to TUI and RPC sessions, while
 No model is selected implicitly.
 Missing or malformed model configuration, unavailable credentials, or nested-session isolation failure leaves Advisor inactive without model fallback or a partial nested runtime.
 Running `/advisor on` while paused explicitly resets the current session usage budget before reactivation.
+Programmatic and `/advisor status` output retain the configured model even while Advisor is off or inactive.
+While Advisor is enabled, an additive compact footer status shows active, inactive, or paused state plus queued bytes when applicable without replacing Pi's built-in footer.
 
 ## Review and silence
 

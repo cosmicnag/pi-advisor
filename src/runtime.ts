@@ -725,6 +725,7 @@ export class AdvisorRuntime {
 			epoch: 0,
 			nestedActiveTools: [],
 		};
+		if (this.config.model !== undefined) this.status.model = this.config.model;
 	}
 
 	getStatus(): AdvisorRuntimeStatus {
@@ -788,6 +789,8 @@ export class AdvisorRuntime {
 		this.config = normalizeAdvisorConfig(config);
 		this.projectInstructions = projectInstructions;
 		this.status.effort = this.config.effort;
+		if (this.config.model === undefined) delete this.status.model;
+		else this.status.model = this.config.model;
 		this.status.transcriptPersistenceEnabled = this.config.persistence.transcript;
 		this.status.memorySuggestionsRemaining = this.config.memorySuggestions.sessionSuggestionCap;
 	}
@@ -841,7 +844,8 @@ export class AdvisorRuntime {
 		);
 		this.status.paused = false;
 		delete this.status.pauseReason;
-		delete this.status.model;
+		if (this.config.model === undefined) delete this.status.model;
+		else this.status.model = this.config.model;
 		delete this.status.inactiveReason;
 		this.status.contextEstimateTokens = 0;
 		this.status.contextUsageTokens = 0;
@@ -2515,6 +2519,12 @@ export function formatAdvisorEnableStatus(
 	const status = formatAdvisorStatus(current);
 	if (!resetBudget) return status;
 	return `Previous Advisor budget before reset: ${String(previous.usage.total)} tokens, $${previous.usage.costUsd.toFixed(4)}${previous.pauseReason ? `, paused: ${previous.pauseReason}` : ""}\n${status}`;
+}
+
+export function formatAdvisorFooterStatus(status: AdvisorRuntimeStatus): string | undefined {
+	if (!status.enabled) return undefined;
+	const state = status.paused ? "paused" : status.active ? "active" : "inactive";
+	return `Advisor ${state}${status.backlog ? ` · ${String(status.pendingTranscriptBytes)} B queued` : ""}`;
 }
 
 export function formatAdvisorStatus(status: AdvisorRuntimeStatus): string {

@@ -2,7 +2,7 @@
 
 Pi Advisor provides automatic secondary review of a primary Pi agent session while keeping reviewer state separate from the primary conversation.
 
-## Slice 5A terminology status
+## Slice 5 terminology status
 
 The implemented runtime provides Executor, Advisor, Advisor update, Advisor retry, active-branch Cursor, Epoch, Meaningful Executor turn, Executor reasoning, Advisory note, Memory suggestion, retained Deferred advice, compatible resume, lifecycle-only persisted state, Re-prime, optional Persisted Advisor transcript, Advice card, Session activation, durable User configuration, trusted Project configuration, Fixed Advisor policy, User instructions, tagged Project instructions, Protected path, Protected-path exception, and Destructive-command guard boundaries.
 
