@@ -840,12 +840,16 @@ export class AdvisorRuntime {
 		this.status.activationSource = source;
 		delete this.status.inactiveReason;
 		if (resetBudget) {
+			const throttledUpdate = this.throttledUpdate;
+			this.clearCadenceTimer();
+			delete this.throttledUpdate;
 			this.status.usage = emptyUsage();
 			delete this.lastReviewSubmittedTurn;
 			delete this.lastReviewSubmittedAt;
 			this.status.paused = false;
 			delete this.status.pauseReason;
 			this.status.consecutiveFailures = 0;
+			if (throttledUpdate !== undefined) this.scheduleCadencedUpdate(throttledUpdate);
 		}
 		if (this.status.paused) {
 			this.publishStatus();

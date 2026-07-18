@@ -1,4 +1,8 @@
-import { defineTool, type InlineExtension } from "@earendil-works/pi-coding-agent";
+import {
+	defineTool,
+	type ExtensionContext,
+	type InlineExtension,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 
@@ -196,6 +200,67 @@ describe.sequential("Slice 4A token-aware Advisor context", () => {
 			const finalReview = JSON.stringify(advisor.requests[1]?.context.messages);
 			expect(finalReview).toContain("INTERVAL-TWO");
 			expect(runtime?.getStatus().pendingTranscriptBytes).toBe(0);
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("re-evaluates a held elapsed-time update after an explicit budget reset", async () => {
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "RESET-INTERVAL-ONE" }] },
+			{ content: [{ type: "text", text: "RESET-INTERVAL-TWO" }] },
+		]);
+		const advisor = new ScriptedProvider({
+			providerId: "pi-advisor-fixture-advisor",
+			modelId: "advisor-scripted",
+			api: ADVISOR_SCRIPTED_API,
+			responses: [{ content: [] }, { content: [] }],
+		});
+		let runtime: AdvisorRuntime | undefined;
+		let hostContext: ExtensionContext | undefined;
+		const contextCapture: InlineExtension = {
+			name: "capture-context-for-budget-reset",
+			factory: (pi) => {
+				pi.on("session_start", (_event, ctx) => {
+					hostContext = ctx;
+				});
+			},
+		};
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [
+				contextCapture,
+				extensionFor(
+					configFor(advisor, (config) => {
+						config.limits.minIntervalMs = 500;
+					}),
+					(value) => (runtime = value),
+				),
+			],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("interval before budget reset");
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 1);
+			await harness.session.prompt("held interval before budget reset");
+			expect(advisor.requests).toHaveLength(1);
+			expect(runtime?.getStatus().backlog).toBe(true);
+			if (runtime === undefined || hostContext === undefined) {
+				throw new Error("Expected Advisor runtime and captured extension context");
+			}
+
+			await runtime.enable(hostContext, "session-command", true);
+			await expect
+				.poll(() => runtime?.getStatus().reviewsCompleted, { timeout: 250, interval: 10 })
+				.toBe(2);
+			const resetReview = JSON.stringify(advisor.requests[1]?.context.messages);
+			expect(resetReview).toContain("RESET-INTERVAL-TWO");
+			expect(runtime.getStatus().pendingTranscriptBytes).toBe(0);
+
+			await new Promise<void>((resolve) => setTimeout(resolve, 600));
+			expect(advisor.requests).toHaveLength(2);
 		} finally {
 			await harness.dispose();
 		}
