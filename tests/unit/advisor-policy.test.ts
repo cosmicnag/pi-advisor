@@ -20,6 +20,7 @@ import {
 	PROPOSED_ADVISOR_CONFIG,
 	redactSecrets,
 	renderAdvisorDelta,
+	successfulMemoryToolTexts,
 	takeRenderedPrefix,
 	type AdviceDedupeIdentity,
 	type AdvisorRuntimeStatus,
@@ -27,7 +28,7 @@ import {
 
 function dedupeIdentity(
 	note: string,
-	severity: AdviceDedupeIdentity["severity"] = "concern",
+	severity: "nit" | "concern" | "blocker" = "concern",
 ): AdviceDedupeIdentity {
 	return { note, severity };
 }
@@ -75,6 +76,14 @@ function runtimeStatus(): AdvisorRuntimeStatus {
 		activeNotesPending: 0,
 		deferredNotesPending: 0,
 		notesSuppressed: 0,
+		memorySuggestionCapability: { state: "absent", reason: "not registered" },
+		memorySuggestionsEnabled: false,
+		memorySuggestionsDelivered: 0,
+		memorySuggestionsPolicySuppressed: 0,
+		memorySuggestionsLimitSuppressed: 0,
+		memorySuggestionsRemaining: 5,
+		memorySuggestionNextEligibleTurn: 0,
+		memorySuggestionNextEligibleAt: 0,
 		redactions: 0,
 		consecutiveFailures: 0,
 		branchResets: 0,
@@ -92,6 +101,14 @@ describe("Slice 1 configuration and emission policy", () => {
 		const input = structuredClone(DEFAULT_ADVISOR_CONFIG);
 		input.limits.maxAdviceCharacters = Number.NaN;
 		expect(normalizeAdvisorConfig(input).limits.maxAdviceCharacters).toBe(2_000);
+	});
+
+	it("floors a fractional Memory suggestion session cap", () => {
+		const config = structuredClone(DEFAULT_ADVISOR_CONFIG);
+		config.memorySuggestions.sessionSuggestionCap = 1.9;
+		expect(normalizeAdvisorConfig(config).memorySuggestions.sessionSuggestionCap).toBe(1);
+		config.memorySuggestions.sessionSuggestionCap = -1;
+		expect(normalizeAdvisorConfig(config).memorySuggestions.sessionSuggestionCap).toBe(0);
 	});
 
 	it("keeps the deprecated proposed config export independent from release defaults", () => {
@@ -115,6 +132,8 @@ describe("Slice 1 configuration and emission policy", () => {
 		config.limits.maxToolCallsPerUpdate = Number.MAX_SAFE_INTEGER;
 		config.limits.maxPendingTranscriptBytes = Number.MAX_SAFE_INTEGER;
 		config.limits.maxReprimeTokens = Number.MAX_SAFE_INTEGER;
+		config.memorySuggestions.maxProposedMemoryCharacters = Number.MAX_SAFE_INTEGER;
+		config.memorySuggestions.maxProposedMemoryTokens = Number.MAX_SAFE_INTEGER;
 		const normalized = normalizeAdvisorConfig(config);
 		expect(normalized.limits).toMatchObject({
 			maxAdviceCharacters: HARD_LIMITS.maxAdviceCharacters,
@@ -123,6 +142,10 @@ describe("Slice 1 configuration and emission policy", () => {
 			maxToolCallsPerUpdate: HARD_LIMITS.maxToolCallsPerUpdate,
 			maxPendingTranscriptBytes: HARD_LIMITS.maxPendingTranscriptBytes,
 			maxReprimeTokens: HARD_LIMITS.maxReprimeTokens,
+		});
+		expect(normalized.memorySuggestions).toMatchObject({
+			maxProposedMemoryCharacters: HARD_LIMITS.maxProposedMemoryCharacters,
+			maxProposedMemoryTokens: HARD_LIMITS.maxProposedMemoryTokens,
 		});
 	});
 
@@ -199,6 +222,105 @@ describe("Slice 1 transcript filtering and redaction", () => {
 		expect(Buffer.byteLength(rendered.text, "utf8")).toBeLessThanOrEqual(120);
 	});
 
+	it("bounds successful Memory tool metadata by item and UTF-8 byte budgets", () => {
+		const manager = SessionManager.inMemory();
+		manager.appendMessage(
+			assistant(
+				[
+					{ type: "toolCall", id: "one", name: "memory_save", arguments: { text: "abcd" } },
+					{ type: "toolCall", id: "two", name: "memory_suggest", arguments: { text: "ef" } },
+					{ type: "toolCall", id: "three", name: "memory_suggest", arguments: { text: "g" } },
+					{ type: "toolCall", id: "four", name: "memory_suggest", arguments: { text: "h" } },
+				],
+				"toolUse",
+			),
+		);
+		for (const toolCallId of ["one", "two", "three", "four"]) {
+			manager.appendMessage({
+				role: "toolResult",
+				toolCallId,
+				toolName: toolCallId === "one" ? "memory_save" : "memory_suggest",
+				content: [{ type: "text", text: "queued" }],
+				isError: toolCallId === "four",
+				timestamp: Date.now(),
+			});
+		}
+
+		const retained = successfulMemoryToolTexts(manager.getBranch(), 2, 5);
+		expect([...retained]).toEqual(["ef", "g"]);
+		expect([...retained].reduce((bytes, text) => bytes + Buffer.byteLength(text), 0)).toBe(3);
+		expect(() => successfulMemoryToolTexts(manager.getBranch(), -1, 5)).toThrow(RangeError);
+		expect(() => successfulMemoryToolTexts(manager.getBranch(), 1, -1)).toThrow(RangeError);
+
+		const afterFailure = SessionManager.inMemory();
+		afterFailure.appendMessage(
+			assistant(
+				[
+					{ type: "toolCall", id: "failed", name: "memory_save", arguments: { text: "abcd" } },
+					{ type: "toolCall", id: "replacement", name: "memory_save", arguments: { text: "xy" } },
+				],
+				"toolUse",
+			),
+		);
+		afterFailure.appendMessage({
+			role: "toolResult",
+			toolCallId: "failed",
+			toolName: "memory_save",
+			content: [{ type: "text", text: "failed" }],
+			isError: true,
+			timestamp: Date.now(),
+		});
+		afterFailure.appendMessage({
+			role: "toolResult",
+			toolCallId: "replacement",
+			toolName: "memory_save",
+			content: [{ type: "text", text: "saved" }],
+			isError: false,
+			timestamp: Date.now(),
+		});
+		expect([...successfulMemoryToolTexts(afterFailure.getBranch(), 1, 4)]).toEqual(["xy"]);
+
+		const normalizedBudget = SessionManager.inMemory();
+		normalizedBudget.appendMessage(
+			assistant(
+				[
+					{
+						type: "toolCall",
+						id: "overlong",
+						name: "memory_suggest",
+						arguments: {
+							text: "x".repeat(HARD_LIMITS.maxProposedMemoryCharacters * 2 + 1),
+						},
+					},
+					{
+						type: "toolCall",
+						id: "normalized",
+						name: "memory_suggest",
+						arguments: { text: "   a   " },
+					},
+				],
+				"toolUse",
+			),
+		);
+		normalizedBudget.appendMessage({
+			role: "toolResult",
+			toolCallId: "overlong",
+			toolName: "memory_suggest",
+			content: [{ type: "text", text: "queued" }],
+			isError: false,
+			timestamp: Date.now(),
+		});
+		normalizedBudget.appendMessage({
+			role: "toolResult",
+			toolCallId: "normalized",
+			toolName: "memory_suggest",
+			content: [{ type: "text", text: "queued" }],
+			isError: false,
+			timestamp: Date.now(),
+		});
+		expect([...successfulMemoryToolTexts(normalizedBudget.getBranch(), 1, 1)]).toEqual(["a"]);
+	});
+
 	it("fully redacts quoted JSON and environment values containing spaces", () => {
 		const redacted = redactSecrets(
 			'"client_secret": "json secret value with spaces"\nMY_API_KEY=\'environment secret value with spaces\'\nSAFE=value',
@@ -272,6 +394,27 @@ describe("Slice 1 transcript filtering and redaction", () => {
 		expect(dedupe.add(dedupeIdentity("Review `User carefully."))).toBe(true);
 		expect(dedupe.add(dedupeIdentity("Review `User carefully..."))).toBe(true);
 		expect(dedupe.add(dedupeIdentity("review `user carefully..."))).toBe(true);
+	});
+
+	it("deduplicates Memory suggestions by proposed text, category, and basis rather than rationale", () => {
+		const first = {
+			intent: "memory-suggestion" as const,
+			memory: {
+				text: "Use sfw-prefixed pnpm commands.",
+				category: "project" as const,
+				basis: "project-constraint" as const,
+			},
+		};
+		const sameProposal = {
+			...first,
+			memory: { ...first.memory, text: "  USE sfw-prefixed pnpm commands... " },
+		};
+		const differentBasis = {
+			...first,
+			memory: { ...first.memory, basis: "project-procedure" as const },
+		};
+		expect(adviceDedupeKey(first)).toBe(adviceDedupeKey(sameProposal));
+		expect(adviceDedupeKey(first)).not.toBe(adviceDedupeKey(differentBasis));
 	});
 
 	it("includes severity in dedupe identity and retains FIFO insertion order", () => {

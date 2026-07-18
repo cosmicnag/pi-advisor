@@ -32,7 +32,9 @@ function fixtureTheme(ansi: boolean): Theme {
 	} as Theme;
 }
 
-function presentationNote(overrides: Partial<AdvicePresentationNote> = {}): AdvicePresentationNote {
+function presentationNote(
+	overrides: Partial<Extract<AdvicePresentationNote, { intent: "review" }>> = {},
+): AdvicePresentationNote {
 	return {
 		intent: "review",
 		note: "Verify the narrow and wide rendering path before shipping this longer advisory note.",
@@ -69,6 +71,14 @@ function runtimeStatus(): AdvisorRuntimeStatus {
 		activeNotesPending: 0,
 		deferredNotesPending: 0,
 		notesSuppressed: 0,
+		memorySuggestionCapability: { state: "available" },
+		memorySuggestionsEnabled: true,
+		memorySuggestionsDelivered: 0,
+		memorySuggestionsPolicySuppressed: 0,
+		memorySuggestionsLimitSuppressed: 0,
+		memorySuggestionsRemaining: 5,
+		memorySuggestionNextEligibleTurn: 0,
+		memorySuggestionNextEligibleAt: 0,
 		redactions: 0,
 		consecutiveFailures: 0,
 		branchResets: 0,
@@ -122,6 +132,43 @@ describe("Slice 2 Batch B presentation and diagnostics", () => {
 			const lines = component.render(width);
 			expect(lines.length).toBeGreaterThan(0);
 			for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+		}
+	});
+
+	it("renders Memory suggestions distinctly with proposed text and queue state", () => {
+		const memoryNote: AdvicePresentationNote = {
+			intent: "memory-suggestion",
+			note: "This workflow is durable across future sessions.",
+			memory: {
+				text: "Install packages only with sfw-prefixed pnpm commands.",
+				category: "project",
+				basis: "project-procedure",
+			},
+			delivery: "deferred",
+			queueState: "could-not-queue",
+			truncated: false,
+			originalCharacters: 47,
+			originalEstimatedTokens: 12,
+			createdAt: 1_700_000_000_000,
+		};
+		const lines = renderAdviceCards(
+			[memoryNote],
+			true,
+			fixtureTheme(false),
+			1_700_000_000_000,
+		).render(60);
+		const rendered = lines.join("\n");
+		expect(rendered).toContain("MEMORY SUGGESTION - COULD NOT QUEUE");
+		expect(rendered).toContain("Proposed memory");
+		expect(rendered).toContain("sfw-prefixed pnpm");
+		expect(rendered).toContain("project-procedure");
+		for (const width of [24, 100]) {
+			for (const theme of [fixtureTheme(false), fixtureTheme(true)]) {
+				const themedLines = renderAdviceCards([memoryNote], true, theme, 1_700_000_000_000).render(
+					width,
+				);
+				for (const line of themedLines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+			}
 		}
 	});
 

@@ -2,10 +2,10 @@
 
 Pi Advisor provides automatic secondary review of a primary Pi agent session while keeping reviewer state separate from the primary conversation.
 
-## Slice 2 Batch B terminology status
+## Slice 2 Batch C terminology status
 
-The implemented runtime provides Executor, Advisor, Advisor update, Cursor, Epoch, Meaningful Executor turn, Executor reasoning, Advisory note, in-session Deferred advice, Advice card, Session activation, in-memory caller configuration, Fixed Advisor policy, User instructions, tagged Project instructions, Protected path, Protected-path exception, and Destructive-command guard boundaries.
-Re-prime, Memory suggestion, cross-exit Deferred advice restoration, durable User configuration, durable Project configuration, and Persisted Advisor transcript remain reserved later-slice terms.
+The implemented runtime provides Executor, Advisor, Advisor update, Cursor, Epoch, Meaningful Executor turn, Executor reasoning, Advisory note, Memory suggestion, in-session Deferred advice, Advice card, Session activation, in-memory caller configuration, Fixed Advisor policy, User instructions, tagged Project instructions, Protected path, Protected-path exception, and Destructive-command guard boundaries.
+Re-prime, cross-exit Deferred advice restoration, durable User configuration, durable Project configuration, and Persisted Advisor transcript remain reserved later-slice terms.
 
 ## Language
 
@@ -55,7 +55,7 @@ _Avoid_: Saved memory, approved memory, hidden autosave, Advisor-owned memory
 **Deferred advice**:
 An accepted, individually bounded Advisory note waiting in in-memory runtime state for the next user-driven Executor turn and cleared if the active session or branch changes first.
 The user prompt that triggers materialization is newer Executor input, so the emitted note is potentially stale even though Pi has not yet appended that prompt to branch state during `before_agent_start`.
-The pending FIFO has fixed, non-configurable limits of 4,096 notes and 1,000,000 raw note bytes, and each user-turn delivery contains at most 64 KiB of rendered content.
+The pending FIFO has fixed, non-configurable limits of 4,096 advice items and 1,000,000 retained UTF-8 bytes, including Memory rationale and proposed text, and each user-turn delivery contains at most 64 KiB of rendered content.
 Cross-exit restoration remains deferred to Slice 3.
 _Avoid_: Backlog, hidden instruction, cross-session message
 
