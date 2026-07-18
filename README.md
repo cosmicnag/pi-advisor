@@ -54,8 +54,9 @@ Slice 1 does not add a collision warning, so users must identify the intended co
 - Branch, compaction, tree, disable, replacement, and shutdown epoch changes invalidate retry-delay continuations before another provider request.
 - Delivery, malformed internal tool, and governor failures remain single-shot.
   Delivery failures count separately and retain only one bounded redacted last-failure reason.
-- Status reports queued transcript bytes, reported and estimated context components, context policy limit, completed and failed compactions, pending retry delay, total retry attempts, consecutive and total failures, branch resets, and the count of stale nested queued messages discarded without retaining their content.
-- Explicit `/advisor dump` diagnostics exclude transcripts, notes, reasoning, instructions, protected paths, and raw failure text, redact included string fields, and stay within 16 KiB.
+- Status reports queued transcript bytes, reported and estimated context components, context policy limit, compaction and re-prime outcomes, exact review-request token and cost totals, pending retry delay, suppression, delivery, persistence, consecutive and total failures, branch resets, and the count of stale nested queued messages discarded without retaining their content.
+- Explicit `/advisor dump` diagnostics redact included strings and stay within 16 KiB.
+  When optional transcript persistence is enabled or existing records remain, the dump includes a bounded recent-record preview but never includes Executor or Advisor reasoning.
 - Fail-safe inactive behavior when the configured model or credentials are unavailable.
 - Optional Memory suggestions activate only while an Executor tool named `memory_suggest` is active and its public schema explicitly supports required string `text`, `preference` and `project` categories, and `status: "pending"`.
 - Memory suggestions use structured intent, category, and eligibility-basis metadata, never use severity, and remain lower priority than ordinary material advice from the same update.
@@ -68,8 +69,8 @@ Slice 1 does not add a collision warning, so users must identify the intended co
 - Pi Advisor never imports Memory Lane, invokes `memory_save` or `memory_suggest`, writes memory storage, or approves a memory.
 - No product telemetry.
 
-Bounded branch re-prime invocation and unsafe-snapshot handling remain Slice 4B.
-WATCHDOG files and optional full Advisor transcript persistence also remain unimplemented.
+Bounded branch re-prime, unsafe-snapshot pause behavior, complete Slice 4 accounting, and optional private transcript records are implemented through Slice 4B.
+WATCHDOG file loading remains unimplemented.
 
 The normative public contract is in [`docs/behavior-contract.md`](docs/behavior-contract.md).
 The measured OMP parity position is tracked in [`docs/omp-parity.md`](docs/omp-parity.md).
@@ -84,6 +85,7 @@ Slice 3A lifecycle and persistence evidence is in [`docs/slice-3a.md`](docs/slic
 Slice 3B retry and recovery evidence is in [`docs/slice-3b.md`](docs/slice-3b.md).
 Full Slice 3 acceptance and closure evidence is in [`docs/slice-3-verification.md`](docs/slice-3-verification.md).
 Slice 4A context-policy and compaction evidence is in [`docs/slice-4a.md`](docs/slice-4a.md).
+Slice 4B re-prime, accounting, persistence, and long-session evidence is in [`docs/slice-4b.md`](docs/slice-4b.md).
 
 ## Install the package locally
 
@@ -107,8 +109,9 @@ An approved release change must remove that guard before the manual trusted-publ
 
 - `/advisor on` enables review for the current session when the configured `provider/model` is available and authenticated.
 - `/advisor off` disables review, invalidates in-flight work, clears the bounded transcript backlog, pending advice, and dedupe history, and disposes the nested session.
-- `/advisor status` reports activation, model, queued transcript and retry backlog, context, usage, total and consecutive review failures, retry attempts, stale nested-queue discards, delivery-failure, active-pending, delivered, deferred, suppressed, Memory suggestion capability and governors, pause, and last-failure state.
-- `/advisor dump` explicitly emits a redacted, bounded diagnostic snapshot without transcripts, notes, reasoning, instructions, protected paths, or raw failure text.
+- `/advisor status` reports activation, model, queued transcript and retry backlog, context maintenance, input/output/cache/total tokens, reported cost, review requests and outcomes, retry attempts, stale nested-queue discards, delivery, suppression, persistence, Memory suggestion capability and governors, pause, and last-failure state.
+- `/advisor dump` explicitly emits a redacted, bounded diagnostic snapshot.
+  It includes a recent optional transcript-record preview when records exist, but never includes Executor or Advisor reasoning, instructions, protected paths, or unredacted failure text.
 - `--advisor` requests activation for the current session in every Pi mode.
 - `defaultEnabled: true` applies only to TUI and RPC sessions, while JSON and print sessions require explicit activation.
 
@@ -140,8 +143,10 @@ Its 4,096-key dedupe history, 4,096-note and 1,000,000-byte deferred queue, and 
 A full deferred queue rejects newer advice, increments the suppressed-note count, and warns once per session.
 `deferredAdviceRetentionHours` now controls cross-exit deferred-note restoration, with `0` disabling it and the 24-hour default applying on compatible resume.
 `minTurnsBetweenReviews` and `minIntervalMs` now throttle ordinary reviews while retaining a bounded coalesced update until both gates are eligible.
-`maxReprimeTokens` now bounds the exported redacted current-branch snapshot serializer, but invoking bounded re-prime remains Slice 4B.
-Optional full transcript `persistence`, `AdvisorProjectConfig`, and `CONFIG_VALIDATION_STRATEGY` remain reserved.
+`maxReprimeTokens` bounds the redacted current-branch snapshot used after compaction fails or remains over policy.
+`persistence.transcript` is active, User-owned embedding configuration and remains `false` by default.
+`AdvisorProjectConfig` cannot enable it.
+`AdvisorProjectConfig` and `CONFIG_VALIDATION_STRATEGY` otherwise remain reserved until WATCHDOG configuration loading is implemented.
 `DEFAULT_ADVISOR_CONFIG` is deeply frozen; clone it before editing configuration.
 `PROPOSED_ADVISOR_CONFIG` remains a deprecated compatibility alias containing an independent mutable clone of the canonical defaults.
 Programmatic hooks are intended for embedding and tests: `onRuntime` exposes the instance, `onStatus` receives status snapshots, and `onWarning` receives runtime warnings.
@@ -161,7 +166,7 @@ All current modules are re-exported from the package root.
 | Configuration   | `DEFAULT_ADVISOR_CONFIG`, deprecated `PROPOSED_ADVISOR_CONFIG`, `normalizeAdvisorConfig`, `HARD_LIMITS`, `READ_ONLY_TOOL_NAMES`, configuration types, and reserved validation metadata |
 | Advice          | `createAdviseTool`, `boundAdvice`, policy-specific normalizers, intent-scoped dedupe helpers, delivery formatting, and ordinary or Memory suggestion advice types                      |
 | Delivery        | Fixed delivery bounds, `BoundedKeyedByteFifo`, `takeRenderedPrefix`, and queue types                                                                                                   |
-| Persistence     | Runtime-state custom type, schema and bounds, strict parser, persisted state types, and the measured 128-hash cap                                                                      |
+| Persistence     | Runtime-state and optional transcript-record custom types, schemas, fixed bounds, strict parsers, persisted types, and the measured 128-hash cap                                       |
 | Presentation    | XML escaping, advice message and late-entry renderers, themed card rendering, presentation data types, and the late-entry custom type                                                  |
 | Protected tools | `ProtectedPathPolicy`, `createProtectedAdvisorTools`, `isAdvisorReadOnlyTool`, and `AdvisorToolContext`                                                                                |
 | Transcript      | `ADVISOR_CUSTOM_TYPE`, cursor helpers, meaningful-turn filtering, delta rendering, and transcript types                                                                                |
@@ -170,7 +175,7 @@ All current modules are re-exported from the package root.
 The default extension is the installable entry point.
 `AdvisorRuntime` exposes cloned status snapshots, nested-message inspection, project-context capture, session restoration, explicit enable and disable, turn and message observation, active-delivery settlement, deferred-advice materialization through `takeDeferredAdvice`, eager lifecycle invalidation, branch reseeding, and shutdown, while the extension factory wires those lifecycle methods to Pi.
 `AdvisorRuntimeStatus.activeNotesPending` counts active notes awaiting Pi acknowledgement, `deferredNotesPending` counts notes waiting for a later user prompt, `restoredDeferredNotesPending` identifies the restored subset, `oldestDeferredAdviceAgeMs` reports its age, and `notesDelivered` increases only after acknowledgement or deferred materialization.
-The factory, runtime hooks, status formatters, and policy helpers support controlled embedding, integration tests, and inspection without enabling durable configuration or optional full transcript persistence.
+The factory, runtime hooks, status formatters, and policy helpers support controlled embedding, integration tests, and inspection without enabling durable WATCHDOG configuration.
 
 ## Compatibility
 
@@ -191,12 +196,21 @@ Results returned by Advisor's allowed read-only tools, including allowed file co
 The protected `grep` tool uses `rg` when available; without `rg`, explicit literal searches use a bounded in-process fallback while regex searches report that they are unavailable.
 Protected-path checks cover direct and symlink-resolved access, but neither path protection nor redaction can guarantee that every secret is excluded.
 Automatic review creates additional provider usage and cost, bounded by configured session governors and the active package hard maxima for notes, turns, tool calls, and pending bytes.
-Optional full Advisor transcript persistence remains disabled and unimplemented in Slice 3B.
-Pi Advisor records bounded lifecycle-only custom entries in the active Pi session state, including a branch cursor, retained deferred accepted notes, up to 128 dedupe hashes, delivery counts, and Memory suggestion cadence and cap state.
+Optional private Advisor transcript-record persistence is disabled by default through `persistence.transcript: false`.
+When explicitly enabled by trusted User or embedding configuration, Pi Advisor appends versioned `pi-advisor-transcript-record` custom entries to the active Pi session.
+Each record is bounded to 256 KiB and may contain a reasoning-free redacted bounded Executor update, non-`advise` Advisor tool call, redacted bounded Advisor tool result, exact public review-request usage and reported cost, accepted delivered or queued advice, or bounded failure and stop reason.
+It never stores Executor reasoning, Advisor reasoning, suppressed or rejected advice, unsafe or redaction-altered Memory suggestions, Memory Lane outcomes, unredacted secrets, unbounded tool output, or complete provider payloads.
+`/advisor dump` inspects at most the newest 256 valid records in memory and emits at most the newest 32 within the existing 16 KiB diagnostics bound.
+The records remain outside model context.
+Disabling persistence stops future transcript-record writes but does not delete existing entries.
+For a file-backed Pi session, records remain in that session's JSONL for the lifetime of the session and are deleted by deleting the session in Pi or removing its session file.
+Long sessions use additional disk space proportional to the number and bounded size of records, so users should keep persistence disabled unless they need private audit history and periodically delete old Pi sessions.
+In-memory sessions do not retain records across process exit.
+Pi Advisor also records bounded lifecycle-only custom entries in the active Pi session state, including a branch cursor, retained deferred accepted notes, up to 128 dedupe hashes, delivery counts, and Memory suggestion cadence and cap state.
 These custom entries are outside model context and contain no Executor or Advisor reasoning, provider payloads, transcript updates, suppressed notes, or raw failure text.
 When the Pi session is file-backed and the append succeeds, Pi persists the entries in that session's JSONL and deleting the session file deletes them.
 In-memory sessions have no lifecycle-state JSONL, and an append failure does not alter Advisor delivery.
-Retention `0` prevents deferred note content from being written into new lifecycle snapshots, while disabling optional full transcript persistence does not disable lifecycle state required for correctness.
+Retention `0` prevents deferred note content from being written into new lifecycle snapshots, while disabling optional transcript-record persistence does not disable lifecycle state required for correctness.
 
 ## Telemetry
 

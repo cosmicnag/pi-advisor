@@ -9,8 +9,42 @@ import { cursorMatches, type AdvisorCursor } from "./transcript.js";
 
 export const ADVISOR_RUNTIME_STATE_ENTRY_TYPE = "pi-advisor-runtime-state";
 export const ADVISOR_RUNTIME_STATE_VERSION = 1 as const;
+export const ADVISOR_TRANSCRIPT_ENTRY_TYPE = "pi-advisor-transcript-record";
+export const ADVISOR_TRANSCRIPT_RECORD_VERSION = 1 as const;
 export const MAX_PERSISTED_DEDUPE_HASHES = 128;
 export const MAX_PERSISTED_RUNTIME_STATE_BYTES = 4 * 1_024 * 1_024;
+export const MAX_PERSISTED_TRANSCRIPT_RECORD_BYTES = 256 * 1_024;
+export const MAX_INSPECTED_TRANSCRIPT_RECORDS = 256;
+
+interface PersistedAdvisorTranscriptRecordBase {
+	version: typeof ADVISOR_TRANSCRIPT_RECORD_VERSION;
+	sessionId: string;
+	savedAt: number;
+}
+
+export type PersistedAdvisorTranscriptRecord = PersistedAdvisorTranscriptRecordBase &
+	(
+		| { kind: "update"; text: string; entryCount: number; truncated: boolean }
+		| { kind: "advisor-tool-call"; toolName: string; arguments: string }
+		| { kind: "advisor-tool-result"; toolName: string; isError: boolean; text: string }
+		| {
+				kind: "usage";
+				input: number;
+				output: number;
+				cacheRead: number;
+				cacheWrite: number;
+				total: number;
+				costUsd: number;
+				stopReason: string;
+		  }
+		| {
+				kind: "accepted-advice";
+				advice: AcceptedAdvice;
+				delivery: "active" | "deferred";
+				stale: boolean;
+		  }
+		| { kind: "failure"; reason: string; stopReason: string }
+	);
 
 export interface PersistedDeferredAdvice {
 	advice: AcceptedAdvice;
@@ -51,6 +85,22 @@ function isFiniteInteger(value: unknown, minimum = 0): value is number {
 
 function isTimestamp(value: unknown): value is number {
 	return isFiniteInteger(value) && value <= 8_640_000_000_000_000;
+}
+
+function isFiniteNonNegative(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isSafePersistedText(value: unknown): value is string {
+	return (
+		typeof value === "string" &&
+		value.length <= MAX_PERSISTED_TRANSCRIPT_RECORD_BYTES * 2 &&
+		redactSecrets(value).text === value
+	);
+}
+
+function isBoundedName(value: unknown): value is string {
+	return typeof value === "string" && value.length > 0 && value.length <= 256;
 }
 
 function isCursor(value: unknown): value is AdvisorCursor {
@@ -228,6 +278,121 @@ export function parsePersistedAdvisorRuntimeState(
 		return undefined;
 	}
 	return structuredClone(value) as PersistedAdvisorRuntimeState;
+}
+
+export function parsePersistedAdvisorTranscriptRecord(
+	value: unknown,
+	expectedSessionId: string,
+): PersistedAdvisorTranscriptRecord | undefined {
+	let serialized: unknown;
+	try {
+		serialized = JSON.stringify(value);
+	} catch {
+		return undefined;
+	}
+	if (
+		typeof serialized !== "string" ||
+		Buffer.byteLength(serialized, "utf8") > MAX_PERSISTED_TRANSCRIPT_RECORD_BYTES ||
+		typeof value !== "object" ||
+		value === null
+	) {
+		return undefined;
+	}
+	const record = value as Record<string, unknown>;
+	if (
+		record.version !== ADVISOR_TRANSCRIPT_RECORD_VERSION ||
+		record.sessionId !== expectedSessionId ||
+		typeof record.sessionId !== "string" ||
+		record.sessionId.length === 0 ||
+		record.sessionId.length > 128 ||
+		!isTimestamp(record.savedAt)
+	) {
+		return undefined;
+	}
+	let valid = false;
+	switch (record.kind) {
+		case "update":
+			valid =
+				hasOnlyKeys(record, [
+					"version",
+					"sessionId",
+					"savedAt",
+					"kind",
+					"text",
+					"entryCount",
+					"truncated",
+				]) &&
+				isSafePersistedText(record.text) &&
+				isFiniteInteger(record.entryCount) &&
+				typeof record.truncated === "boolean";
+			break;
+		case "advisor-tool-call":
+			valid =
+				hasOnlyKeys(record, ["version", "sessionId", "savedAt", "kind", "toolName", "arguments"]) &&
+				isBoundedName(record.toolName) &&
+				isSafePersistedText(record.arguments);
+			break;
+		case "advisor-tool-result":
+			valid =
+				hasOnlyKeys(record, [
+					"version",
+					"sessionId",
+					"savedAt",
+					"kind",
+					"toolName",
+					"isError",
+					"text",
+				]) &&
+				isBoundedName(record.toolName) &&
+				typeof record.isError === "boolean" &&
+				isSafePersistedText(record.text);
+			break;
+		case "usage":
+			valid =
+				hasOnlyKeys(record, [
+					"version",
+					"sessionId",
+					"savedAt",
+					"kind",
+					"input",
+					"output",
+					"cacheRead",
+					"cacheWrite",
+					"total",
+					"costUsd",
+					"stopReason",
+				]) &&
+				isFiniteNonNegative(record.input) &&
+				isFiniteNonNegative(record.output) &&
+				isFiniteNonNegative(record.cacheRead) &&
+				isFiniteNonNegative(record.cacheWrite) &&
+				isFiniteNonNegative(record.total) &&
+				isFiniteNonNegative(record.costUsd) &&
+				isSafePersistedText(record.stopReason);
+			break;
+		case "accepted-advice":
+			valid =
+				hasOnlyKeys(record, [
+					"version",
+					"sessionId",
+					"savedAt",
+					"kind",
+					"advice",
+					"delivery",
+					"stale",
+				]) &&
+				isAcceptedAdvice(record.advice) &&
+				(record.delivery === "active" || record.delivery === "deferred") &&
+				typeof record.stale === "boolean";
+			break;
+		case "failure":
+			valid =
+				hasOnlyKeys(record, ["version", "sessionId", "savedAt", "kind", "reason", "stopReason"]) &&
+				isSafePersistedText(record.reason) &&
+				isSafePersistedText(record.stopReason);
+			break;
+	}
+	return valid ? (structuredClone(value) as PersistedAdvisorTranscriptRecord) : undefined;
 }
 
 export function deferredAdviceIdentity(pending: PersistedDeferredAdvice): string {

@@ -1,5 +1,6 @@
 import {
 	defineTool,
+	SessionManager,
 	type ExtensionContext,
 	type InlineExtension,
 } from "@earendil-works/pi-coding-agent";
@@ -7,6 +8,7 @@ import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 
 import {
+	ADVISOR_TRANSCRIPT_ENTRY_TYPE,
 	createPiAdvisorExtension,
 	DEFAULT_ADVISOR_CONFIG,
 	type AdvisorConfig,
@@ -45,6 +47,34 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 	await expect.poll(predicate, { timeout: 5_000, interval: 10 }).toBe(true);
 }
 
+function createBarrier(): { promise: Promise<void>; release: () => void } {
+	let release: () => void = () => undefined;
+	const promise = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	return { promise, release };
+}
+
+function scriptedAssistant(text: string) {
+	return {
+		role: "assistant" as const,
+		content: [{ type: "text" as const, text }],
+		api: "pi-advisor-scripted",
+		provider: "fixture",
+		model: "fixture",
+		usage: {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop" as const,
+		timestamp: Date.now(),
+	};
+}
+
 function acceptedAdvice(note: string): ScriptedResponse {
 	return {
 		content: [
@@ -59,7 +89,7 @@ function acceptedAdvice(note: string): ScriptedResponse {
 	};
 }
 
-describe.sequential("Slice 4A token-aware Advisor context", () => {
+describe.sequential("Token-aware Advisor context through Slice 4B", () => {
 	it("coalesces skipped turns until the configured ordinary review turn cadence is eligible", async () => {
 		const primary = createPrimaryProvider([
 			{ content: [{ type: "text", text: "EXECUTOR-ONE" }] },
@@ -368,6 +398,77 @@ describe.sequential("Slice 4A token-aware Advisor context", () => {
 		}
 	});
 
+	it("drops a stale update when the primary branch changes during nested compaction", async () => {
+		const compactionBarrier = createBarrier();
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "ORIGINAL-BRANCH-CONTEXT" }] },
+			{ content: [{ type: "text", text: "SECOND-PENDING-COMPACTION-UPDATE" }] },
+		]);
+		const advisor = new ScriptedProvider({
+			providerId: "pi-advisor-fixture-advisor",
+			modelId: "advisor-scripted-pending-compaction",
+			api: ADVISOR_SCRIPTED_API,
+			contextWindow: 4_000,
+			maxTokens: 512,
+			responses: [
+				{
+					content: [{ type: "text", text: `private-before-compaction-${"x".repeat(5_000)}` }],
+					usage: { input: 2_500, output: 500, costUsd: 0.03 },
+				},
+				{
+					content: [{ type: "text", text: "bounded compaction summary" }],
+					waitFor: compactionBarrier.promise,
+				},
+				{ content: [{ type: "text", text: "bounded suffix summary" }] },
+				{ content: [] },
+			],
+		});
+		const manager = SessionManager.inMemory();
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			sessionManager: manager,
+			extensions: [
+				extensionFor(
+					configFor(advisor, (config) => {
+						config.context.maxFraction = 0.65;
+						config.context.reserveTokens = 300;
+					}),
+					(value) => (runtime = value),
+				),
+			],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("create original branch context");
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 1);
+			await harness.session.prompt("start update that requires compaction");
+			await waitFor(() => advisor.requests.length >= 2 && advisor.activeRequests === 1);
+
+			const originalUser = manager
+				.getBranch()
+				.find((entry) => entry.type === "message" && entry.message.role === "user");
+			if (originalUser === undefined) throw new Error("Expected original user entry");
+			manager.branch(originalUser.id);
+			manager.appendMessage(scriptedAssistant("ALTERNATE-BRANCH-CONTEXT"));
+
+			compactionBarrier.release();
+			await waitFor(() => advisor.activeRequests === 0);
+			await waitFor(() => runtime?.getStatus().branchResets === 1);
+			expect(runtime?.getStatus().reviewRequests).toBe(1);
+			expect(
+				advisor.requests.some((request) =>
+					JSON.stringify(request.context.messages).includes("SECOND-PENDING-COMPACTION-UPDATE"),
+				),
+			).toBe(false);
+		} finally {
+			compactionBarrier.release();
+			await harness.dispose();
+		}
+	});
+
 	it("compacts through AgentSession and preserves a planted requirement for later review", async () => {
 		const violationAdvice = "The Executor violated MUST-RUN-LONG-CONTEXT-CHECK.";
 		const primary = createPrimaryProvider([
@@ -458,6 +559,100 @@ describe.sequential("Slice 4A token-aware Advisor context", () => {
 			expect(primaryAfterAdvice).not.toContain("private-one-");
 			expect(primaryAfterAdvice).not.toContain("private-two-");
 			expect(primaryAfterAdvice).not.toContain("## Constraints & Preferences");
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("falls back to bounded re-prime after compaction failure and can repeat safely", async () => {
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "REPRIME-REQUIREMENT must survive." }] },
+			{ content: [{ type: "text", text: "SECOND-LONG-SESSION-UPDATE" }] },
+			{ content: [{ type: "text", text: "THIRD-LONG-SESSION-UPDATE" }] },
+		]);
+		const advisor = new ScriptedProvider({
+			providerId: "pi-advisor-fixture-advisor",
+			modelId: "advisor-scripted-reprime",
+			api: ADVISOR_SCRIPTED_API,
+			contextWindow: 4_000,
+			maxTokens: 512,
+			responses: [
+				{
+					content: [{ type: "text", text: `private-before-reprime-${"x".repeat(4_000)}` }],
+					usage: { input: 2_500, output: 500, costUsd: 0.03 },
+				},
+				{ content: [], usage: { input: 2_500, output: 500, costUsd: 0.03 } },
+				{ content: [], usage: { input: 100, output: 20, costUsd: 0.01 } },
+			],
+		});
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [
+				extensionFor(
+					configFor(advisor, (config) => {
+						config.context.maxFraction = 0.65;
+						config.context.reserveTokens = 300;
+						config.limits.maxReprimeTokens = 512;
+						config.persistence.transcript = true;
+					}),
+					(value) => (runtime = value),
+				),
+			],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("establish reprime requirement");
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 1);
+			await harness.session.prompt("continue long session");
+			await waitFor(() => runtime?.getStatus().contextReprimesCompleted === 1);
+			await harness.session.prompt("continue after first reprime");
+			await waitFor(
+				() =>
+					runtime?.getStatus().contextReprimesCompleted === 2 &&
+					runtime.getStatus().reviewsCompleted === 3,
+			);
+
+			expect(advisor.requests).toHaveLength(3);
+			const reprimeReviews = [advisor.requests[1], advisor.requests[2]];
+			expect(JSON.stringify(reprimeReviews[0]?.context.messages)).toContain("REPRIME-REQUIREMENT");
+			expect(JSON.stringify(reprimeReviews[0]?.context.messages)).toContain(
+				"SECOND-LONG-SESSION-UPDATE",
+			);
+			expect(JSON.stringify(reprimeReviews[1]?.context.messages)).toContain(
+				"THIRD-LONG-SESSION-UPDATE",
+			);
+			expect(runtime?.getStatus()).toMatchObject({
+				paused: false,
+				compactionFailures: 2,
+				compactionUsageUnavailable: 2,
+				contextReprimesCompleted: 2,
+				contextReprimeFailures: 0,
+				reviewRequests: 3,
+				reviewsCompleted: 3,
+				failedReviews: 0,
+				retryAttempts: 0,
+			});
+			expect(runtime?.getStatus().lastFailure).toBeUndefined();
+			const failureRecords = harness.sessionManager
+				.getBranch()
+				.filter(
+					(entry) =>
+						entry.type === "custom" &&
+						entry.customType === ADVISOR_TRANSCRIPT_ENTRY_TYPE &&
+						typeof entry.data === "object" &&
+						entry.data !== null &&
+						Reflect.get(entry.data, "kind") === "failure",
+				);
+			expect(failureRecords).toHaveLength(0);
+			expect(runtime?.getStatus().usage).toMatchObject({
+				input: 5_100,
+				output: 1_020,
+				total: 6_120,
+			});
+			expect(runtime?.getStatus().usage.costUsd).toBeCloseTo(0.07);
 		} finally {
 			await harness.dispose();
 		}

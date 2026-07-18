@@ -4,7 +4,8 @@
 
 This document defines the intended public behavior of `@ribbons-digital/pi-advisor`.
 Slice 4A extends the safe automatic core with usage-anchored context estimation, active ordinary review cadence, per-tool-result serialization bounds, public nested-session compaction, and post-compaction recalculation.
-Bounded re-prime invocation, complete Slice 4 status accounting, durable configuration, and optional full transcript persistence remain deferred to their separately approved batches or slices.
+Slice 4B adds bounded current-branch re-prime fallback, unsafe-snapshot pause behavior, complete public-API accounting, optional private transcript records, and repeated long-session coverage.
+Durable WATCHDOG configuration remains deferred.
 
 ## Roles
 
@@ -42,8 +43,11 @@ Executor reasoning is included only when Pi or the provider exposes it, after re
 Executor and Advisor reasoning is never persisted by Pi Advisor.
 Advisor updates, coalesced or cadence-held pending deltas, protected tool results, and accepted notes are bounded.
 Each serialized tool result is redacted before independent 2,000-line, 64 KiB, configured update-token, and final update bounds are applied.
-Slice 4A exposes the same redacted bounded current-branch serializer for future re-prime snapshots, but Batch B owns re-prime invocation and unsafe-snapshot handling.
-Optional full Advisor transcript records are not implemented in Slice 4A.
+When compaction fails or remains over policy, the runtime clears the private nested branch and submits one redacted bounded current-primary-branch snapshot with the pending update.
+The snapshot is reduced until the estimate fits the same context policy.
+Re-prime increments the runtime epoch, remains bounded by `maxReprimeTokens`, and cannot recursively compact or re-prime within the same maintenance pass.
+If no non-empty snapshot and pending update can fit safely, Advisor pauses and warns once.
+Optional transcript records persist only reasoning-free redacted bounded shapes when explicitly enabled in Slice 4B.
 Lifecycle-only custom entries persist outside model context independently of optional transcript persistence.
 
 ## Delivery
@@ -156,9 +160,10 @@ A single epoch-guarded timer flushes a final update held only by elapsed-time ca
 Before every Advisor submission, context estimation uses Pi's public context estimator, including the latest successful provider usage when available plus trailing messages and the incoming bounded update.
 Because successful provider usage already accounts for the fixed request shape, the runtime does not add tool-schema cost to a usage-anchored estimate.
 When no valid usage anchor exists, including immediately after compaction, the whole private context is estimated with Pi's public estimator plus bounded system-prompt and fixed Advisor tool-schema estimates.
-If the configured context fraction and response reserve would be exceeded, Slice 4A calls the nested `AgentSession.compact()` public API and recalculates policy from the compacted messages before submission.
-Compaction failure or a still-over-policy recalculation pauses Advisor once because bounded re-prime fallback belongs to Batch B.
-Optional full transcript persistence remains reserved and has no Slice 4A runtime effect.
+If the configured context fraction and response reserve would be exceeded, the runtime calls the nested `AgentSession.compact()` public API and recalculates policy from the compacted messages before submission.
+Compaction failure or a still-over-policy recalculation invokes one bounded re-prime fallback.
+An unsafe fallback pauses only Advisor and emits one warning.
+Optional transcript records remain disabled unless `persistence.transcript` is explicitly enabled.
 Memory suggestion cadence, session cap, proposed-text bounds, and cross-exit cadence and cap restoration are active.
 `deferredAdviceRetentionHours` applies during cross-exit restoration but does not expire a live in-memory queue.
 Slice 3B adds no user-configurable field.
@@ -178,8 +183,13 @@ Status exposes whether retry delay or coalesced transcript work is pending, queu
 Only the discard count is retained; queued message content is not added to status, diagnostics, persistence, or model context.
 Programmatic status and warning observers are isolated so observer exceptions cannot alter review outcomes, counters, queue admission, built-in UI warning publication, or later status publication.
 The custom message and entry renderers use current theme colors, sanitize terminal control characters, render age and delivery metadata, and keep every line within the supplied terminal width.
-Exceeding the context limit after attempted maintenance, failing compaction before Batch B re-prime exists, or reaching a session token or reported-cost cap pauses only Advisor and never interrupts Executor.
-Status distinguishes reported context usage from trailing estimates and reports completed and failed nested compactions.
+An unsafe bounded re-prime or reaching a session token or reported-cost cap pauses only Advisor and never interrupts Executor.
+Status distinguishes reported context usage from trailing estimates and reports completed and failed nested compactions and re-primes.
+A compaction failure recovered by bounded re-prime remains visible in the compaction counter but does not become the last review failure or a persisted failure record.
+Status reports review request count, input, output, cache-read, cache-write, total tokens, reported cost, review outcomes, delivery, suppression, persistence, and failure state.
+Suppression counters include only the resolved successful attempt for a completed update, not discarded retry attempts or an update whose attempts all fail.
+The transcript status count reports the monotonic number of records persisted, while diagnostics separately report the bounded number currently available for inspection.
+Pi 0.80.7 does not expose nested compaction-request usage or cost through its public compaction result or events, so status separately counts compaction operations whose provider usage is unavailable rather than folding an estimate into exact review totals.
 
 ## Lifecycle persistence
 
@@ -196,15 +206,29 @@ Compatible resume restores unexpired deferred notes as potentially stale, report
 Delivered, expired, branch-incompatible, over-capacity, and retention-disabled deferred notes are discarded.
 For a file-backed session, successfully appended lifecycle state is deleted by deleting that session through Pi or removing its session file.
 
+## Optional transcript-record persistence
+
+Optional private transcript-record persistence is disabled by default.
+Trusted User or embedding configuration may explicitly enable `persistence.transcript`; Project configuration cannot enable it.
+Enabled persistence appends versioned `pi-advisor-transcript-record` custom entries to the active Pi session.
+Each record is strictly validated and bounded to 256 KiB.
+Records may contain reasoning-free redacted bounded Executor updates, non-`advise` Advisor tool calls, redacted bounded Advisor tool results, public review-request usage and reported cost, accepted delivered or queued notes, and bounded failures and stop reasons.
+Records never contain Executor reasoning, Advisor reasoning, suppressed or rejected notes, unsafe or redaction-altered Memory suggestions, Memory Lane outcomes, unredacted secrets, unbounded tool output, or complete provider payloads.
+The custom entries remain outside model context.
+`/advisor dump` inspects at most the newest 256 valid records and includes at most 32 recent records within its 16 KiB bound.
+Disabling transcript persistence prevents future record writes but does not delete existing records.
+File-backed records remain in the Pi session JSONL until the session is deleted through Pi or its session file is removed.
+In-memory records do not survive process exit.
+There is no time-based optional-transcript retention in Slice 4B, so disk use grows with bounded records until old Pi sessions are deleted.
+
 ## Privacy and telemetry
 
-Optional full Advisor transcript persistence is unimplemented and cannot be enabled in Slice 3B.
-Any future enabled transcript persistence must exclude Executor and Advisor reasoning and store only redacted bounded records.
 The package sends no product analytics, usage telemetry, or automatic crash reports.
 The user-selected model provider receives only the bounded content required for Advisor requests.
 Support diagnostics require explicit `/advisor dump` action and never export automatically.
-The dump is bounded to 16 KiB, recursively redacts every included string, and excludes Executor and Advisor transcripts, reasoning, Advisory note content, instructions, protected paths, and raw failure text.
-Boolean fields report whether review or delivery failure details exist without serializing those details.
+The dump is bounded to 16 KiB, recursively redacts every included string, and excludes reasoning, instructions, protected paths, unredacted failures, and complete raw transcripts.
+When optional records exist, it may include their bounded recent update, tool, accepted-note, usage, and failure preview.
+Boolean fields report whether review or delivery failure details exist without serializing those details when no optional transcript record carries the already bounded redacted failure.
 
 ## Scope boundary
 

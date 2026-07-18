@@ -63,7 +63,7 @@ function stringValue(value: unknown, fallback = ""): string {
 	return typeof value === "string" ? value : fallback;
 }
 
-function contentText(content: unknown): string {
+function contentText(content: unknown, includeReasoning: boolean): string {
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return "";
 	return (content as unknown[])
@@ -72,7 +72,7 @@ function contentText(content: unknown): string {
 			const record = part as Record<string, unknown>;
 			if (record.type === "text") return stringValue(record.text);
 			if (record.type === "thinking") {
-				return `[reasoning]\n${stringValue(record.thinking)}`;
+				return includeReasoning ? `[reasoning]\n${stringValue(record.thinking)}` : "";
 			}
 			if (record.type === "toolCall") {
 				return `[tool call ${stringValue(record.name, "unknown")}] ${JSON.stringify(record.arguments ?? {})}`;
@@ -89,21 +89,30 @@ interface SerializedEntry {
 	toolResult: boolean;
 }
 
-function serializeMessage(message: AgentMessage): SerializedEntry | undefined {
+function serializeMessage(
+	message: AgentMessage,
+	includeReasoning: boolean,
+): SerializedEntry | undefined {
 	switch (message.role) {
 		case "user":
-			return { text: `[Executor user]\n${contentText(message.content)}`, toolResult: false };
+			return {
+				text: `[Executor user]\n${contentText(message.content, includeReasoning)}`,
+				toolResult: false,
+			};
 		case "assistant":
-			return { text: `[Executor assistant]\n${contentText(message.content)}`, toolResult: false };
+			return {
+				text: `[Executor assistant]\n${contentText(message.content, includeReasoning)}`,
+				toolResult: false,
+			};
 		case "toolResult":
 			return {
-				text: `[Executor tool result ${message.toolName}${message.isError ? " error" : ""}]\n${contentText(message.content)}`,
+				text: `[Executor tool result ${message.toolName}${message.isError ? " error" : ""}]\n${contentText(message.content, includeReasoning)}`,
 				toolResult: true,
 			};
 		case "custom":
 			if (message.customType === ADVISOR_CUSTOM_TYPE) return undefined;
 			return {
-				text: `[Executor extension context ${message.customType}]\n${contentText(message.content)}`,
+				text: `[Executor extension context ${message.customType}]\n${contentText(message.content, includeReasoning)}`,
 				toolResult: false,
 			};
 		case "bashExecution":
@@ -123,12 +132,15 @@ function isMessageEntry(entry: SessionEntry): entry is SessionMessageEntry {
 	return entry.type === "message";
 }
 
-function serializeEntry(entry: SessionEntry): SerializedEntry | undefined {
-	if (isMessageEntry(entry)) return serializeMessage(entry.message);
+function serializeEntry(
+	entry: SessionEntry,
+	includeReasoning: boolean,
+): SerializedEntry | undefined {
+	if (isMessageEntry(entry)) return serializeMessage(entry.message, includeReasoning);
 	if (entry.type === "custom_message") {
 		if (entry.customType === ADVISOR_CUSTOM_TYPE) return undefined;
 		return {
-			text: `[Executor extension context ${entry.customType}]\n${contentText(entry.content)}`,
+			text: `[Executor extension context ${entry.customType}]\n${contentText(entry.content, includeReasoning)}`,
 			toolResult: false,
 		};
 	}
@@ -175,6 +187,7 @@ function renderBoundedEntries(
 	entries: SessionEntry[],
 	maximumTokens: number,
 	truncationMarker: string,
+	includeReasoning = true,
 ): RenderedAdvisorDelta {
 	const maximumBytes = Math.max(1, maximumTokens * 4);
 	const perToolResultBytes = Math.min(maximumBytes, MAX_ADVISOR_TOOL_RESULT_BYTES);
@@ -187,7 +200,7 @@ function renderBoundedEntries(
 	for (let index = entries.length - 1; index >= 0; index--) {
 		const entry = entries[index];
 		if (entry === undefined) continue;
-		const serialized = serializeEntry(entry);
+		const serialized = serializeEntry(entry, includeReasoning);
 		if (serialized === undefined) continue;
 		const redacted = redactSecrets(serialized.text);
 		redactions += redacted.redactions;
@@ -232,7 +245,7 @@ export function isMeaningfulExecutorTurn(event: TurnEndEvent, entries: SessionEn
 		(entry) => entry.type === "message" && entry.message.role === "user",
 	);
 	if (hasAdvisorNote && !hasExecutorUserMessage) return false;
-	const assistantContent = contentText(event.message.content).trim();
+	const assistantContent = contentText(event.message.content, true).trim();
 	return assistantContent.length > 0 || event.toolResults.length > 0;
 }
 
@@ -355,4 +368,12 @@ export function renderAdvisorReprimeSnapshot(
 	maxReprimeTokens: number,
 ): RenderedAdvisorDelta {
 	return renderBoundedEntries(entries, maxReprimeTokens, REPRIME_TRUNCATION_MARKER);
+}
+
+/** Render a persistence-safe update with Executor reasoning removed before redaction and bounds. */
+export function renderPersistedAdvisorUpdate(
+	entries: SessionEntry[],
+	maximumTokens: number,
+): RenderedAdvisorDelta {
+	return renderBoundedEntries(entries, maximumTokens, UPDATE_TRUNCATION_MARKER, false);
 }
