@@ -1139,7 +1139,8 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 						this.deliver(accepted, ctx, stale, run.deferAdvice, update.turnNumber);
 				} catch (error) {
 					this.rollbackNestedAttempt(session, messagesBeforeAttempt);
-					throw error;
+					this.recordFailure(boundedReason(error));
+					break;
 				}
 				this.status.reviewsCompleted++;
 				this.status.consecutiveFailures = 0;
@@ -1152,7 +1153,11 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 
 			this.rollbackNestedAttempt(session, messagesBeforeAttempt);
 			if (run.governorFailure !== undefined && accepted?.intent === "review") {
-				this.deliver(accepted, ctx, stale, run.deferAdvice, update.turnNumber);
+				try {
+					this.deliver(accepted, ctx, stale, run.deferAdvice, update.turnNumber);
+				} catch {
+					// The delivery failure is recorded by deliver; preserve the governor failure below.
+				}
 			}
 			const pausedForFailure = this.recordFailure(failure);
 			const retryable =

@@ -145,16 +145,32 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 	});
 
 	it.each([
-		{ label: "ordinary review", governorFailure: false },
-		{ label: "governor-failed review", governorFailure: true },
+		{
+			label: "ordinary review",
+			governorFailure: false,
+			expectedFailure: "scripted active delivery failure",
+		},
+		{
+			label: "governor-failed review",
+			governorFailure: true,
+			expectedFailure: "Advisor tool-call limit reached",
+		},
 	])(
-		"counts a thrown active delivery once as failure for a $label",
-		async ({ governorFailure }) => {
+		"processes the pending update in order after a thrown active delivery for a $label",
+		async ({ governorFailure, expectedFailure }) => {
 			const executorBarrier = createBarrier();
 			const advisorBarrier = createBarrier();
+			const pendingAdvisorBarrier = createBarrier();
 			const primary = createPrimaryProvider([
 				{
 					content: [{ type: "toolCall", id: "hold-send-failure", name: "hold", arguments: {} }],
+					stopReason: "toolUse",
+				},
+				{
+					content: [
+						{ type: "text", text: "SECOND-PENDING-EXECUTOR-UPDATE" },
+						{ type: "toolCall", id: "hold-pending-update", name: "hold", arguments: {} },
+					],
 					stopReason: "toolUse",
 				},
 				{
@@ -167,7 +183,7 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 					...acceptedAdvice("This delivery should throw."),
 					waitFor: advisorBarrier.promise,
 				},
-				{ content: [] },
+				{ content: [], waitFor: pendingAdvisorBarrier.promise },
 			]);
 			const hold = defineTool({
 				name: "hold",
@@ -196,6 +212,7 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 				const activeTurn = harness.session.prompt("start throwing active delivery");
 				try {
 					await waitFor(() => advisor.activeRequests === 1);
+					await waitFor(() => activeRuntime.getStatus().backlog);
 					if (governorFailure) {
 						const currentRun = Reflect.get(activeRuntime, "currentRun") as {
 							governorFailure?: string;
@@ -203,7 +220,7 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 						currentRun.governorFailure = "Advisor tool-call limit reached";
 					}
 					advisorBarrier.release();
-					await waitFor(() => activeRuntime.getStatus().failedReviews >= 1);
+					await waitFor(() => advisor.requests.length === 2);
 					expect(activeRuntime.getStatus()).toMatchObject({
 						reviewsCompleted: 0,
 						failedReviews: 1,
@@ -211,19 +228,34 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 						consecutiveFailures: 1,
 						silentReviews: 0,
 						activeNotesPending: 0,
-						lastFailure: "scripted active delivery failure",
+						lastFailure: expectedFailure,
 						lastDeliveryFailure: "scripted active delivery failure",
 					});
 					expect(sendMessage).toHaveBeenCalledTimes(1);
-					expect(activeRuntime.getNestedMessageCount()).toBe(0);
+					expect(JSON.stringify(advisor.requests[0]?.context)).not.toContain(
+						"SECOND-PENDING-EXECUTOR-UPDATE",
+					);
+					const pendingContext = JSON.stringify(advisor.requests[1]?.context);
+					expect(pendingContext).toContain("SECOND-PENDING-EXECUTOR-UPDATE");
+					expect(pendingContext).not.toContain("This delivery should throw.");
+
+					pendingAdvisorBarrier.release();
+					await waitFor(() => activeRuntime.getStatus().reviewsCompleted === 1);
+					expect(activeRuntime.getStatus()).toMatchObject({
+						failedReviews: 1,
+						consecutiveFailures: 0,
+						backlog: false,
+					});
 				} finally {
 					advisorBarrier.release();
+					pendingAdvisorBarrier.release();
 					executorBarrier.release();
 					await activeTurn;
 					sendMessage.mockRestore();
 				}
 			} finally {
 				advisorBarrier.release();
+				pendingAdvisorBarrier.release();
 				executorBarrier.release();
 				await harness.dispose();
 			}
