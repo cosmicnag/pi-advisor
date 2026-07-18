@@ -3,7 +3,7 @@
 `@ribbons-digital/pi-advisor` is an independent Pi extension for automatic, isolated secondary review of an Executor session.
 The implemented core observes meaningful completed Executor turns in the background, stays silent when work is sound, and delivers only bounded actionable notes.
 
-> Slice 3B status: the safe automatic core now adds clean provider retry, bounded retry delay, pause-state recovery, expanded backlog and failure status, and stale nested-queue extraction to Slice 3A lifecycle and persistence behavior.
+> Slice 3 status: the safe automatic core now includes branch and session isolation, lifecycle-only compatible resume, clean provider retry, bounded retry delay, pause-state recovery, expanded backlog and failure status, and stale nested-queue extraction.
 > The installed default remains off and has no model selection until the durable WATCHDOG configuration and `/advisor configure` workflow arrive in a later approved slice.
 
 ## Not the same as rpiv-advisor
@@ -13,7 +13,7 @@ This package is designed for automatic background observation that does not depe
 Both packages register `/advisor`, and Pi 0.80.7 assigns `/advisor:1` and `/advisor:2` in extension load order when both are installed.
 Slice 1 does not add a collision warning, so users must identify the intended command from Pi's command list.
 
-## Implemented behavior through Slice 3B
+## Implemented behavior through Slice 3
 
 - One explicitly selected Advisor model, with no fallback to the Executor model.
 - Automatic review after meaningful completed Executor turns.
@@ -64,7 +64,7 @@ Slice 1 does not add a collision warning, so users must identify the intended co
 - Pi Advisor never imports Memory Lane, invokes `memory_save` or `memory_suggest`, writes memory storage, or approves a memory.
 - No product telemetry.
 
-Advisor context compaction or branch re-prime, WATCHDOG files, and optional full Advisor transcript persistence remain outside Slice 3B.
+Advisor context compaction or branch re-prime, WATCHDOG files, and optional full Advisor transcript persistence remain outside Slice 3.
 
 The normative public contract is in [`docs/behavior-contract.md`](docs/behavior-contract.md).
 The measured OMP parity position is tracked in [`docs/omp-parity.md`](docs/omp-parity.md).
@@ -77,6 +77,7 @@ Slice 2 Batch C implementation evidence is in [`docs/slice-2-batch-c.md`](docs/s
 Full Slice 2 acceptance and closure evidence is in [`docs/slice-2-verification.md`](docs/slice-2-verification.md).
 Slice 3A lifecycle and persistence evidence is in [`docs/slice-3a.md`](docs/slice-3a.md).
 Slice 3B retry and recovery evidence is in [`docs/slice-3b.md`](docs/slice-3b.md).
+Full Slice 3 acceptance and closure evidence is in [`docs/slice-3-verification.md`](docs/slice-3-verification.md).
 
 ## Install the package locally
 
