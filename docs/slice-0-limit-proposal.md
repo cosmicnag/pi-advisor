@@ -60,8 +60,9 @@ It removes duplicate or unsupported tool names and fixes the config version at 1
 It constrains context fraction to 0.01 through 1, reserve tokens to at least 0, and update tokens to at least 1.
 It constrains note characters, note tokens, Advisor turns, pending bytes, and reserved re-prime tokens to at least 1 and their listed hard maxima.
 It constrains tool calls to 0 through 32, turns between reviews and the session token cap to at least 1, and interval, deferred retention, and the reported-cost cap to at least 0.
+It normalizes Memory suggestion turn and elapsed-time cadence to non-negative values, floors the session cap to a non-negative integer, and clamps proposed-text bounds to their hard maxima.
 Non-finite numeric values in these normalized fields fall back to their release defaults.
-Memory suggestion fields and transcript persistence are copied without active runtime validation because those features are reserved.
+Transcript persistence remains copied without active runtime effect because it is reserved.
 
 ## Slice 2 fixed delivery and diagnostics bounds
 
@@ -71,19 +72,22 @@ Its deferred FIFO admits at most 4,096 notes and 1,000,000 UTF-8 bytes of raw no
 Each user-driven turn receives at most 64 KiB of formatted deferred advice, with remaining FIFO entries retained for later turns.
 An explicit `/advisor dump` receives at most 16 KiB of redacted diagnostic output.
 
-## Reserved defaults
+## Active and reserved defaults through Slice 2
 
-These approved contract values remain present in `AdvisorConfig` but have no runtime effect through Slice 2 Batch B:
+The following approved Memory suggestion values are active when Advisor is enabled and a compatible `memory_suggest` capability is active:
+
+- Memory suggestions are enabled by default in trusted in-memory configuration.
+- Memory suggestion cadence requires at least eight meaningful Executor turns and ten minutes between accepted suggestions.
+- The Memory suggestion session cap is five.
+- Proposed memory text is bounded to 1,000 characters and approximately 256 estimated tokens, with hard maxima of 4,000 characters and approximately 1,024 estimated tokens.
+
+The following approved contract values remain reserved and have no runtime effect through Slice 2:
 
 - Maximum re-prime tokens: 32,000, with a reserved hard maximum of 128,000.
-- Review cadence: at least one Executor turn and zero milliseconds between reviews.
+- Ordinary review cadence: at least one Executor turn and zero milliseconds between reviews.
 - Deferred advice retention: 24 hours.
-- Memory suggestions: the reserved `enabled` field defaults to true but has no runtime effect through Slice 2 Batch B.
-- Memory suggestion cadence: at least eight Executor turns and ten minutes.
-- Memory suggestion session cap: five.
-- Proposed memory bound: 1,000 characters and 256 estimated tokens, with reserved hard maxima of 4,000 characters and 1,024 estimated tokens.
 - Transcript persistence: disabled.
 
-The runtime through Slice 2 Batch B reviews every meaningful completed Executor turn without consulting the reserved cadence fields.
-It does not re-prime, expire in-memory deferred advice, compact Advisor context, emit Memory suggestions, or persist a transcript.
-Later slices must validate and implement these values before they can govern runtime behavior.
+The Slice 2 runtime reviews every meaningful completed Executor turn without consulting the reserved ordinary-review cadence fields.
+It does not re-prime, expire in-memory deferred advice, compact Advisor context, or persist a transcript.
+Later slices must implement the remaining reserved values before they can govern runtime behavior.

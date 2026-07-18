@@ -3,7 +3,7 @@
 `@ribbons-digital/pi-advisor` is an independent Pi extension for automatic, isolated secondary review of an Executor session.
 The implemented core observes meaningful completed Executor turns in the background, stays silent when work is sound, and delivers only bounded actionable notes.
 
-> Slice 2 Batch C status: the safe automatic core now also supports optional capability-detected Memory suggestions with strict safety, eligibility, priority, dedupe, cadence, cap, rendering, and delivery-time recheck policy, with in-memory configuration only.
+> Slice 2 status: the safe automatic core includes state-aware delivery, dedupe, themed presentation, bounded diagnostics, and optional capability-detected Memory suggestions with strict safety and delivery-time rechecks.
 > The installed default remains off and has no model selection until the durable WATCHDOG configuration and `/advisor configure` workflow arrive in a later approved slice.
 
 ## Not the same as rpiv-advisor
@@ -13,7 +13,7 @@ This package is designed for automatic background observation that does not depe
 Both packages register `/advisor`, and Pi 0.80.7 assigns `/advisor:1` and `/advisor:2` in extension load order when both are installed.
 Slice 1 does not add a collision warning, so users must identify the intended command from Pi's command list.
 
-## Implemented behavior through Slice 2 Batch C
+## Implemented behavior through Slice 2
 
 - One explicitly selected Advisor model, with no fallback to the Executor model.
 - Automatic review after meaningful completed Executor turns.
@@ -53,7 +53,7 @@ Slice 1 does not add a collision warning, so users must identify the intended co
 - Pi Advisor never imports Memory Lane, invokes `memory_save` or `memory_suggest`, writes memory storage, or approves a memory.
 - No product telemetry.
 
-Cross-exit lifecycle restoration, provider retry, context compaction, WATCHDOG files, and transcript persistence remain outside Batch C.
+Cross-exit lifecycle restoration, provider retry, context compaction, WATCHDOG files, and transcript persistence remain outside Slice 2.
 
 The normative public contract is in [`docs/behavior-contract.md`](docs/behavior-contract.md).
 The measured OMP parity position is tracked in [`docs/omp-parity.md`](docs/omp-parity.md).
@@ -63,6 +63,7 @@ The protected-path analysis is in [`docs/protected-path-threat-model.md`](docs/p
 Slice 2 Batch A implementation evidence is in [`docs/slice-2-batch-a.md`](docs/slice-2-batch-a.md).
 Slice 2 Batch B implementation evidence is in [`docs/slice-2-batch-b.md`](docs/slice-2-batch-b.md).
 Slice 2 Batch C implementation evidence is in [`docs/slice-2-batch-c.md`](docs/slice-2-batch-c.md).
+Full Slice 2 acceptance and closure evidence is in [`docs/slice-2-verification.md`](docs/slice-2-verification.md).
 
 ## Install the package locally
 
@@ -78,7 +79,7 @@ The package can also be loaded for one run:
 pi --no-extensions -e ./src/index.ts --no-session
 ```
 
-The installed default registers `/advisor` and `--advisor` but does not start a nested runtime because no model is durably configured through Slice 2 Batch C.
+The installed default registers `/advisor` and `--advisor` but does not start a nested runtime because no model is durably configured through Slice 2.
 The manifest remains deliberately private as an accidental-publication guard.
 An approved release change must remove that guard before the manual trusted-publishing workflow can publish.
 
@@ -112,12 +113,12 @@ export default createPiAdvisorExtension({ config });
 The model reference must use `provider/model` syntax and must resolve through Pi's model registry with valid credentials.
 Version 1 defaults to disabled, no model, `high` effort, all four read-only tools, empty review instructions, no additional protected paths, and no protected-path exceptions.
 The active configuration fields are `defaultEnabled`, `model`, `effort`, `tools`, `instructions`, all `context` fields, the note, turn, tool-call, pending-byte, token, and cost limits, and both `security` path lists.
-Slice 2 Batch C activates the existing in-memory `memorySuggestions` configuration.
+Slice 2 activates the existing in-memory `memorySuggestions` configuration.
 The release defaults require eight meaningful turns and ten minutes between accepted suggestions, cap one session at five suggestions, and bound proposed text to 1,000 characters and approximately 256 estimated tokens.
 The hard maxima are 4,000 characters and approximately 1,024 estimated tokens.
 Its 4,096-key dedupe history, 4,096-note and 1,000,000-byte deferred queue, and 64 KiB deferred delivery batch are fixed protocol bounds.
 A full deferred queue rejects newer advice, increments the suppressed-note count, and warns once per session.
-`maxReprimeTokens`, review cadence, deferred-advice retention, `persistence`, `AdvisorProjectConfig`, and `CONFIG_VALIDATION_STRATEGY` remain reserved and do not change Batch C runtime behavior.
+`maxReprimeTokens`, review cadence, deferred-advice retention, `persistence`, `AdvisorProjectConfig`, and `CONFIG_VALIDATION_STRATEGY` remain reserved and do not change Slice 2 runtime behavior.
 `DEFAULT_ADVISOR_CONFIG` is deeply frozen; clone it before editing configuration.
 `PROPOSED_ADVISOR_CONFIG` remains a deprecated compatibility alias containing an independent mutable clone of the canonical defaults.
 Programmatic hooks are intended for embedding and tests: `onRuntime` exposes the instance, `onStatus` receives status snapshots, and `onWarning` receives runtime warnings.
@@ -149,7 +150,7 @@ The factory, runtime hooks, status formatters, and policy helpers support contro
 
 ## Compatibility
 
-Development, compatibility evidence, and the automatic core through Slice 2 Batch C target `@earendil-works/pi-coding-agent` 0.80.7.
+Development, compatibility evidence, and the automatic core through Slice 2 target `@earendil-works/pi-coding-agent` 0.80.7.
 The peer range is `>=0.80.7 <0.81.0`, with 0.80.7 as the only tested version.
 The supported Pi host supplies the coding-agent and TUI peer packages; standalone runtime imports without those host peers are unsupported.
 A missing or unavailable configured Advisor model leaves Advisor inactive without fallback or partial nested runtime construction.
@@ -166,7 +167,7 @@ Results returned by Advisor's allowed read-only tools, including allowed file co
 The protected `grep` tool uses `rg` when available; without `rg`, explicit literal searches use a bounded in-process fallback while regex searches report that they are unavailable.
 Protected-path checks cover direct and symlink-resolved access, but neither path protection nor redaction can guarantee that every secret is excluded.
 Automatic review creates additional provider usage and cost, bounded by configured session governors and the active package hard maxima for notes, turns, tool calls, and pending bytes.
-Advisor transcript persistence remains disabled and unimplemented in Slice 2 Batch C.
+Advisor transcript persistence remains disabled and unimplemented in Slice 2.
 
 ## Telemetry
 
