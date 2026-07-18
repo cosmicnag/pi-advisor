@@ -68,7 +68,9 @@ Theme verification was therefore completed by restarting the isolated fixture wi
 ## Deviations and unresolved risks
 
 The user explicitly waived the specification's Claude Fable 5 closure review and required no Claude review.
-Code review is therefore limited to the author's specification comparison, automated verification, GitHub CI, and CodeRabbit on the closure PR.
+Code review is therefore limited to the author's specification comparison, automated verification, GitHub CI, and the CodeRabbit closure-PR gate.
+GitHub CI passed, and the CodeRabbit status check passed, but CodeRabbit reported a temporary fair-usage limit instead of producing a substantive review.
+No CodeRabbit findings were available to resolve, and a new review can be requested after the reported cooldown.
 
 Pi 0.80.7 exposes no public multi-select dialog, so the approved tool editor remains a repeated single-select toggle picker followed by Done.
 Advanced policy remains YAML-edited, while `/advisor configure` covers model, effort, tools, and instructions as specified.
