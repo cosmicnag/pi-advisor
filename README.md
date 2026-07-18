@@ -134,9 +134,6 @@ Advice created during an active run reaches Pi's next steering boundary and does
 Late or interruption-time advice waits for the next user-driven turn without triggering another completion.
 Advice is marked potentially stale when the Executor has advanced beyond the reviewed window, and restored advice requires fresh verification.
 
-The detailed normative behavior is documented in the [public behavior contract](docs/behavior-contract.md).
-Intentional differences from OMP are documented in the [OMP parity matrix](docs/omp-parity.md).
-
 ## Security, privacy, and cost
 
 When Advisor is active, the selected model provider may receive bounded versions of:
@@ -195,9 +192,7 @@ Pi Advisor intentionally:
 ## Public documentation
 
 - [Configuration reference](docs/configuration.md)
-- [Behavior contract](docs/behavior-contract.md)
 - [Security](docs/security.md)
-- [OMP parity matrix](docs/omp-parity.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
 
 ## Attribution

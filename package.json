@@ -38,9 +38,7 @@
 		"README.md",
 		"LICENSE",
 		"THIRD_PARTY_NOTICES.md",
-		"docs/behavior-contract.md",
 		"docs/configuration.md",
-		"docs/omp-parity.md",
 		"docs/security.md"
 	],
 	"pi": {

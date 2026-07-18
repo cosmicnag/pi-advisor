@@ -71,9 +71,7 @@ const required = [
 	"THIRD_PARTY_NOTICES.md",
 	"package.json",
 	"src/index.ts",
-	"docs/behavior-contract.md",
 	"docs/configuration.md",
-	"docs/omp-parity.md",
 	"docs/security.md",
 ];
 for (const path of required) {

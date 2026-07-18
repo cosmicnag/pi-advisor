@@ -15,9 +15,7 @@ const readme = readFileSync("README.md", "utf8");
 const publicDocs = [
 	"README.md",
 	"THIRD_PARTY_NOTICES.md",
-	"docs/behavior-contract.md",
 	"docs/configuration.md",
-	"docs/omp-parity.md",
 	"docs/security.md",
 ].map((path) => ({ path, content: readFileSync(path, "utf8") }));
 
@@ -37,9 +35,7 @@ describe("initial public release surface", () => {
 			"README.md",
 			"LICENSE",
 			"THIRD_PARTY_NOTICES.md",
-			"docs/behavior-contract.md",
 			"docs/configuration.md",
-			"docs/omp-parity.md",
 			"docs/security.md",
 		]);
 	});
