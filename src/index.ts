@@ -5,7 +5,13 @@ import {
 	type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 
-import { DEFAULT_ADVISOR_CONFIG, normalizeAdvisorConfig, type AdvisorConfig } from "./config.js";
+import {
+	DEFAULT_ADVISOR_CONFIG,
+	normalizeAdvisorConfig,
+	READ_ONLY_TOOL_NAMES,
+	type AdvisorConfig,
+	type ReadOnlyToolName,
+} from "./config.js";
 import {
 	loadAdvisorConfiguration,
 	saveUserConfigurationAtomic,
@@ -39,8 +45,12 @@ function publishConfigurationWarnings(
 	for (const warning of warnings) ctx.ui.notify(warning.message, "warning");
 }
 
+export const CONFIGURATION_REFERENCE =
+	"docs/configuration.md (https://github.com/ribbons-digital/pi-advisor/blob/main/docs/configuration.md)";
+
 export async function pickAdvisorModelAndEffort(
 	ctx: Pick<ExtensionCommandContext, "modelRegistry" | "ui">,
+	current?: Pick<AdvisorConfig, "model" | "effort">,
 ): Promise<{ model: string; effort: AdvisorConfig["effort"] } | undefined> {
 	const models = [
 		...new Set(
@@ -57,9 +67,14 @@ export async function pickAdvisorModelAndEffort(
 		);
 		return undefined;
 	}
-	const model = await ctx.ui.select("Select Advisor model", models);
+	const currentModel = current?.model;
+	const modelOptions =
+		currentModel !== undefined && models.includes(currentModel)
+			? [currentModel, ...models.filter((candidate) => candidate !== currentModel)]
+			: models;
+	const model = await ctx.ui.select("Select Advisor model", modelOptions);
 	if (model === undefined) return undefined;
-	const effort = await ctx.ui.select("Select Advisor reasoning level", [
+	const effortOptions: AdvisorConfig["effort"][] = [
 		"off",
 		"minimal",
 		"low",
@@ -67,19 +82,79 @@ export async function pickAdvisorModelAndEffort(
 		"high",
 		"xhigh",
 		"max",
-	]);
+	];
+	if (current !== undefined) {
+		const index = effortOptions.indexOf(current.effort);
+		if (index > 0) effortOptions.unshift(...effortOptions.splice(index, 1));
+	}
+	const effort = await ctx.ui.select("Select Advisor reasoning level", effortOptions);
 	if (effort === undefined) return undefined;
 	return { model, effort: effort as AdvisorConfig["effort"] };
 }
 
-async function configureAdvisor(
+const TOOL_DESCRIPTIONS: Record<ReadOnlyToolName, string> = {
+	read: "read files",
+	grep: "search file contents",
+	find: "find files by pattern",
+	ls: "list directories",
+};
+
+export async function pickAdvisorTools(
+	ctx: Pick<ExtensionCommandContext, "ui">,
+	currentTools: readonly ReadOnlyToolName[],
+): Promise<ReadOnlyToolName[] | undefined> {
+	const selected = new Set(currentTools);
+	for (;;) {
+		const choices = [
+			...READ_ONLY_TOOL_NAMES.map(
+				(name) => `${selected.has(name) ? "[x]" : "[ ]"} ${name} - ${TOOL_DESCRIPTIONS[name]}`,
+			),
+			`Done - use ${String(selected.size)} read-only tool${selected.size === 1 ? "" : "s"}`,
+		];
+		const choice = await ctx.ui.select(
+			"Select Advisor tools (toggle an approved read-only tool, then choose Done)",
+			choices,
+		);
+		if (choice === undefined) return undefined;
+		if (choice.startsWith("Done -")) {
+			return READ_ONLY_TOOL_NAMES.filter((name) => selected.has(name));
+		}
+		const tool = READ_ONLY_TOOL_NAMES.find((name) => choice.includes(` ${name} - `));
+		if (tool === undefined) continue;
+		if (selected.has(tool)) selected.delete(tool);
+		else selected.add(tool);
+	}
+}
+
+export async function pickAdvisorInteractiveConfiguration(
+	ctx: Pick<ExtensionCommandContext, "modelRegistry" | "ui">,
+	current: AdvisorConfig,
+): Promise<AdvisorConfig | undefined> {
+	const modelAndEffort = await pickAdvisorModelAndEffort(ctx, current);
+	if (modelAndEffort === undefined) return undefined;
+	const tools = await pickAdvisorTools(ctx, current.tools);
+	if (tools === undefined) return undefined;
+	const instructions = await ctx.ui.editor(
+		"Edit User Advisor instructions (fixed safety policy always remains authoritative)",
+		current.instructions,
+	);
+	if (instructions === undefined) return undefined;
+	return normalizeAdvisorConfig({
+		...structuredClone(current),
+		...modelAndEffort,
+		tools,
+		instructions,
+	});
+}
+
+export async function configureAdvisor(
 	ctx: ExtensionCommandContext,
 	runtime: AdvisorRuntime,
 	fallbackUserConfig: AdvisorConfig,
 ): Promise<void> {
 	if (!ctx.hasUI) {
 		ctx.ui.notify(
-			"/advisor configure requires a dialog-capable TUI or RPC client. See README.md for WATCHDOG configuration paths.",
+			`/advisor configure requires a dialog-capable TUI or RPC client. See ${CONFIGURATION_REFERENCE}.`,
 			"info",
 		);
 		return;
@@ -91,19 +166,23 @@ async function configureAdvisor(
 		fallbackUserConfig,
 	});
 	publishConfigurationWarnings(ctx, loaded.warnings);
-	const selection = await pickAdvisorModelAndEffort(ctx);
-	if (selection === undefined) return;
+	const nextUserConfig = await pickAdvisorInteractiveConfiguration(ctx, loaded.userConfig);
+	if (nextUserConfig === undefined) return;
+	const selectedModel = nextUserConfig.model;
+	if (selectedModel === undefined) return;
 	const confirmed = await ctx.ui.confirm(
 		"Apply Advisor configuration?",
-		`Model: ${selection.model}\nReasoning: ${selection.effort}\n\nSave atomically to ${loaded.paths.userYaml} and rebuild this session now?`,
+		[
+			`Model: ${selectedModel}`,
+			`Reasoning: ${nextUserConfig.effort}`,
+			`Read-only tools: ${nextUserConfig.tools.join(", ") || "none"}`,
+			`Instructions: ${nextUserConfig.instructions.trim().length === 0 ? "none" : "edited"}`,
+			"",
+			`Save atomically to ${loaded.paths.userYaml} and rebuild this session now?`,
+			`Reference: ${CONFIGURATION_REFERENCE}`,
+		].join("\n"),
 	);
 	if (!confirmed) return;
-
-	const nextUserConfig = normalizeAdvisorConfig({
-		...loaded.userConfig,
-		model: selection.model,
-		effort: selection.effort,
-	});
 	try {
 		await saveUserConfigurationAtomic(loaded.paths.userYaml, nextUserConfig);
 	} catch {
@@ -122,8 +201,15 @@ async function configureAdvisor(
 	publishConfigurationWarnings(ctx, applied.warnings);
 	await runtime.applyConfiguration(applied.effectiveConfig, ctx, applied.projectInstructions);
 	ctx.ui.notify(
-		`Advisor configuration saved and applied. Model: ${selection.model}; reasoning: ${selection.effort}. External WATCHDOG edits require /reload or another /advisor configure apply.`,
+		`Advisor configuration saved and applied. Model: ${selectedModel}; reasoning: ${nextUserConfig.effort}; tools: ${nextUserConfig.tools.join(", ") || "none"}. External WATCHDOG edits require /reload or another /advisor configure apply. Reference: ${CONFIGURATION_REFERENCE}.`,
 		"info",
+	);
+}
+
+export function hasAdvisorCommandCollision(commands: readonly { name: string }[]): boolean {
+	return (
+		commands.filter((command) => command.name === "advisor" || /^advisor:\d+$/u.test(command.name))
+			.length > 1
 	);
 }
 
@@ -143,6 +229,7 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 	pi.registerMessageRenderer(ADVISOR_CUSTOM_TYPE, renderAdviceMessage);
 	pi.registerEntryRenderer(ADVISOR_LATE_ENTRY_TYPE, renderLateAdviceEntry);
 
+	let coexistenceWarningPublished = false;
 	pi.registerCommand("advisor", {
 		description: "Control automatic Advisor review: configure, on, off, status, dump",
 		handler: async (args, ctx) => {
@@ -182,6 +269,13 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		if (!coexistenceWarningPublished && ctx.hasUI && hasAdvisorCommandCollision(pi.getCommands())) {
+			coexistenceWarningPublished = true;
+			ctx.ui.notify(
+				"Multiple /advisor commands are installed. Pi assigned suffixed names such as /advisor:1 and /advisor:2. Pi Advisor will coexist without changing the other package; use the command list to choose one, or disable one package.",
+				"warning",
+			);
+		}
 		let configuredDefault = fallbackUserConfig.defaultEnabled;
 		try {
 			const loaded = await loadAdvisorConfiguration({

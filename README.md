@@ -3,7 +3,7 @@
 `@ribbons-digital/pi-advisor` is an independent Pi extension for automatic, isolated secondary review of an Executor session.
 The implemented core observes meaningful completed Executor turns in the background, stays silent when work is sound, and delivers only bounded actionable notes.
 
-> Slice 5A adds versioned WATCHDOG YAML validation, trusted Project narrowing, bounded WATCHDOG Markdown instructions, atomic User saves, immediate runtime rebuild, and a Pi-native model and reasoning picker.
+> Slice 5 completes durable WATCHDOG configuration, the model, reasoning, read-only tool, and instruction editor, public configuration documentation, coexistence warning, and publishable package metadata.
 > The installed release default remains off with no implicit model selection.
 
 ## Not the same as rpiv-advisor
@@ -11,9 +11,10 @@ The implemented core observes meaningful completed Executor turns in the backgro
 [`@juicesharp/rpiv-advisor`](https://www.npmjs.com/package/@juicesharp/rpiv-advisor) provides an Executor-invoked consultation tool.
 This package is designed for automatic background observation that does not depend on the Executor remembering to request a review.
 Both packages register `/advisor`, and Pi 0.80.7 assigns `/advisor:1` and `/advisor:2` in extension load order when both are installed.
-Slice 1 does not add a collision warning, so users must identify the intended command from Pi's command list.
+Pi Advisor warns once when duplicate assigned commands are detectable, coexists without changing the other package, and leaves selection to the user.
+Use Pi's command list to identify each suffix, and disable or uninstall one package unless both automatic and Executor-invoked review styles and their costs are intentional.
 
-## Implemented behavior through Slice 5A
+## Implemented behavior through Slice 5
 
 - One explicitly selected Advisor model, with no fallback to the Executor model.
 - Automatic review after meaningful completed Executor turns.
@@ -70,7 +71,7 @@ Slice 1 does not add a collision warning, so users must identify the intended co
 - No product telemetry.
 
 Bounded branch re-prime, unsafe-snapshot pause behavior, complete accounting, and optional private transcript records are implemented through Slice 4B.
-Slice 5A adds durable configuration loading and the model and reasoning picker while keeping tool and instruction editing UI in the later Slice 5 batch.
+Slice 5 adds durable configuration loading plus model, reasoning, approved read-only tool, and multiline User-instruction editing.
 
 The normative public contract is in [`docs/behavior-contract.md`](docs/behavior-contract.md).
 The measured OMP parity position is tracked in [`docs/omp-parity.md`](docs/omp-parity.md).
@@ -88,6 +89,8 @@ Slice 4A context-policy and compaction evidence is in [`docs/slice-4a.md`](docs/
 Slice 4B re-prime, accounting, persistence, and long-session evidence is in [`docs/slice-4b.md`](docs/slice-4b.md).
 Full Slice 4 acceptance and closure evidence is in [`docs/slice-4-verification.md`](docs/slice-4-verification.md).
 Slice 5A WATCHDOG configuration and runtime-apply evidence is in [`docs/slice-5a.md`](docs/slice-5a.md).
+Slice 5B public configuration and package UX evidence is in [`docs/slice-5b.md`](docs/slice-5b.md).
+The complete field and ownership reference is in [`docs/configuration.md`](docs/configuration.md).
 
 ## Install the package locally
 
@@ -97,6 +100,12 @@ From this repository:
 pi install /absolute/path/to/pi-advisor
 ```
 
+Install the public package through Pi with:
+
+```sh
+pi install npm:@ribbons-digital/pi-advisor
+```
+
 The package can also be loaded for one run:
 
 ```sh
@@ -104,12 +113,13 @@ pi --no-extensions -e ./src/index.ts --no-session
 ```
 
 The installed default registers `/advisor` and `--advisor` but does not start a nested runtime until the user explicitly configures a model.
-The manifest remains deliberately private as an accidental-publication guard.
-An approved release change must remove that guard before the manual trusted-publishing workflow can publish.
+The publishable manifest is protected by an approval-gated GitHub Actions environment and an explicit matching version tag.
+Ordinary merges to `main` never publish.
 
 ## Session controls
 
-- `/advisor` or `/advisor configure` opens the model and reasoning-level picker in a dialog-capable TUI or RPC client, asks for confirmation, atomically saves User configuration, and rebuilds the current runtime without restarting Pi.
+- `/advisor` or `/advisor configure` opens model, reasoning-level, approved read-only tool, and multiline User-instruction editors in a dialog-capable TUI or RPC client, asks for one confirmation, atomically saves User configuration, and rebuilds the current runtime without restarting Pi.
+  Non-dialog clients point to [`docs/configuration.md`](docs/configuration.md) instead of opening a partial editor.
 - `/advisor on` enables review for the current session when the configured `provider/model` is available and authenticated.
 - `/advisor off` disables review, invalidates in-flight work, clears the bounded transcript backlog, pending advice, and dedupe history, and disposes the nested session.
 - `/advisor status` reports activation, model, queued transcript and retry backlog, context maintenance, input/output/cache/total tokens, reported cost, review requests and outcomes, retry attempts, stale nested-queue discards, delivery, suppression, persistence, Memory suggestion capability and governors, pause, and last-failure state.
@@ -149,7 +159,9 @@ Persisted `defaultEnabled: true` activates new TUI and RPC sessions only.
 JSON and print modes remain opt-in through `--advisor` or `/advisor on` in a long-lived session.
 User saves use a same-directory temporary file and atomic rename, so a failed save leaves the prior valid file active.
 A confirmed apply invalidates old in-flight output, rebuilds tools and policy immediately, preserves delivered-note and aggregate usage totals, and prepares one bounded current-branch re-prime for the next review update.
-The initial Slice 5A picker changes only model and reasoning level in dialog-capable TUI or RPC clients; read-only tool and instruction editing UI remains in the next Slice 5 batch.
+The interactive editor can select only `read`, `grep`, `find`, and `ls`, and cancellation leaves configuration unchanged.
+Protected paths, activation, limits, Memory suggestions, and persistence remain explicit YAML fields.
+See the [complete configuration reference](docs/configuration.md) for every field, default, scope, effect, ownership rule, warning, persistence record, retention rule, and example.
 
 An embedding extension or SDK host can still provide one complete trusted `AdvisorConfig` object as the fallback when no User file exists:
 
@@ -209,7 +221,7 @@ The factory, runtime hooks, status formatters, configuration helpers, and policy
 
 ## Compatibility
 
-Development, compatibility evidence, and the automatic core through Slice 5A target `@earendil-works/pi-coding-agent` 0.80.7.
+Development, compatibility evidence, and the automatic core through Slice 5 target `@earendil-works/pi-coding-agent` 0.80.7.
 The peer range is `>=0.80.7 <0.81.0`, with 0.80.7 as the only tested version.
 The supported Pi host supplies the coding-agent and TUI peer packages; standalone runtime imports without those host peers are unsupported.
 A missing or unavailable configured Advisor model leaves Advisor inactive without fallback or partial nested runtime construction.
@@ -262,8 +274,8 @@ Package installation commands in this repository use the project-required `sfw p
 
 ## Attribution
 
-Pi Advisor is inspired by OMP's automatic Advisor design and is not affiliated with OMP.
-`@juicesharp/rpiv-advisor` is credited for comparison and for any implementation pattern that is directly adapted in the future.
+Pi Advisor is an independently implemented extension inspired by OMP's automatic Advisor design and is not affiliated with, endorsed by, or maintained by OMP.
+`@juicesharp/rpiv-advisor` is credited for product comparison and coexistence analysis; no source from that package is included through Slice 5.
 See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 ## License
