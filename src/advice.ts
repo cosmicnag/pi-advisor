@@ -193,11 +193,18 @@ export class BoundedAdviceDedupe {
 		this.keys.clear();
 	}
 
-	exportNewestKeys(maximum: number): string[] {
+	exportNewestKeys(maximum: number, excludedKeys: ReadonlySet<string> = new Set()): string[] {
 		if (!Number.isInteger(maximum) || maximum < 0) {
 			throw new RangeError("Advice dedupe export bound must be a non-negative integer");
 		}
-		return [...this.keys].slice(-maximum);
+		if (maximum === 0) return [];
+		const newest: string[] = [];
+		for (const key of [...this.keys].reverse()) {
+			if (excludedKeys.has(key)) continue;
+			newest.push(key);
+			if (newest.length === maximum) break;
+		}
+		return newest.reverse();
 	}
 
 	restoreKeys(keys: readonly string[]): void {

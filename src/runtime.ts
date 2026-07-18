@@ -466,6 +466,7 @@ export class AdvisorRuntime {
 
 	getStatus(): AdvisorRuntimeStatus {
 		this.refreshMemorySuggestionCapability();
+		this.refreshDeferredAdviceStatus();
 		return structuredClone(this.status);
 	}
 
@@ -569,7 +570,8 @@ export class AdvisorRuntime {
 		const discardedIdentities = new Set<string>();
 		for (const persisted of state.deferredAdvice) {
 			const identity = deferredAdviceIdentity(persisted);
-			const unexpired = retentionMs > 0 && now - persisted.advice.createdAt <= retentionMs;
+			const age = now - persisted.advice.createdAt;
+			const unexpired = retentionMs > 0 && age >= 0 && age <= retentionMs;
 			if (!unexpired || !cursorMatches(branch, persisted.branchWindow)) {
 				discardedIdentities.add(identity);
 				continue;
@@ -642,9 +644,10 @@ export class AdvisorRuntime {
 			savedAt: Date.now(),
 			cursor: { ...this.cursor },
 			deferredAdvice,
-			dedupeHashes: this.adviceDedupe
-				.exportNewestKeys(MAX_PERSISTED_DEDUPE_HASHES)
-				.filter((hash) => !transientIdentities.has(hash)),
+			dedupeHashes: this.adviceDedupe.exportNewestKeys(
+				MAX_PERSISTED_DEDUPE_HASHES,
+				transientIdentities,
+			),
 			memorySuggestions: {
 				meaningfulTurnCount: this.meaningfulTurnCount,
 				admittedCount: this.memorySuggestionAdmissions,

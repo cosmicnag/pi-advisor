@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { defineTool, SessionManager, type InlineExtension } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
 	ADVISOR_RUNTIME_STATE_ENTRY_TYPE,
@@ -17,6 +17,7 @@ import {
 	formatAdvisorStatus,
 	MAX_PERSISTED_DEDUPE_HASHES,
 	type AcceptedAdvice,
+	type BoundedAdviceDedupe,
 	type AdvisorConfig,
 	type AdvisorRuntime,
 	type PersistedAdvisorRuntimeState,
@@ -201,6 +202,7 @@ describe.sequential("Slice 3A branch, compaction, and persistence lifecycle", ()
 			expect(manager.getBranch()).toHaveLength(originalBranch.length);
 
 			barrier.release();
+			await waitFor(() => advisor.activeRequests === 0);
 			await waitFor(() => runtime?.getStatus().branchResets === 1);
 			expect(runtime?.getStatus()).toMatchObject({ notesDelivered: 0, deferredNotesPending: 0 });
 			expect(JSON.stringify(manager.buildSessionContext())).not.toContain(oldNote);
@@ -246,8 +248,10 @@ describe.sequential("Slice 3A branch, compaction, and persistence lifecycle", ()
 			await harness.session.compact("use the scripted compacted view");
 			await waitFor(() => runtime?.getStatus().branchResets === 1);
 			barrier.release();
+			await waitFor(() => advisor.activeRequests === 0);
 			await harness.session.prompt("continue only from the compacted branch");
 			await waitFor(() => advisor.requests.length === 2);
+			await waitFor(() => advisor.activeRequests === 0);
 			const nextAdvisorContext = JSON.stringify(advisor.requests[1]?.context.messages);
 			expect(nextAdvisorContext).toContain("NEW-TRANSCRIPT-VIEW");
 			expect(nextAdvisorContext).not.toContain("OLD-TRANSCRIPT-VIEW");
@@ -284,6 +288,7 @@ describe.sequential("Slice 3A branch, compaction, and persistence lifecycle", ()
 			await harness.session.navigateTree(target.id, { summarize: false });
 			await waitFor(() => runtime?.getStatus().branchResets === 1);
 			barrier.release();
+			await waitFor(() => advisor.activeRequests === 0);
 			expect(runtime?.getStatus()).toMatchObject({ notesDelivered: 0, deferredNotesPending: 0 });
 			expect(JSON.stringify(harness.sessionManager.buildSessionContext())).not.toContain(
 				invalidated,
@@ -368,6 +373,48 @@ describe.sequential("Slice 3A branch, compaction, and persistence lifecycle", ()
 			).toEqual([]);
 		} finally {
 			await harness.dispose();
+		}
+	});
+
+	it("refreshes deferred-advice age on every status read", async () => {
+		const now = 1_800_000_000_000;
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.setSystemTime(now);
+		const manager = SessionManager.inMemory();
+		const window = cursorAtTail(manager.getBranch());
+		const advice = reviewAdvice("Report fresh deferred-advice age.", now - 1_000);
+		appendState(
+			manager,
+			persistedState(manager, {
+				deferredAdvice: [
+					{
+						advice,
+						stale: false,
+						branchWindow: window,
+						displayedInEntry: false,
+					},
+				],
+			}),
+		);
+		const primary = createPrimaryProvider([]);
+		const advisor = createAdvisorProvider([]);
+		let runtime: AdvisorRuntime | undefined;
+		let harness: Awaited<ReturnType<typeof createSessionHarness>> | undefined;
+		try {
+			harness = await createSessionHarness({
+				provider: primary,
+				advisorProvider: advisor,
+				sessionManager: manager,
+				extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+				tools: [],
+				mode: "rpc",
+			});
+			expect(runtime?.getStatus().oldestDeferredAdviceAgeMs).toBe(1_000);
+			vi.setSystemTime(now + 4_000);
+			expect(runtime?.getStatus().oldestDeferredAdviceAgeMs).toBe(5_000);
+		} finally {
+			await harness?.dispose();
+			vi.useRealTimers();
 		}
 	});
 
@@ -618,7 +665,7 @@ describe.sequential("Slice 3A branch, compaction, and persistence lifecycle", ()
 		}
 	});
 
-	it("retention zero, expiry, and incompatible branch windows discard deferred notes", async () => {
+	it("retention zero, expiry, future timestamps, and incompatible branches discard deferred notes", async () => {
 		const cases = [
 			{
 				label: "retention zero",
@@ -630,6 +677,12 @@ describe.sequential("Slice 3A branch, compaction, and persistence lifecycle", ()
 				label: "expired",
 				retentionHours: 1,
 				createdAt: Date.now() - 2 * 60 * 60 * 1_000,
+				window: undefined,
+			},
+			{
+				label: "future-created",
+				retentionHours: 24,
+				createdAt: Date.now() + 60 * 60 * 1_000,
 				window: undefined,
 			},
 			{
@@ -685,6 +738,71 @@ describe.sequential("Slice 3A branch, compaction, and persistence lifecycle", ()
 			} finally {
 				await harness.dispose();
 			}
+		}
+	});
+
+	it("persists the full newest eligible dedupe bound when newer identities are transient", async () => {
+		const manager = SessionManager.inMemory();
+		const primary = createPrimaryProvider([]);
+		const advisor = createAdvisorProvider([]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			sessionManager: manager,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			if (runtime === undefined) throw new Error("Expected persisted dedupe fixture runtime");
+			const activeRuntime = runtime;
+			const dedupe = Reflect.get(activeRuntime, "adviceDedupe") as BoundedAdviceDedupe;
+			const notes = Array.from({ length: MAX_PERSISTED_DEDUPE_HASHES + 4 }, (_, index) =>
+				reviewAdvice(`Persisted dedupe fixture ${String(index)}.`),
+			);
+			for (const note of notes) dedupe.add(note);
+			const allKeys = notes.map((note) => adviceDedupeKey(note));
+			const transientKeys = allKeys.slice(-4);
+			const pendingAdvice = Reflect.get(activeRuntime, "pendingAdvice") as {
+				enqueue(
+					key: string,
+					value: {
+						advice: AcceptedAdvice;
+						stale: boolean;
+						branchWindow: ReturnType<typeof cursorAtTail>;
+						displayedInEntry: boolean;
+					},
+					bytes: number,
+				): "accepted" | "duplicate" | "capacity";
+			};
+			const branchWindow = cursorAtTail(manager.getBranch());
+			for (const note of notes.slice(-4)) {
+				expect(
+					pendingAdvice.enqueue(
+						adviceDedupeKey(note),
+						{ advice: note, stale: false, branchWindow, displayedInEntry: false },
+						Buffer.byteLength(note.note, "utf8"),
+					),
+				).toBe("accepted");
+			}
+			const persistState = Reflect.get(activeRuntime, "persistState") as () => void;
+			persistState.call(activeRuntime);
+			const latest = [...manager.getBranch()]
+				.reverse()
+				.find(
+					(entry) =>
+						entry.type === "custom" && entry.customType === ADVISOR_RUNTIME_STATE_ENTRY_TYPE,
+				);
+			if (latest?.type !== "custom") throw new Error("Expected persisted dedupe state");
+			const persisted = latest.data as PersistedAdvisorRuntimeState;
+			expect(persisted.dedupeHashes).toHaveLength(MAX_PERSISTED_DEDUPE_HASHES);
+			expect(persisted.dedupeHashes).toEqual(allKeys.slice(0, MAX_PERSISTED_DEDUPE_HASHES));
+			for (const transient of transientKeys) {
+				expect(persisted.dedupeHashes).not.toContain(transient);
+			}
+		} finally {
+			await harness.dispose();
 		}
 	});
 

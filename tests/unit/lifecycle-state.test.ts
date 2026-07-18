@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
 	ADVISOR_RUNTIME_STATE_VERSION,
+	adviceDedupeKey,
 	BoundedAdviceDedupe,
 	cursorAtTail,
 	MAX_PERSISTED_DEDUPE_HASHES,
@@ -127,18 +128,32 @@ describe("Slice 3A lifecycle state primitives", () => {
 		const dedupe = new BoundedAdviceDedupe(4);
 		const notes = ["one", "two", "three", "four"].map(advice);
 		for (const note of notes) dedupe.add(note);
+		const first = notes[0];
+		const second = notes[1];
+		const third = notes[2];
+		const fourth = notes[3];
+		if (
+			first === undefined ||
+			second === undefined ||
+			third === undefined ||
+			fourth === undefined
+		) {
+			throw new Error("Expected all dedupe fixtures");
+		}
+		expect(dedupe.exportNewestKeys(0)).toEqual([]);
+		expect(() => dedupe.exportNewestKeys(-1)).toThrow(RangeError);
+		expect(() => dedupe.exportNewestKeys(1.5)).toThrow(RangeError);
 		const newest = dedupe.exportNewestKeys(2);
 		expect(newest).toHaveLength(2);
+		const fourthKey = adviceDedupeKey(fourth);
+		expect(dedupe.exportNewestKeys(2, new Set([fourthKey]))).toEqual([
+			adviceDedupeKey(second),
+			adviceDedupeKey(third),
+		]);
 
 		const restored = new BoundedAdviceDedupe(4);
 		restored.restoreKeys(["invalid", ...newest, ...newest]);
 		expect(restored.size).toBe(2);
-		const first = notes[0];
-		const third = notes[2];
-		const fourth = notes[3];
-		if (first === undefined || third === undefined || fourth === undefined) {
-			throw new Error("Expected all dedupe fixtures");
-		}
 		expect(restored.has(first)).toBe(false);
 		expect(restored.has(third)).toBe(true);
 		expect(restored.has(fourth)).toBe(true);

@@ -76,7 +76,7 @@ No runtime path decrements admissions.
 The 4 MiB loop trims only the copied `state.deferredAdvice` tail and does not mutate the in-memory queue, `admittedCount`, or `deliveredCount`, so trimming can conservatively retain admissions for notes omitted from disk but cannot invert the accounting inequality.
 
 A targeted regression seeds a reachable accounting shape with 490 admitted Memory suggestions, one already delivered and 489 still deferred, whose escaped JSON exceeds 4 MiB, then forces persistence trimming and resumes from the resulting snapshot.
-It proves that the tail is trimmed, serialized state remains within 4 MiB, persisted counts remain `admittedCount: 490` and `deliveredCount: 1`, and resume restores one delivered count, 510 remaining admissions under a 1,000 cap, and the retained deferred prefix.
+It proves that the tail is trimmed, serialized state remains within 4 MiB, persisted counts remain `admittedCount: 490` and `deliveredCount: 1`, and resume preserves the delivered count and retained deferred prefix with 510 remaining admission capacity under the 1,000 suggestion cap.
 The unit parser also explicitly rejects a synthetic `deliveredCount: 1, admittedCount: 0` snapshot.
 No production clamp was added because it would mask an unreachable internal accounting violation and under-report delivered Memory suggestions rather than repair a trim defect.
 
@@ -85,6 +85,17 @@ No production clamp was added because it would mask an unreachable internal acco
 README, the public behavior contract, and this evidence now distinguish non-context Pi session custom entries from file persistence.
 They state that file-backed sessions write successful appends to their JSONL, in-memory sessions have no JSONL, and append failures do not affect Advisor delivery.
 
+## CodeRabbit review response
+
+Persisted dedupe export now treats a zero bound as empty and excludes active or deferred transient identities before selecting the newest 128 eligible hashes, preserving insertion order and the full eligible bound.
+Compatible restore rejects future-created deferred notes as well as expired notes.
+Status reads refresh queue-derived deferred counts and age immediately before cloning.
+Lifecycle barrier fixtures wait for old Advisor requests to settle after release before making final assertions.
+
+The suggested use of persisted `memorySuggestions.sessionCapReached` as a latched runtime flag was intentionally declined.
+Unchanged-cap restoration already works through `admittedCount`.
+Keeping a session capped after the user raises its configured cap would introduce a product decision and undefined reset semantics outside Slice 3A, rather than provide a safe persistence correction.
+
 ## Verification
 
 Final validation commands and results:
@@ -92,10 +103,11 @@ Final validation commands and results:
 - `pnpm typecheck` - pass.
 - `pnpm lint` - pass.
 - `pnpm format:check` - pass.
-- `pnpm test` - pass; 142 tests across 15 unit, contract, and integration files after review response.
+- `pnpm test` - pass; 144 tests across 15 unit, contract, and integration files after CodeRabbit fixes.
 - `pnpm test:e2e` - pass; packed Pi 0.80.7 installation and startup.
 - `pnpm pack:validate` - pass; 26 package files validated and generated artifacts removed.
-- `pnpm exec vitest run tests/unit/lifecycle-state.test.ts tests/integration/lifecycle-resilience.test.ts --reporter=verbose` - pass; 14 targeted persistence invariant and lifecycle tests across 2 files.
+- `pnpm exec vitest run tests/unit/lifecycle-state.test.ts tests/integration/lifecycle-resilience.test.ts --reporter=verbose` - pass; 16 targeted persistence invariant and lifecycle tests across 2 files.
+- `for run in 1 2 3; do pnpm exec vitest run tests/integration/lifecycle-resilience.test.ts -t 'equal-length branch switch|compaction reset|tree navigation reset' --reporter=dot; done` - pass; all 3 lifecycle barrier tests passed in each of 3 repetitions.
 - `pnpm exec vitest run tests/unit/lifecycle-state.test.ts tests/integration/lifecycle-spikes.test.ts tests/integration/lifecycle-resilience.test.ts tests/integration/session-replacement-spike.test.ts tests/integration/advisor-safety.test.ts tests/integration/memory-suggestions.test.ts --reporter=dot` - pass before review response; 89 focused branch, compaction, replacement, resume, dedupe, and Memory lifecycle tests across 6 files.
 - `pnpm exec tsx /tmp/pi-advisor-manual-smoke.mts` - pass; manual public `SessionManager` tree mismatch and compatible-resume state smoke printed `PASS manual tree-navigation and compatible-resume state smoke` and removed its temporary file.
 - `git diff --check` - pass.
