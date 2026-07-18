@@ -6,10 +6,14 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import { normalizeMemoryTextForDedupe } from "./advice.js";
+import { HARD_LIMITS } from "./config.js";
 import { redactSecrets, truncateUtf8TailBytes } from "./redaction.js";
 
 export const ADVISOR_CUSTOM_TYPE = "pi-advisor-note";
 const UPDATE_TRUNCATION_MARKER = "[Older Advisor update content truncated to configured limit]\n";
+const MAX_MEMORY_TOOL_CANDIDATE_ITEMS = 4_096;
+const MAX_MEMORY_TOOL_CANDIDATE_BYTES = HARD_LIMITS.maxPendingTranscriptBytes;
+const MAX_MEMORY_TOOL_TEXT_INPUT_UTF16_UNITS = HARD_LIMITS.maxProposedMemoryCharacters * 2;
 
 export interface AdvisorCursor {
 	lastEntryId?: string;
@@ -123,45 +127,96 @@ export function successfulMemoryToolTexts(
 	if (!Number.isInteger(maxBytes) || maxBytes < 0) {
 		throw new RangeError("Successful Memory text byte budget must be a non-negative integer");
 	}
-	const calls = new Map<string, { text: string; bytes: number }>();
-	const successful = new Set<string>();
-	let retainedBytes = 0;
-	for (const entry of entries) {
-		if (!isMessageEntry(entry)) continue;
-		const message = entry.message;
-		if (message.role === "assistant") {
-			for (const content of message.content) {
-				if (
-					content.type !== "toolCall" ||
-					(content.name !== "memory_save" && content.name !== "memory_suggest") ||
-					calls.has(content.id) ||
-					calls.size + successful.size >= maxItems
-				) {
-					continue;
-				}
-				const text = (content.arguments as Record<string, unknown>).text;
-				if (typeof text !== "string" || text.trim().length === 0) continue;
-				const remainingBytes = maxBytes - retainedBytes;
-				if (Buffer.byteLength(text, "utf8") > remainingBytes) continue;
-				const normalized = normalizeMemoryTextForDedupe(text);
-				const normalizedBytes = Buffer.byteLength(normalized, "utf8");
-				if (normalized.length === 0 || normalizedBytes > remainingBytes) continue;
-				calls.set(content.id, { text: normalized, bytes: normalizedBytes });
-				retainedBytes += normalizedBytes;
-			}
-			continue;
-		}
-		if (message.role !== "toolResult") continue;
-		const retained = calls.get(message.toolCallId);
-		if (retained === undefined) continue;
-		calls.delete(message.toolCallId);
-		if (message.isError || successful.has(retained.text)) {
-			retainedBytes -= retained.bytes;
-			continue;
-		}
-		successful.add(retained.text);
+	interface Candidate {
+		text: string;
+		bytes: number;
+		toolName: "memory_save" | "memory_suggest";
+		entryIndex: number;
 	}
-	return successful;
+	const calls = new Map<string, Candidate>();
+	let candidateBytes = 0;
+	for (const [entryIndex, entry] of entries.entries()) {
+		if (!isMessageEntry(entry) || entry.message.role !== "assistant") continue;
+		for (const content of entry.message.content) {
+			if (
+				content.type !== "toolCall" ||
+				(content.name !== "memory_save" && content.name !== "memory_suggest")
+			) {
+				continue;
+			}
+			const text = (content.arguments as Record<string, unknown>).text;
+			if (
+				typeof text !== "string" ||
+				text.length > MAX_MEMORY_TOOL_TEXT_INPUT_UTF16_UNITS ||
+				text.trim().length === 0
+			) {
+				continue;
+			}
+			const normalized = normalizeMemoryTextForDedupe(text);
+			const normalizedBytes = Buffer.byteLength(normalized, "utf8");
+			if (normalized.length === 0 || normalizedBytes > MAX_MEMORY_TOOL_CANDIDATE_BYTES) {
+				continue;
+			}
+			const replaced = calls.get(content.id);
+			if (replaced !== undefined) {
+				calls.delete(content.id);
+				candidateBytes -= replaced.bytes;
+			}
+			while (
+				calls.size >= MAX_MEMORY_TOOL_CANDIDATE_ITEMS ||
+				candidateBytes + normalizedBytes > MAX_MEMORY_TOOL_CANDIDATE_BYTES
+			) {
+				const oldestId = calls.keys().next().value;
+				if (oldestId === undefined) break;
+				const oldest = calls.get(oldestId);
+				calls.delete(oldestId);
+				if (oldest !== undefined) candidateBytes -= oldest.bytes;
+			}
+			calls.set(content.id, {
+				text: normalized,
+				bytes: normalizedBytes,
+				toolName: content.name,
+				entryIndex,
+			});
+			candidateBytes += normalizedBytes;
+		}
+	}
+
+	const resolved = new Set<string>();
+	const successfulIds = new Set<string>();
+	for (const [entryIndex, entry] of entries.entries()) {
+		if (!isMessageEntry(entry) || entry.message.role !== "toolResult") continue;
+		const message = entry.message;
+		const candidate = calls.get(message.toolCallId);
+		if (
+			candidate === undefined ||
+			resolved.has(message.toolCallId) ||
+			entryIndex <= candidate.entryIndex
+		) {
+			continue;
+		}
+		resolved.add(message.toolCallId);
+		if (!message.isError && message.toolName === candidate.toolName) {
+			successfulIds.add(message.toolCallId);
+		}
+	}
+
+	const newestFirst: string[] = [];
+	const seenTexts = new Set<string>();
+	let retainedBytes = 0;
+	const candidates = [...calls.entries()];
+	for (let index = candidates.length - 1; index >= 0; index--) {
+		const candidateEntry = candidates[index];
+		if (candidateEntry === undefined) continue;
+		const [id, candidate] = candidateEntry;
+		if (!successfulIds.has(id) || seenTexts.has(candidate.text)) continue;
+		seenTexts.add(candidate.text);
+		if (newestFirst.length >= maxItems) break;
+		if (retainedBytes + candidate.bytes > maxBytes) continue;
+		newestFirst.push(candidate.text);
+		retainedBytes += candidate.bytes;
+	}
+	return new Set(newestFirst.reverse());
 }
 
 export function renderAdvisorDelta(

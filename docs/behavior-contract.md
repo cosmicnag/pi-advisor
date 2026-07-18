@@ -127,7 +127,8 @@ When the formatted Pi-supplied project context changes, the nested Advisor conve
 
 Only one Advisor update runs at a time.
 Updates arriving while Advisor is busy are coalesced within a bounded backlog that accounts for both transcript text and bounded successful-memory metadata.
-Successful-memory metadata uses at most 4,096 normalized texts and half of the configured pending-transcript byte allowance, retains the newest values during coalescing, and shares the overall pending-transcript byte bound with transcript text.
+Successful-memory metadata uses at most 4,096 normalized texts and half of the configured pending-transcript byte allowance, retains the newest successful values during extraction and coalescing, and shares the overall pending-transcript byte bound with transcript text.
+Tool-call candidates use separate fixed item, byte, and raw-input guards, while the configured retention budgets apply only after a matching successful tool result is observed.
 Content-free phrase matching uses broad punctuation and symbol folding against the fixed noise list.
 For notes with well-formed matching backtick spans, ordinary-note dedupe uses NFKC Unicode normalization and prose-only whitespace collapse, applies `en-US` lowercasing only to prose, preserves each backtick delimiter plus the case and whitespace inside its code span, and folds only attached trailing prose sentence punctuation.
 If any backtick delimiter is unmatched, dedupe retains NFKC and whole-note whitespace collapse but skips case and trailing-punctuation folding so malformed code markup cannot suppress a code-sensitive variant.

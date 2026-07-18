@@ -239,7 +239,7 @@ describe("Slice 1 transcript filtering and redaction", () => {
 			manager.appendMessage({
 				role: "toolResult",
 				toolCallId,
-				toolName: "memory_suggest",
+				toolName: toolCallId === "one" ? "memory_save" : "memory_suggest",
 				content: [{ type: "text", text: "queued" }],
 				isError: toolCallId === "four",
 				timestamp: Date.now(),
@@ -247,15 +247,18 @@ describe("Slice 1 transcript filtering and redaction", () => {
 		}
 
 		const retained = successfulMemoryToolTexts(manager.getBranch(), 2, 5);
-		expect([...retained]).toEqual(["abcd", "g"]);
-		expect([...retained].reduce((bytes, text) => bytes + Buffer.byteLength(text), 0)).toBe(5);
+		expect([...retained]).toEqual(["ef", "g"]);
+		expect([...retained].reduce((bytes, text) => bytes + Buffer.byteLength(text), 0)).toBe(3);
 		expect(() => successfulMemoryToolTexts(manager.getBranch(), -1, 5)).toThrow(RangeError);
 		expect(() => successfulMemoryToolTexts(manager.getBranch(), 1, -1)).toThrow(RangeError);
 
 		const afterFailure = SessionManager.inMemory();
 		afterFailure.appendMessage(
 			assistant(
-				[{ type: "toolCall", id: "failed", name: "memory_save", arguments: { text: "abcd" } }],
+				[
+					{ type: "toolCall", id: "failed", name: "memory_save", arguments: { text: "abcd" } },
+					{ type: "toolCall", id: "replacement", name: "memory_save", arguments: { text: "xy" } },
+				],
 				"toolUse",
 			),
 		);
@@ -267,12 +270,6 @@ describe("Slice 1 transcript filtering and redaction", () => {
 			isError: true,
 			timestamp: Date.now(),
 		});
-		afterFailure.appendMessage(
-			assistant(
-				[{ type: "toolCall", id: "replacement", name: "memory_save", arguments: { text: "xy" } }],
-				"toolUse",
-			),
-		);
 		afterFailure.appendMessage({
 			role: "toolResult",
 			toolCallId: "replacement",
@@ -282,6 +279,46 @@ describe("Slice 1 transcript filtering and redaction", () => {
 			timestamp: Date.now(),
 		});
 		expect([...successfulMemoryToolTexts(afterFailure.getBranch(), 1, 4)]).toEqual(["xy"]);
+
+		const normalizedBudget = SessionManager.inMemory();
+		normalizedBudget.appendMessage(
+			assistant(
+				[
+					{
+						type: "toolCall",
+						id: "overlong",
+						name: "memory_suggest",
+						arguments: {
+							text: "x".repeat(HARD_LIMITS.maxProposedMemoryCharacters * 2 + 1),
+						},
+					},
+					{
+						type: "toolCall",
+						id: "normalized",
+						name: "memory_suggest",
+						arguments: { text: "   a   " },
+					},
+				],
+				"toolUse",
+			),
+		);
+		normalizedBudget.appendMessage({
+			role: "toolResult",
+			toolCallId: "overlong",
+			toolName: "memory_suggest",
+			content: [{ type: "text", text: "queued" }],
+			isError: false,
+			timestamp: Date.now(),
+		});
+		normalizedBudget.appendMessage({
+			role: "toolResult",
+			toolCallId: "normalized",
+			toolName: "memory_suggest",
+			content: [{ type: "text", text: "queued" }],
+			isError: false,
+			timestamp: Date.now(),
+		});
+		expect([...successfulMemoryToolTexts(normalizedBudget.getBranch(), 1, 1)]).toEqual(["a"]);
 	});
 
 	it("fully redacts quoted JSON and environment values containing spaces", () => {
