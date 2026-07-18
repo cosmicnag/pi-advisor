@@ -890,9 +890,12 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 		}
 	});
 
-	it("counts and drops a provider failure without retry", async () => {
+	it("counts and drops a provider failure after one bounded retry", async () => {
 		const primary = createPrimaryProvider([{ content: [{ type: "text", text: "answer" }] }]);
-		const advisor = createAdvisorProvider([{ errorMessage: "scripted provider failed" }]);
+		const advisor = createAdvisorProvider([
+			{ errorMessage: "scripted provider failed" },
+			{ errorMessage: "scripted provider failed again" },
+		]);
 		let runtime: AdvisorRuntime | undefined;
 		const harness = await createSessionHarness({
 			provider: primary,
@@ -903,14 +906,15 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 		});
 		try {
 			await harness.session.prompt("trigger provider failure");
-			await waitFor(() => runtime?.getStatus().failedReviews === 1);
-			expect(advisor.requests).toHaveLength(1);
+			await waitFor(() => runtime?.getStatus().failedReviews === 2);
+			expect(advisor.requests).toHaveLength(2);
 			expect(runtime?.getNestedMessageCount()).toBe(0);
 			expect(runtime?.getStatus()).toMatchObject({
 				reviewsCompleted: 0,
 				silentReviews: 0,
-				failedReviews: 1,
-				lastFailure: "scripted provider failed",
+				failedReviews: 2,
+				retryAttempts: 1,
+				lastFailure: "scripted provider failed again",
 			});
 		} finally {
 			await harness.dispose();
@@ -1119,14 +1123,15 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			mode: "rpc",
 		});
 		try {
-			for (let index = 1; index <= 3; index++) {
-				await harness.session.prompt(`failure turn ${String(index)}`);
-				await waitFor(() => runtime?.getStatus().failedReviews === index);
-			}
+			await harness.session.prompt("first failure turn");
+			await waitFor(() => runtime?.getStatus().failedReviews === 2);
+			await harness.session.prompt("second failure turn");
+			await waitFor(() => runtime?.getStatus().failedReviews === 3);
 			expect(runtime?.getStatus()).toMatchObject({
 				paused: true,
 				consecutiveFailures: 3,
 				failedReviews: 3,
+				retryAttempts: 1,
 				warnings: 1,
 			});
 			expect(warnings).toHaveLength(1);
