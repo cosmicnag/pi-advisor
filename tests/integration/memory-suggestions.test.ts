@@ -11,6 +11,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	createPiAdvisorExtension,
 	DEFAULT_ADVISOR_CONFIG,
+	type AcceptedAdvice,
+	type BoundedKeyedByteFifo,
 	type AdvisorConfig,
 	type AdvisorRuntime,
 } from "../../src/index.js";
@@ -44,6 +46,8 @@ function extensionFor(
 	};
 }
 
+const memoryRationale = "This verified project constraint will matter in future sessions.";
+
 function memorySuggestion(
 	text: string,
 	id = "memory-advice",
@@ -56,7 +60,7 @@ function memorySuggestion(
 				id,
 				name: "advise",
 				arguments: {
-					note: "This verified project constraint will matter in future sessions.",
+					note: memoryRationale,
 					intent: "memory-suggestion",
 					memory: {
 						text,
@@ -244,6 +248,11 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 
 	it.each([
 		{
+			label: "content-free proposed text",
+			text: "looks good",
+			mutate: () => undefined,
+		},
+		{
 			label: "redaction-altered proposed text",
 			text: "API_KEY=memory-secret-value",
 			mutate: () => undefined,
@@ -306,6 +315,13 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 				memorySuggestionsRemaining: 4,
 			});
 			expect(JSON.stringify(advisor.requests[0]?.context)).toContain("memory-suggestion-policy");
+			if (runtime === undefined) throw new Error("Expected Advisor runtime");
+			const deferredQueue = Reflect.get(runtime, "pendingAdvice") as BoundedKeyedByteFifo<{
+				advice: AcceptedAdvice;
+			}>;
+			expect(deferredQueue.totalBytes).toBe(
+				Buffer.byteLength(memoryRationale, "utf8") + Buffer.byteLength(proposed, "utf8"),
+			);
 
 			await harness.session.prompt("handle the Memory suggestion");
 			const context = JSON.stringify(primary.requests[1]?.context);
@@ -325,7 +341,7 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 				intent: "memory-suggestion",
 				memory: { text: proposed, category: "project", basis: "project-constraint" },
 			});
-			expect(runtime?.getStatus().memorySuggestionsDelivered).toBe(1);
+			expect(runtime.getStatus().memorySuggestionsDelivered).toBe(1);
 		} finally {
 			await harness.dispose();
 		}
@@ -365,6 +381,13 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 		try {
 			const activeTurn = harness.session.prompt("start active Memory delivery");
 			await waitFor(() => runtime?.getStatus().activeNotesPending === 1);
+			if (runtime === undefined) throw new Error("Expected Advisor runtime");
+			const activeQueue = Reflect.get(runtime, "activeAdvice") as BoundedKeyedByteFifo<{
+				advice: AcceptedAdvice;
+			}>;
+			expect(activeQueue.totalBytes).toBe(
+				Buffer.byteLength(memoryRationale, "utf8") + Buffer.byteLength(proposed, "utf8"),
+			);
 			executorBarrier.release();
 			await activeTurn;
 			await waitFor(
@@ -373,7 +396,7 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 			const context = JSON.stringify(primary.requests[2]?.context);
 			expect(context).toContain(proposed);
 			expect(context).toContain('delivery=\\"active\\"');
-			expect(runtime?.getStatus()).toMatchObject({
+			expect(runtime.getStatus()).toMatchObject({
 				memorySuggestionsDelivered: 1,
 				activeNotesPending: 0,
 			});
@@ -641,6 +664,46 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 			expect(JSON.stringify(harness.sessionManager.getEntries())).not.toContain(
 				'memory-suggestion"',
 			);
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("floors a fractional per-session cap before admission", async () => {
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "answer one" }] },
+			{ content: [{ type: "text", text: "answer two" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			memorySuggestion(proposed, "fractional-cap-one"),
+			memorySuggestion("A second distinct durable project fact.", "fractional-cap-two"),
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [
+				extensionFor(
+					configFor(advisor, (config) => {
+						config.memorySuggestions.sessionSuggestionCap = 1.5;
+					}),
+					(value) => (runtime = value),
+				),
+			],
+			customTools: [compatibleMemoryTool()],
+			tools: ["memory_suggest"],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("first fractional-cap suggestion");
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			await harness.session.prompt("second fractional-cap suggestion");
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 2);
+			expect(runtime?.getStatus()).toMatchObject({
+				memorySuggestionsDelivered: 1,
+				memorySuggestionsRemaining: 0,
+				memorySuggestionsLimitSuppressed: 1,
+			});
 		} finally {
 			await harness.dispose();
 		}

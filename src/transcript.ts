@@ -112,9 +112,20 @@ export function isMeaningfulExecutorTurn(event: TurnEndEvent, entries: SessionEn
 	return assistantContent.length > 0 || event.toolResults.length > 0;
 }
 
-export function successfulMemoryToolTexts(entries: SessionEntry[]): Set<string> {
-	const calls = new Map<string, string>();
+export function successfulMemoryToolTexts(
+	entries: SessionEntry[],
+	maxItems: number,
+	maxBytes: number,
+): Set<string> {
+	if (!Number.isInteger(maxItems) || maxItems < 0) {
+		throw new RangeError("Successful Memory text item budget must be a non-negative integer");
+	}
+	if (!Number.isInteger(maxBytes) || maxBytes < 0) {
+		throw new RangeError("Successful Memory text byte budget must be a non-negative integer");
+	}
+	const calls = new Map<string, { text: string; bytes: number }>();
 	const successful = new Set<string>();
+	let retainedBytes = 0;
 	for (const entry of entries) {
 		if (!isMessageEntry(entry)) continue;
 		const message = entry.message;
@@ -122,20 +133,33 @@ export function successfulMemoryToolTexts(entries: SessionEntry[]): Set<string> 
 			for (const content of message.content) {
 				if (
 					content.type !== "toolCall" ||
-					(content.name !== "memory_save" && content.name !== "memory_suggest")
+					(content.name !== "memory_save" && content.name !== "memory_suggest") ||
+					calls.has(content.id) ||
+					calls.size + successful.size >= maxItems
 				) {
 					continue;
 				}
 				const text = (content.arguments as Record<string, unknown>).text;
-				if (typeof text === "string" && text.trim().length > 0) {
-					calls.set(content.id, normalizeMemoryTextForDedupe(text));
-				}
+				if (typeof text !== "string" || text.trim().length === 0) continue;
+				const remainingBytes = maxBytes - retainedBytes;
+				if (Buffer.byteLength(text, "utf8") > remainingBytes) continue;
+				const normalized = normalizeMemoryTextForDedupe(text);
+				const normalizedBytes = Buffer.byteLength(normalized, "utf8");
+				if (normalized.length === 0 || normalizedBytes > remainingBytes) continue;
+				calls.set(content.id, { text: normalized, bytes: normalizedBytes });
+				retainedBytes += normalizedBytes;
 			}
 			continue;
 		}
-		if (message.role !== "toolResult" || message.isError) continue;
-		const text = calls.get(message.toolCallId);
-		if (text !== undefined) successful.add(text);
+		if (message.role !== "toolResult") continue;
+		const retained = calls.get(message.toolCallId);
+		if (retained === undefined) continue;
+		calls.delete(message.toolCallId);
+		if (message.isError || successful.has(retained.text)) {
+			retainedBytes -= retained.bytes;
+			continue;
+		}
+		successful.add(retained.text);
 	}
 	return successful;
 }

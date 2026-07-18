@@ -5,19 +5,23 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import { HARD_LIMITS, type AdvisorConfig } from "./config.js";
+import {
+	MEMORY_SUGGESTION_BASES,
+	MEMORY_SUGGESTION_CATEGORIES,
+	type MemorySuggestionBasis,
+	type MemorySuggestionCategory,
+} from "./memory-suggestions.js";
 import { escapeXmlAttribute, escapeXmlText } from "./presentation.js";
 import { estimateTokens, redactSecrets } from "./redaction.js";
 
+export {
+	MEMORY_SUGGESTION_BASES,
+	MEMORY_SUGGESTION_CATEGORIES,
+	type MemorySuggestionBasis,
+	type MemorySuggestionCategory,
+} from "./memory-suggestions.js";
+
 export type AdviceSeverity = "nit" | "concern" | "blocker";
-export type MemorySuggestionCategory = "preference" | "project";
-export type MemorySuggestionBasis =
-	| "gate-milestone"
-	| "human-correction"
-	| "durable-preference"
-	| "workflow-change"
-	| "repeated-mistake"
-	| "project-procedure"
-	| "project-constraint";
 
 interface AcceptedAdviceBase {
 	note: string;
@@ -80,15 +84,6 @@ const CONTENT_FREE = new Set([
 	"on track",
 ]);
 const TRUNCATION_MARKER = "\n[Advisory note truncated to configured limit]";
-const MEMORY_SUGGESTION_BASES = [
-	"gate-milestone",
-	"human-correction",
-	"durable-preference",
-	"workflow-change",
-	"repeated-mistake",
-	"project-procedure",
-	"project-constraint",
-] as const;
 
 export function normalizeContentFreeAdvice(input: string): string {
 	return input
@@ -272,7 +267,8 @@ function acceptMemorySuggestion(
 		!policy.capabilityAvailable ||
 		input.note.trim().length === 0 ||
 		input.memory.text.trim().length === 0 ||
-		isContentFreeAdvice(input.note)
+		isContentFreeAdvice(input.note) ||
+		isContentFreeAdvice(input.memory.text)
 	) {
 		suppressMemory(collector, "policy");
 		return undefined;
@@ -382,7 +378,7 @@ export function createAdviseTool(
 					memory: Type.Object(
 						{
 							text: Type.String({ minLength: 1 }),
-							category: StringEnum(["preference", "project"] as const),
+							category: StringEnum(MEMORY_SUGGESTION_CATEGORIES),
 							basis: StringEnum(MEMORY_SUGGESTION_BASES),
 						},
 						{ additionalProperties: false },

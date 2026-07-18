@@ -31,11 +31,11 @@ Durable WATCHDOG configuration remains Slice 5.
 
 - Pre-edit packed-package E2E passed on Pi 0.80.7.
 - Pre-edit focused capability, policy, and presentation baseline passed 31 tests.
-- Focused Batch C integration coverage passes 18 scripted scenarios, including active and deferred delivery, capability loss in both modes, and governed Memory suggestion discard.
-- Focused policy and presentation coverage passes 29 unit tests, including 24-column and 100-column Memory cards under plain and ANSI-styled theme callbacks.
-- `pnpm verify` passed typecheck, lint, formatting, and 120 unit, contract, and integration tests across 13 files.
+- Focused Batch C integration coverage passes 20 scripted scenarios, including active and deferred delivery, capability loss in both modes, governed Memory suggestion discard, content-free proposal suppression, and fractional session-cap normalization.
+- Focused policy and presentation coverage passes 31 unit tests, including successful-memory metadata budgets and 24-column and 100-column Memory cards under plain and ANSI-styled theme callbacks.
+- `pnpm verify` passed typecheck, lint, formatting, and 125 unit, contract, and integration tests across 13 files.
 - `pnpm test:e2e` passed the packed-package Pi 0.80.7 install and inactive-default startup scenario.
-- `pnpm pack:validate` passed with a 22-file package allowlist.
+- `pnpm pack:validate` passed with a 23-file package allowlist.
 - `git diff --check` passed.
 
 ## Review status
@@ -43,7 +43,9 @@ Durable WATCHDOG configuration remains Slice 5.
 Claude Opus 4.8 completed a direct high-effort implementation review and returned `CONSENSUS` with `SAFE TO OPEN PR: YES` and no required findings.
 The executor then added Opus's optional active capability-loss and governed-discard coverage, refined admitted-versus-delivered accounting, and reran all verification gates.
 Claude Opus 4.8 completed a follow-up review and again returned `CONSENSUS / SAFE TO OPEN PR: YES` with no required findings.
-Its only remaining optional observation was stale evidence counts, which this document corrects from 16 to 18 focused integration scenarios and from 118 to 120 full verification tests.
+Its only remaining optional observation was stale evidence counts, which this document corrected before PR creation.
+After the PR review identified seven follow-up documentation, validation, bounded-metadata, queue-accounting, and single-source-of-truth findings, the executor reproduced the two user-visible policy defects, fixed all seven findings, and reran every verification gate.
+Claude Opus 4.8 reviewed the complete follow-up diff and returned `CONSENSUS / SAFE TO PUSH: YES` with no required findings.
 
 ## Deviations and unresolved risks
 

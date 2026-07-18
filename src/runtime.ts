@@ -59,8 +59,43 @@ import {
 
 const PENDING_TRUNCATION_MARKER =
 	"[Older coalesced Advisor update content discarded at pending-byte limit]\n";
+const PENDING_MEMORY_METADATA_FRACTION = 0.5;
 const FAILURE_PAUSE_COUNT = 3;
 export const MAX_ADVISOR_DUMP_BYTES = 16 * 1_024;
+
+function utf8TextSetBytes(values: ReadonlySet<string>): number {
+	let bytes = 0;
+	for (const value of values) bytes += Buffer.byteLength(value, "utf8");
+	return bytes;
+}
+
+function boundNewestTexts(
+	values: readonly string[],
+	maxItems: number,
+	maxBytes: number,
+): Set<string> {
+	const newestFirst: string[] = [];
+	const seen = new Set<string>();
+	let retainedBytes = 0;
+	for (let index = values.length - 1; index >= 0; index--) {
+		const value = values[index];
+		if (value === undefined || seen.has(value)) continue;
+		seen.add(value);
+		if (newestFirst.length >= maxItems) break;
+		const valueBytes = Buffer.byteLength(value, "utf8");
+		if (retainedBytes + valueBytes > maxBytes) continue;
+		newestFirst.push(value);
+		retainedBytes += valueBytes;
+	}
+	return new Set(newestFirst.reverse());
+}
+
+function adviceQueueBytes(advice: AcceptedAdvice): number {
+	return (
+		Buffer.byteLength(advice.note, "utf8") +
+		(advice.intent === "memory-suggestion" ? Buffer.byteLength(advice.memory.text, "utf8") : 0)
+	);
+}
 
 export interface AdvisorUsageTotals {
 	input: number;
@@ -622,6 +657,16 @@ export class AdvisorRuntime {
 		});
 	}
 
+	private successfulMemoryTextItemBudget(): number {
+		return Math.min(MAX_PENDING_ADVICE_ITEMS, this.successfulMemoryTextByteBudget());
+	}
+
+	private successfulMemoryTextByteBudget(): number {
+		return Math.floor(
+			this.config.limits.maxPendingTranscriptBytes * PENDING_MEMORY_METADATA_FRACTION,
+		);
+	}
+
 	async observeTurn(event: TurnEndEvent, ctx: ExtensionContext): Promise<void> {
 		if (event.message.role === "assistant" && event.message.stopReason === "aborted") {
 			const run = this.currentRun;
@@ -645,7 +690,11 @@ export class AdvisorRuntime {
 			text: rendered.text,
 			window: cursorAtTail(branch),
 			turnNumber: this.meaningfulTurnCount,
-			successfulMemoryTexts: successfulMemoryToolTexts(entries),
+			successfulMemoryTexts: successfulMemoryToolTexts(
+				entries,
+				this.successfulMemoryTextItemBudget(),
+				this.successfulMemoryTextByteBudget(),
+			),
 		});
 	}
 
@@ -668,19 +717,27 @@ export class AdvisorRuntime {
 	): QueuedAdvisorUpdate {
 		const combined = current === undefined ? incoming.text : `${current.text}\n\n${incoming.text}`;
 		const maximum = this.config.limits.maxPendingTranscriptBytes;
-		const text = truncateUtf8TailBytes(combined, maximum, PENDING_TRUNCATION_MARKER);
+		const successfulMemoryTexts = boundNewestTexts(
+			[...(current?.successfulMemoryTexts ?? []), ...incoming.successfulMemoryTexts],
+			this.successfulMemoryTextItemBudget(),
+			this.successfulMemoryTextByteBudget(),
+		);
+		const metadataBytes = utf8TextSetBytes(successfulMemoryTexts);
+		const text = truncateUtf8TailBytes(
+			combined,
+			maximum - metadataBytes,
+			PENDING_TRUNCATION_MARKER,
+		);
+		const retainedBytes = Buffer.byteLength(text, "utf8") + metadataBytes;
 		this.status.maxPendingTranscriptBytesObserved = Math.max(
 			this.status.maxPendingTranscriptBytesObserved,
-			Buffer.byteLength(text, "utf8"),
+			retainedBytes,
 		);
 		return {
 			text,
 			window: incoming.window,
 			turnNumber: incoming.turnNumber,
-			successfulMemoryTexts: new Set([
-				...(current?.successfulMemoryTexts ?? []),
-				...incoming.successfulMemoryTexts,
-			]),
+			successfulMemoryTexts,
 		};
 	}
 
@@ -931,11 +988,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				branchWindow: cursorAtTail(ctx.sessionManager.getBranch()),
 				displayedInEntry: false,
 			};
-			const admission = this.pendingAdvice.enqueue(
-				identity,
-				pending,
-				Buffer.byteLength(advice.note, "utf8"),
-			);
+			const admission = this.pendingAdvice.enqueue(identity, pending, adviceQueueBytes(advice));
 			if (admission !== "accepted") {
 				this.status.notesSuppressed++;
 				if (admission === "capacity" && !this.pendingAdviceWarningEmitted) {
@@ -963,7 +1016,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 					deliveryId,
 					epoch: this.status.epoch,
 				},
-				Buffer.byteLength(advice.note, "utf8"),
+				adviceQueueBytes(advice),
 			);
 			if (admission !== "accepted") {
 				this.status.notesSuppressed++;
@@ -1145,7 +1198,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			const admission = this.pendingAdvice.enqueue(
 				outstanding.identity,
 				pending,
-				Buffer.byteLength(outstanding.advice.note, "utf8"),
+				adviceQueueBytes(outstanding.advice),
 			);
 			if (admission === "accepted") {
 				if (ctx.mode === "tui" && ctx.isIdle()) this.publishLateAdviceEntry(pending);
@@ -1302,7 +1355,9 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 	}
 
 	private updateBacklogStatus(): void {
-		const bytes = Buffer.byteLength(this.pendingUpdate?.text ?? "", "utf8");
+		const bytes =
+			Buffer.byteLength(this.pendingUpdate?.text ?? "", "utf8") +
+			utf8TextSetBytes(this.pendingUpdate?.successfulMemoryTexts ?? new Set());
 		this.status.pendingTranscriptBytes = bytes;
 		this.status.backlog = bytes > 0;
 		this.status.maxPendingTranscriptBytesObserved = Math.max(

@@ -245,10 +245,12 @@ export function normalizeAdvisorConfig(input: AdvisorConfig): AdvisorConfig {
 				0,
 				defaults.memorySuggestions.minIntervalMs,
 			),
-			sessionSuggestionCap: finiteAtLeast(
-				input.memorySuggestions.sessionSuggestionCap,
-				0,
-				defaults.memorySuggestions.sessionSuggestionCap,
+			sessionSuggestionCap: Math.floor(
+				finiteAtLeast(
+					input.memorySuggestions.sessionSuggestionCap,
+					0,
+					defaults.memorySuggestions.sessionSuggestionCap,
+				),
 			),
 			maxProposedMemoryCharacters: finiteClamped(
 				input.memorySuggestions.maxProposedMemoryCharacters,

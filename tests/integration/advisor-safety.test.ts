@@ -1300,6 +1300,74 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 		}
 	});
 
+	it("bounds coalesced successful-memory metadata and retains the newest entries", async () => {
+		const primary = createPrimaryProvider([{ content: [{ type: "text", text: "answer" }] }]);
+		const advisor = createAdvisorProvider([{ content: [] }]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [
+				extensionFor(
+					configFor(advisor, (config) => {
+						config.limits.maxPendingTranscriptBytes = 100;
+					}),
+					(value) => (runtime = value),
+				),
+			],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("initialize metadata bounds");
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 1);
+			if (runtime === undefined) throw new Error("Expected Advisor runtime");
+			interface QueuedUpdate {
+				text: string;
+				window: { expectedIndex: number };
+				turnNumber: number;
+				successfulMemoryTexts: Set<string>;
+			}
+			const coalesce = Reflect.get(runtime, "coalescePending") as (
+				current: QueuedUpdate,
+				incoming: QueuedUpdate,
+			) => QueuedUpdate;
+			const oldMetadata = `old-${"o".repeat(20)}`;
+			const sharedMetadata = `shared-${"s".repeat(17)}`;
+			const newMetadata = `new-${"n".repeat(20)}`;
+			const current: QueuedUpdate = {
+				text: "older transcript ".repeat(10),
+				window: { expectedIndex: 1 },
+				turnNumber: 1,
+				successfulMemoryTexts: new Set([oldMetadata, sharedMetadata]),
+			};
+			const incoming: QueuedUpdate = {
+				text: "newest transcript ".repeat(10),
+				window: { expectedIndex: 2 },
+				turnNumber: 2,
+				successfulMemoryTexts: new Set([sharedMetadata, newMetadata]),
+			};
+			const retained = coalesce.call(runtime, current, incoming);
+			expect([...retained.successfulMemoryTexts]).toEqual([sharedMetadata, newMetadata]);
+			Reflect.set(runtime, "pendingUpdate", retained);
+			const updateBacklogStatus = Reflect.get(runtime, "updateBacklogStatus") as () => void;
+			updateBacklogStatus.call(runtime);
+			const retainedBytes =
+				Buffer.byteLength(retained.text, "utf8") +
+				[...retained.successfulMemoryTexts].reduce(
+					(total, text) => total + Buffer.byteLength(text, "utf8"),
+					0,
+				);
+			expect(runtime.getStatus()).toMatchObject({
+				pendingTranscriptBytes: retainedBytes,
+				maxPendingTranscriptBytesObserved: retainedBytes,
+			});
+			expect(retainedBytes).toBeLessThanOrEqual(100);
+		} finally {
+			await harness.dispose();
+		}
+	});
+
 	it("enforces the per-update turn governor", async () => {
 		const primary = createPrimaryProvider([{ content: [{ type: "text", text: "answer" }] }]);
 		const advisor = createAdvisorProvider([

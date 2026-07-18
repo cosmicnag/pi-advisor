@@ -50,17 +50,20 @@ Queueing an active steer is not counted as delivery.
 The runtime retains a bounded active-pending copy until Pi acknowledges the custom message through message lifecycle or branch state.
 At agent settlement, an unacknowledged copy is recovered into deferred FIFO delivery, covering TUI abort queue clearing without duplicating RPC abort continuation.
 Idle or terminal advice waits in bounded in-memory runtime state for the next user-driven turn without triggering a new completion.
-The active-pending and deferred queues each reject a new note when admission would exceed 4,096 notes or 1,000,000 UTF-8 bytes of raw note text.
+The active-pending and deferred queues each reject new advice when admission would exceed 4,096 items or 1,000,000 UTF-8 bytes of retained review-note text or combined Memory rationale and proposed-memory text.
 A rejection preserves older FIFO entries, increments the suppressed-note count, and emits at most one queue-capacity warning per session.
 Pi 0.80.7 exposes no public abort cause, so every public abort signal or aborted Executor stop reason forces advice already being reviewed to use deferred delivery, and aborted Executor turns are excluded from new review.
 Pi 0.80.7 also exposes no public method to cancel an already queued `nextTurn` custom message after branch navigation, so Batch A uses the documented `before_agent_start` injection fallback for branch-safe deferred delivery.
 Batch A does not implement cross-exit deferred-advice restoration or a package-managed retention timer.
 An incompatible active-branch cursor invalidates in-flight review and clears in-memory deferred advice before delivery, while disablement and shutdown invalidate the runtime epoch and dispose nested work.
-Every delivered note is visible and is framed as guidance to weigh rather than obey blindly.
-It uses custom message type `pi-advisor-note` and XML-safe `<advisor-note>` content with intent, severity, delivery, and stale attributes.
-Note and guidance text escape XML markup characters and replace characters that XML 1.0 cannot represent.
-Severity is `nit`, `concern`, or `blocker`, with `concern` as the default.
-A `notes` details array contains the bounded note, review intent, active or deferred delivery, optional staleness, truncation, original post-redaction size, creation time, and an opaque attempt-scoped delivery ID for active acknowledgement.
+Every delivered item is visible and is framed as guidance to weigh rather than obey blindly.
+It uses custom message type `pi-advisor-note` and XML-safe `<advisor-note>` content.
+Review-note wrappers carry review intent, severity, delivery, and stale attributes plus bounded note and guidance text.
+Memory-suggestion wrappers carry Memory intent, category, basis, delivery, stale, and optional `queue-state` attributes plus bounded rationale, proposed-memory, and guidance text.
+All wrapper text escapes XML markup characters and replaces characters that XML 1.0 cannot represent.
+Review severity is `nit`, `concern`, or `blocker`, with `concern` as the default.
+A `notes` details array contains common active or deferred delivery, optional staleness, truncation, original post-redaction size, creation time, and optional opaque attempt-scoped delivery ID metadata.
+Each details item then contains either review intent and severity or Memory-suggestion intent, category, basis, proposed text, and optional `queueState`.
 Dedupe identity remains separate so a stale acknowledgement cannot confirm a later attempt with the same advice.
 Each user-driven turn receives the largest FIFO prefix whose final rendered custom-message content fits 64 KiB in UTF-8, including every XML note, guidance wrapper, and inter-note separator but excluding non-model-visible details metadata.
 No note is split, remaining notes wait for later user turns, and a one-note message mirrors its fields at the top level for compatibility.
@@ -94,7 +97,7 @@ The Advisor policy excludes transient details, speculation, unverified conclusio
 A repeated-mistake rationale must identify two distinct observed occurrences.
 Ordinary material advice replaces a provisional Memory suggestion from the same update, and a provisional Memory suggestion is discarded if that update fails or is governed.
 
-Proposed memory text is independently checked for secret redaction, character size, and estimated token size.
+Proposed memory text is independently checked for content-free wording, secret redaction, character size, and estimated token size.
 Redaction-altered or oversized proposed text suppresses the whole suggestion and is never truncated, delivered, or persisted.
 Successful `memory_save` or `memory_suggest` outcomes in the current observed update suppress an exactly normalized duplicate proposal.
 Cross-update dedupe uses intent, normalized proposed text, category, and basis rather than rationale wording.
@@ -123,7 +126,8 @@ When the formatted Pi-supplied project context changes, the nested Advisor conve
 ## Lifecycle and limits
 
 Only one Advisor update runs at a time.
-Updates arriving while Advisor is busy are coalesced within a bounded backlog.
+Updates arriving while Advisor is busy are coalesced within a bounded backlog that accounts for both transcript text and bounded successful-memory metadata.
+Successful-memory metadata uses at most 4,096 normalized texts and half of the configured pending-transcript byte allowance, retains the newest values during coalescing, and shares the overall pending-transcript byte bound with transcript text.
 Content-free phrase matching uses broad punctuation and symbol folding against the fixed noise list.
 For notes with well-formed matching backtick spans, ordinary-note dedupe uses NFKC Unicode normalization and prose-only whitespace collapse, applies `en-US` lowercasing only to prose, preserves each backtick delimiter plus the case and whitespace inside its code span, and folds only attached trailing prose sentence punctuation.
 If any backtick delimiter is unmatched, dedupe retains NFKC and whole-note whitespace collapse but skips case and trailing-punctuation folding so malformed code markup cannot suppress a code-sensitive variant.

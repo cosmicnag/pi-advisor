@@ -1,14 +1,14 @@
 import type { CustomEntry, MessageRenderer, Theme } from "@earendil-works/pi-coding-agent";
 import { Box, Container, Spacer, Text, type Component } from "@earendil-works/pi-tui";
 
-import type {
-	AdviceDelivery,
-	AdviceSeverity,
-	MemorySuggestionBasis,
-	MemorySuggestionCategory,
-	MemorySuggestionQueueState,
-} from "./advice.js";
+import type { AdviceDelivery, AdviceSeverity, MemorySuggestionQueueState } from "./advice.js";
 import { HARD_LIMITS } from "./config.js";
+import {
+	isMemorySuggestionBasis,
+	isMemorySuggestionCategory,
+	type MemorySuggestionBasis,
+	type MemorySuggestionCategory,
+} from "./memory-suggestions.js";
 import { MAX_DEFERRED_DELIVERY_BYTES, MAX_PENDING_ADVICE_ITEMS } from "./delivery.js";
 
 export const ADVISOR_LATE_ENTRY_TYPE = "pi-advisor-late-note";
@@ -100,22 +100,6 @@ function isAdviceDelivery(value: unknown): value is AdviceDelivery {
 	return value === "active" || value === "deferred";
 }
 
-function isMemoryCategory(value: unknown): value is MemorySuggestionCategory {
-	return value === "preference" || value === "project";
-}
-
-function isMemoryBasis(value: unknown): value is MemorySuggestionBasis {
-	return (
-		value === "gate-milestone" ||
-		value === "human-correction" ||
-		value === "durable-preference" ||
-		value === "workflow-change" ||
-		value === "repeated-mistake" ||
-		value === "project-procedure" ||
-		value === "project-constraint"
-	);
-}
-
 function isFiniteNonNegative(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
@@ -173,8 +157,8 @@ function parsePresentationNote(value: unknown): AdvicePresentationNote | undefin
 	const memory = note.memory as Record<string, unknown>;
 	if (
 		!textFitsBound(memory.text, HARD_LIMITS.maxProposedMemoryCharacters) ||
-		!isMemoryCategory(memory.category) ||
-		!isMemoryBasis(memory.basis) ||
+		!isMemorySuggestionCategory(memory.category) ||
+		!isMemorySuggestionBasis(memory.basis) ||
 		(note.queueState !== undefined && note.queueState !== "could-not-queue")
 	) {
 		return undefined;

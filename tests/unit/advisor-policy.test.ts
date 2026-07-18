@@ -20,6 +20,7 @@ import {
 	PROPOSED_ADVISOR_CONFIG,
 	redactSecrets,
 	renderAdvisorDelta,
+	successfulMemoryToolTexts,
 	takeRenderedPrefix,
 	type AdviceDedupeIdentity,
 	type AdvisorRuntimeStatus,
@@ -100,6 +101,14 @@ describe("Slice 1 configuration and emission policy", () => {
 		const input = structuredClone(DEFAULT_ADVISOR_CONFIG);
 		input.limits.maxAdviceCharacters = Number.NaN;
 		expect(normalizeAdvisorConfig(input).limits.maxAdviceCharacters).toBe(2_000);
+	});
+
+	it("floors a fractional Memory suggestion session cap", () => {
+		const config = structuredClone(DEFAULT_ADVISOR_CONFIG);
+		config.memorySuggestions.sessionSuggestionCap = 1.9;
+		expect(normalizeAdvisorConfig(config).memorySuggestions.sessionSuggestionCap).toBe(1);
+		config.memorySuggestions.sessionSuggestionCap = -1;
+		expect(normalizeAdvisorConfig(config).memorySuggestions.sessionSuggestionCap).toBe(0);
 	});
 
 	it("keeps the deprecated proposed config export independent from release defaults", () => {
@@ -211,6 +220,68 @@ describe("Slice 1 transcript filtering and redaction", () => {
 		expect(rendered.text).not.toContain("reasoning-secret-value");
 		expect(rendered.text).not.toContain("sk-test-abcdefghijklmnop");
 		expect(Buffer.byteLength(rendered.text, "utf8")).toBeLessThanOrEqual(120);
+	});
+
+	it("bounds successful Memory tool metadata by item and UTF-8 byte budgets", () => {
+		const manager = SessionManager.inMemory();
+		manager.appendMessage(
+			assistant(
+				[
+					{ type: "toolCall", id: "one", name: "memory_save", arguments: { text: "abcd" } },
+					{ type: "toolCall", id: "two", name: "memory_suggest", arguments: { text: "ef" } },
+					{ type: "toolCall", id: "three", name: "memory_suggest", arguments: { text: "g" } },
+					{ type: "toolCall", id: "four", name: "memory_suggest", arguments: { text: "h" } },
+				],
+				"toolUse",
+			),
+		);
+		for (const toolCallId of ["one", "two", "three", "four"]) {
+			manager.appendMessage({
+				role: "toolResult",
+				toolCallId,
+				toolName: "memory_suggest",
+				content: [{ type: "text", text: "queued" }],
+				isError: toolCallId === "four",
+				timestamp: Date.now(),
+			});
+		}
+
+		const retained = successfulMemoryToolTexts(manager.getBranch(), 2, 5);
+		expect([...retained]).toEqual(["abcd", "g"]);
+		expect([...retained].reduce((bytes, text) => bytes + Buffer.byteLength(text), 0)).toBe(5);
+		expect(() => successfulMemoryToolTexts(manager.getBranch(), -1, 5)).toThrow(RangeError);
+		expect(() => successfulMemoryToolTexts(manager.getBranch(), 1, -1)).toThrow(RangeError);
+
+		const afterFailure = SessionManager.inMemory();
+		afterFailure.appendMessage(
+			assistant(
+				[{ type: "toolCall", id: "failed", name: "memory_save", arguments: { text: "abcd" } }],
+				"toolUse",
+			),
+		);
+		afterFailure.appendMessage({
+			role: "toolResult",
+			toolCallId: "failed",
+			toolName: "memory_save",
+			content: [{ type: "text", text: "failed" }],
+			isError: true,
+			timestamp: Date.now(),
+		});
+		afterFailure.appendMessage(
+			assistant(
+				[{ type: "toolCall", id: "replacement", name: "memory_save", arguments: { text: "xy" } }],
+				"toolUse",
+			),
+		);
+		afterFailure.appendMessage({
+			role: "toolResult",
+			toolCallId: "replacement",
+			toolName: "memory_save",
+			content: [{ type: "text", text: "saved" }],
+			isError: false,
+			timestamp: Date.now(),
+		});
+		expect([...successfulMemoryToolTexts(afterFailure.getBranch(), 1, 4)]).toEqual(["xy"]);
 	});
 
 	it("fully redacts quoted JSON and environment values containing spaces", () => {
