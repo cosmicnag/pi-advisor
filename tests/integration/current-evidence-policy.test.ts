@@ -3,6 +3,8 @@ import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 
 import {
+	ADVISOR_TRANSCRIPT_ENTRY_TYPE,
+	ADVISOR_TRANSCRIPT_RECORD_VERSION,
 	createPiAdvisorExtension,
 	DEFAULT_ADVISOR_CONFIG,
 	type AdvisorConfig,
@@ -64,7 +66,7 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 describe.sequential("current implementation evidence review policy", () => {
-	it("steers with a concrete defect instead of equivalent historical workflow commentary", async () => {
+	it("actively steers a scripted concrete defect after current implementation evidence", async () => {
 		const executorBarrier = createBarrier();
 		const concreteDefect =
 			"The cancel path writes configuration before confirmation, so cancel is not atomic.";
@@ -106,11 +108,13 @@ describe.sequential("current implementation evidence review policy", () => {
 					details: {},
 				}),
 		});
+		const config = configFor(advisor);
+		config.persistence.transcript = true;
 		let runtime: AdvisorRuntime | undefined;
 		const harness = await createSessionHarness({
 			provider: primary,
 			advisorProvider: advisor,
-			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			extensions: [extensionFor(config, (value) => (runtime = value))],
 			customTools: [inspect],
 			tools: ["inspect"],
 			mode: "rpc",
@@ -134,6 +138,9 @@ describe.sequential("current implementation evidence review policy", () => {
 			expect(request?.context.systemPrompt).toContain(
 				"equivalent workflows need no remembered skill or process name",
 			);
+			expect(request?.context.systemPrompt).toContain(
+				"The findingKey is authoritative for repeat suppression regardless of note wording or severity",
+			);
 
 			executorBarrier.release();
 			await prompt;
@@ -142,15 +149,32 @@ describe.sequential("current implementation evidence review policy", () => {
 			expect(steeredContext).toContain(
 				'severity=\\"blocker\\" delivery=\\"active\\" stale=\\"false\\"',
 			);
-			expect(steeredContext).not.toContain("You must load Blaze");
 			expect(runtime?.getStatus()).toMatchObject({ notesDelivered: 1, activeNotesPending: 0 });
+
+			const acceptedRecord = harness.sessionManager
+				.getBranch()
+				.find(
+					(entry) =>
+						entry.type === "custom" &&
+						entry.customType === ADVISOR_TRANSCRIPT_ENTRY_TYPE &&
+						(entry.data as { kind?: unknown }).kind === "accepted-advice",
+				);
+			if (acceptedRecord?.type !== "custom") {
+				throw new Error("Expected accepted advice transcript record");
+			}
+			expect(acceptedRecord.data).toMatchObject({
+				version: ADVISOR_TRANSCRIPT_RECORD_VERSION,
+				kind: "accepted-advice",
+				advice: { note: concreteDefect, severity: "blocker" },
+			});
+			expect(JSON.stringify(acceptedRecord.data)).not.toContain("findingKeyHash");
 		} finally {
 			executorBarrier.release();
 			await harness.dispose();
 		}
 	});
 
-	it("defers concrete advice as stale without reversing observed review-before-PR chronology", async () => {
+	it("defers scripted concrete advice and preserves observed review-before-PR chronology", async () => {
 		const concreteDefect = "The new cancellation branch leaves the temporary file behind.";
 		const primary = createPrimaryProvider([
 			{
@@ -196,7 +220,6 @@ describe.sequential("current implementation evidence review policy", () => {
 			expect(delivered).toContain(
 				'severity=\\"concern\\" delivery=\\"deferred\\" stale=\\"true\\"',
 			);
-			expect(delivered).not.toContain("PR predates the review");
 		} finally {
 			await harness.dispose();
 		}
@@ -211,8 +234,8 @@ describe.sequential("current implementation evidence review policy", () => {
 			{ content: [{ type: "text", text: "third terminal answer" }] },
 		]);
 		const advisor = createAdvisorProvider([
-			advice(first, "historical named workflow invocation", "workflow-one"),
-			advice(paraphrase, "historical named workflow invocation", "workflow-two"),
+			advice(first, "historical named workflow invocation", "workflow-one", "nit"),
+			advice(paraphrase, "historical named workflow invocation", "workflow-two", "blocker"),
 			{ content: [] },
 		]);
 		let runtime: AdvisorRuntime | undefined;

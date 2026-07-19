@@ -410,6 +410,28 @@ describe("Usage estimation and bounded transcript serialization through Slice 4B
 				"session-1",
 			),
 		).toBeUndefined();
+
+		const acceptedAdvice = {
+			...boundAdvice("Verify atomic cancellation.", DEFAULT_ADVISOR_CONFIG),
+			findingKeyHash: "a".repeat(64),
+		};
+		const acceptedRecord = {
+			version: ADVISOR_TRANSCRIPT_RECORD_VERSION,
+			sessionId: "session-1",
+			savedAt: 1,
+			kind: "accepted-advice" as const,
+			advice: acceptedAdvice,
+			delivery: "deferred" as const,
+			stale: true,
+		};
+		expect(parsePersistedAdvisorTranscriptRecord(acceptedRecord, "session-1")).toBeUndefined();
+		const compatibleRecord = {
+			...acceptedRecord,
+			advice: boundAdvice("Verify atomic cancellation.", DEFAULT_ADVISOR_CONFIG),
+		};
+		expect(parsePersistedAdvisorTranscriptRecord(compatibleRecord, "session-1")).toEqual(
+			compatibleRecord,
+		);
 	});
 
 	it("collects only a bounded redacted tail across many older large entries", () => {
@@ -679,15 +701,42 @@ describe("Slice 1 transcript filtering and redaction", () => {
 		expect(adviceDedupeKey(first)).not.toBe(adviceDedupeKey(differentBasis));
 	});
 
-	it("includes severity in dedupe identity and retains FIFO insertion order", () => {
+	it("ignores severity in review identity and retains FIFO insertion order", () => {
 		const dedupe = new BoundedAdviceDedupe(2);
 		expect(dedupe.add(dedupeIdentity("Verify rollback!", "nit"))).toBe(true);
 		expect(dedupe.add(dedupeIdentity("Check migrations"))).toBe(true);
 		expect(dedupe.add(dedupeIdentity("VERIFY rollback...", "nit"))).toBe(false);
-		expect(dedupe.add(dedupeIdentity("Verify rollback!", "blocker"))).toBe(true);
+		expect(dedupe.add(dedupeIdentity("Verify rollback!", "blocker"))).toBe(false);
 		expect(dedupe.size).toBe(2);
-		expect(dedupe.add(dedupeIdentity("Verify rollback!", "nit"))).toBe(true);
 		expect(dedupe.delete(dedupeIdentity("Verify rollback!", "blocker"))).toBe(true);
+		expect(dedupe.add(dedupeIdentity("Inspect atomic writes"))).toBe(true);
+		expect(dedupe.add(dedupeIdentity("Verify rollback!", "nit"))).toBe(true);
+	});
+
+	it("treats a finding key as the authoritative identity for one concrete defect", () => {
+		const dedupe = new BoundedAdviceDedupe(4);
+		const cancellationIdentity = "a".repeat(64);
+		expect(
+			dedupe.add({
+				note: "Cancel writes configuration before confirmation.",
+				severity: "blocker",
+				findingKeyHash: cancellationIdentity,
+			}),
+		).toBe(true);
+		expect(
+			dedupe.add({
+				note: "The cancellation path is not atomic because it persists too early.",
+				severity: "concern",
+				findingKeyHash: cancellationIdentity,
+			}),
+		).toBe(false);
+		expect(
+			dedupe.add({
+				note: "Cancellation leaks a temporary file.",
+				severity: "concern",
+				findingKeyHash: "b".repeat(64),
+			}),
+		).toBe(true);
 	});
 
 	it("bounds keyed FIFO admission by items and raw bytes without evicting older entries", () => {

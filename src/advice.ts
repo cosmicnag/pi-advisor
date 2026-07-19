@@ -146,9 +146,10 @@ export function normalizeMemoryTextForDedupe(input: string): string {
 }
 
 export type AdviceDedupeIdentity =
-	| (Pick<AcceptedReviewAdvice, "note" | "severity" | "findingKeyHash"> & {
-			intent?: "review";
-	  })
+	| (Pick<AcceptedReviewAdvice, "note"> &
+			Partial<Pick<AcceptedReviewAdvice, "severity" | "findingKeyHash">> & {
+				intent?: "review";
+			})
 	| Pick<AcceptedMemorySuggestion, "intent" | "memory">;
 
 function findingKeyHash(input: string): string | undefined {
@@ -167,8 +168,8 @@ export function adviceDedupeKey(advice: AdviceDedupeIdentity): string {
 					normalizeMemoryTextForDedupe(advice.memory.text),
 				])
 			: advice.findingKeyHash === undefined
-				? JSON.stringify(["review", advice.severity, normalizeAdviceForDedupe(advice.note)])
-				: JSON.stringify(["review", advice.severity, "finding", advice.findingKeyHash]);
+				? JSON.stringify(["review", normalizeAdviceForDedupe(advice.note)])
+				: JSON.stringify(["review", "finding", advice.findingKeyHash]);
 	return createHash("sha256").update(identity).digest("hex");
 }
 
@@ -417,7 +418,8 @@ export function createAdviseTool(
 						Type.String({
 							minLength: 1,
 							maxLength: 200,
-							description: "Stable finding identity. Reuse it for semantic paraphrases.",
+							description:
+								"Canonical identity for exactly one concrete underlying defect. Reuse it for paraphrases or severity changes of that defect; never reuse it for a materially different defect.",
 						}),
 					),
 				},

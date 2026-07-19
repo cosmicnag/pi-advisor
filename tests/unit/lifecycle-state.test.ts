@@ -64,7 +64,7 @@ describe("Slice 3A lifecycle state primitives", () => {
 		const valid = stateFor(manager);
 		expect(parsePersistedAdvisorRuntimeState(valid, manager.getSessionId(), branch)).toEqual(valid);
 		expect(
-			parsePersistedAdvisorRuntimeState({ ...valid, version: 2 }, manager.getSessionId(), branch),
+			parsePersistedAdvisorRuntimeState({ ...valid, version: 3 }, manager.getSessionId(), branch),
 		).toBeUndefined();
 		expect(parsePersistedAdvisorRuntimeState(valid, "another-session", branch)).toBeUndefined();
 		expect(
@@ -124,14 +124,43 @@ describe("Slice 3A lifecycle state primitives", () => {
 		).toBeUndefined();
 	});
 
-	it("accepts only opaque semantic finding hashes in persisted review advice", () => {
+	it("versions semantic finding hashes and migrates strict version 1 state", () => {
 		const manager = SessionManager.inMemory();
 		manager.appendMessage({ role: "user", content: "root", timestamp: 1 });
 		const branch = manager.getBranch();
+		const legacyAdvice = advice("Verify the legacy cancellation defect.");
+		const legacy = {
+			...stateFor(manager),
+			version: 1,
+			deferredAdvice: [
+				{
+					advice: legacyAdvice,
+					stale: true,
+					branchWindow: cursorAtTail(branch),
+					displayedInEntry: false,
+				},
+			],
+			dedupeHashes: [adviceDedupeKey(legacyAdvice)],
+			memorySuggestions: {
+				meaningfulTurnCount: 2,
+				admittedCount: 1,
+				deliveredCount: 1,
+				lastAdmittedTurn: 2,
+				lastAdmittedAt: Date.now(),
+				sessionCapReached: false,
+			},
+			notesDelivered: 3,
+		};
+		expect(parsePersistedAdvisorRuntimeState(legacy, manager.getSessionId(), branch)).toEqual({
+			...legacy,
+			version: ADVISOR_RUNTIME_STATE_VERSION,
+			dedupeHashes: [],
+		});
+
 		const semanticAdvice = advice("Verify the concrete cancellation defect.");
 		if (semanticAdvice.intent !== "review") throw new Error("Expected review advice fixture");
 		semanticAdvice.findingKeyHash = "a".repeat(64);
-		const valid = {
+		const current = {
 			...stateFor(manager),
 			deferredAdvice: [
 				{
@@ -143,15 +172,22 @@ describe("Slice 3A lifecycle state primitives", () => {
 			],
 			dedupeHashes: [adviceDedupeKey(semanticAdvice)],
 		};
-		expect(parsePersistedAdvisorRuntimeState(valid, manager.getSessionId(), branch)).toEqual(valid);
+		expect(parsePersistedAdvisorRuntimeState(current, manager.getSessionId(), branch)).toEqual(
+			current,
+		);
 
-		const invalid = structuredClone(valid);
-		if (invalid.deferredAdvice[0]?.advice.intent !== "review") {
+		const invalidHash = structuredClone(current);
+		if (invalidHash.deferredAdvice[0]?.advice.intent !== "review") {
 			throw new Error("Expected persisted review advice fixture");
 		}
-		invalid.deferredAdvice[0].advice.findingKeyHash = "historical-workflow";
+		invalidHash.deferredAdvice[0].advice.findingKeyHash = "historical-workflow";
 		expect(
-			parsePersistedAdvisorRuntimeState(invalid, manager.getSessionId(), branch),
+			parsePersistedAdvisorRuntimeState(invalidHash, manager.getSessionId(), branch),
+		).toBeUndefined();
+
+		const mislabeledLegacy = { ...structuredClone(current), version: 1 };
+		expect(
+			parsePersistedAdvisorRuntimeState(mislabeledLegacy, manager.getSessionId(), branch),
 		).toBeUndefined();
 	});
 
