@@ -1943,7 +1943,10 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 
 			this.rollbackNestedAttempt(session, messagesBeforeAttempt);
 			if (run.providerOverflow) {
-				if (!contextWasFresh && attempt < MAX_ADVISOR_RETRIES_PER_UPDATE) {
+				if (
+					(!contextWasFresh || lifecycleReprime.usedSnapshot) &&
+					attempt < MAX_ADVISOR_RETRIES_PER_UPDATE
+				) {
 					this.clearPrivateContextAtCurrentCursor(session);
 					epoch = this.status.epoch;
 					promptForAttempt = lifecycleReprime.usedSnapshot ? updatePrompt : promptForAttempt;
