@@ -200,6 +200,7 @@ describe.sequential("Slice 3B retry lifecycle resilience", () => {
 				reviewRequests: 2,
 				reviewsCompleted: 0,
 				failedReviews: 2,
+				consecutiveFailures: 1,
 				retryAttempts: 1,
 				notesSuppressed: 0,
 			});
@@ -210,16 +211,20 @@ describe.sequential("Slice 3B retry lifecycle resilience", () => {
 		}
 	});
 
-	it("counts repeated attempts toward the existing three-failure pause and warns once", async () => {
+	it("counts failed updates only after retries are exhausted and warns once with the final cause", async () => {
 		const primary = createPrimaryProvider([
 			{ content: [{ type: "text", text: "first answer" }] },
 			{ content: [{ type: "text", text: "second answer" }] },
+			{ content: [{ type: "text", text: "third answer" }] },
 			{ content: [{ type: "text", text: "ignored after pause" }] },
 		]);
 		const advisor = createAdvisorProvider([
 			{ errorMessage: "failure one" },
 			{ errorMessage: "failure two" },
 			{ errorMessage: "failure three" },
+			{ errorMessage: "failure four" },
+			{ errorMessage: "failure five" },
+			{ errorMessage: "failure six Bearer super-secret-token-value" },
 		]);
 		const warnings: string[] = [];
 		let runtime: AdvisorRuntime | undefined;
@@ -239,19 +244,27 @@ describe.sequential("Slice 3B retry lifecycle resilience", () => {
 		try {
 			await harness.session.prompt("first repeatedly failing update");
 			await waitFor(() => runtime?.getStatus().failedReviews === 2);
-			await harness.session.prompt("second update reaches pause");
+			expect(runtime?.getStatus()).toMatchObject({ consecutiveFailures: 1, paused: false });
+			await harness.session.prompt("second repeatedly failing update");
+			await waitFor(() => runtime?.getStatus().failedReviews === 4);
+			expect(runtime?.getStatus()).toMatchObject({ consecutiveFailures: 2, paused: false });
+			await harness.session.prompt("third repeatedly failing update reaches pause");
 			await waitFor(() => runtime?.getStatus().paused === true);
 
 			expect(runtime?.getStatus()).toMatchObject({
 				paused: true,
 				consecutiveFailures: 3,
-				failedReviews: 3,
-				retryAttempts: 1,
+				failedReviews: 6,
+				retryAttempts: 3,
 				warnings: 1,
+				lastFailure: "failure six Bearer [REDACTED]",
 			});
 			expect(warnings).toHaveLength(1);
+			expect(warnings[0]).toContain("Three consecutive Advisor updates failed");
+			expect(warnings[0]).toContain("failure six Bearer [REDACTED]");
+			expect(warnings[0]).not.toContain("super-secret-token-value");
 			await harness.session.prompt("turn after pause");
-			expect(advisor.requests).toHaveLength(3);
+			expect(advisor.requests).toHaveLength(6);
 		} finally {
 			await harness.dispose();
 		}
@@ -285,7 +298,7 @@ describe.sequential("Slice 3B retry lifecycle resilience", () => {
 			expect(pending).toMatchObject({ backlog: true, retryPending: true });
 			expect(pending.pendingTranscriptBytes).toBeGreaterThan(0);
 			expect(formatAdvisorStatus(pending)).toContain("retry pending");
-			expect(formatAdvisorStatus(pending)).toContain("1 consecutive");
+			expect(formatAdvisorStatus(pending)).toContain("0 consecutive failed updates");
 
 			await waitFor(() => runtime?.getStatus().reviewsCompleted === 2);
 			expect(JSON.stringify(advisor.requests[2]?.context.messages)).toContain(

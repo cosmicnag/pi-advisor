@@ -1502,7 +1502,11 @@ export class AdvisorRuntime {
 		}
 		this.draining = true;
 		void this.drain(update).catch((error: unknown) => {
-			if (!this.disposed && this.status.enabled) this.recordFailure(boundedReason(error));
+			if (!this.disposed && this.status.enabled) {
+				const reason = boundedReason(error);
+				this.recordAttemptFailure(reason);
+				this.recordFailedUpdate(reason);
+			}
 			this.publishStatus();
 		});
 	}
@@ -1852,6 +1856,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			truncated: update.persistedTruncated,
 		});
 		let epoch = this.status.epoch;
+		let abandonedFailure: string | undefined;
 		for (let attempt = 0; attempt <= MAX_ADVISOR_RETRIES_PER_UPDATE; attempt++) {
 			this.resetCollectorForAttempt(update, capability);
 			const messagesBeforeAttempt = structuredClone(session.messages);
@@ -1918,7 +1923,14 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 						this.deliver(accepted, ctx, stale, run.deferAdvice, update.turnNumber);
 				} catch (error) {
 					this.rollbackNestedAttempt(session, messagesBeforeAttempt);
-					this.recordFailure(boundedReason(error));
+					const reason = boundedReason(error);
+					this.recordAttemptFailure(reason);
+					this.persistTranscriptDetails({
+						kind: "failure",
+						reason,
+						stopReason: "delivery-failure",
+					});
+					abandonedFailure = reason;
 					break;
 				}
 				this.status.reviewsCompleted++;
@@ -1986,13 +1998,14 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				reason: failure,
 				stopReason: boundedPersistedValue(run.stopReason, 256),
 			});
-			const pausedForFailure = this.recordFailure(failure);
+			this.recordAttemptFailure(failure);
 			const retryable =
 				thrownFailure !== undefined ||
 				(run.governorFailure === undefined &&
 					run.toolFailure === undefined &&
 					run.providerFailure !== undefined);
-			if (!retryable || attempt >= MAX_ADVISOR_RETRIES_PER_UPDATE || pausedForFailure) {
+			if (!retryable || attempt >= MAX_ADVISOR_RETRIES_PER_UPDATE) {
+				abandonedFailure = failure;
 				break;
 			}
 			if (!(await this.waitForRetry(epoch))) {
@@ -2001,6 +2014,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			}
 			this.status.retryAttempts++;
 		}
+		if (abandonedFailure !== undefined) this.recordFailedUpdate(abandonedFailure);
 		this.applySessionSoftCaps();
 		this.persistState();
 		this.publishStatus();
@@ -2360,14 +2374,17 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		this.status.lastDeliveryFailure = boundedReason(error);
 	}
 
-	private recordFailure(reason: string): boolean {
+	private recordAttemptFailure(reason: string): void {
 		this.status.failedReviews++;
+		this.status.lastFailure = reason;
+	}
+
+	private recordFailedUpdate(reason: string): void {
 		this.status.consecutiveFailures++;
 		this.status.lastFailure = reason;
 		if (this.status.consecutiveFailures >= FAILURE_PAUSE_COUNT) {
-			this.pause("Three consecutive Advisor updates failed");
+			this.pause(`Three consecutive Advisor updates failed. Last failure: ${reason}`);
 		}
-		return this.status.paused;
 	}
 
 	private applySessionSoftCaps(): void {
@@ -2576,7 +2593,7 @@ export function formatAdvisorStatus(status: AdvisorRuntimeStatus): string {
 		`Session tokens: ${String(status.usage.total)} total (${String(status.usage.input)} input, ${String(status.usage.output)} output, ${String(status.usage.cacheRead)} cache read, ${String(status.usage.cacheWrite)} cache write), cap ${String(status.sessionTokenSoftCap)}`,
 		`Session cost: $${status.usage.costUsd.toFixed(4)}, cap ${String(status.sessionCostSoftCapUsd)}`,
 		`Reviews: ${String(status.reviewRequests)} requests, ${String(status.reviewsCompleted)} completed, ${String(status.silentReviews)} silent, ${String(status.failedReviews)} failed`,
-		`Failures: ${String(status.consecutiveFailures)} consecutive, ${String(status.retryAttempts)} retry attempts`,
+		`Failures: ${String(status.consecutiveFailures)} consecutive failed updates, ${String(status.retryAttempts)} retry attempts`,
 		`Delivery failures: ${String(status.deliveryFailures)}`,
 		`Lifecycle: ${String(status.branchResets)} resets, ${String(status.staleQueuedMessagesDiscarded)} stale queued messages discarded`,
 		`Notes: ${String(status.notesDelivered)} delivered, ${String(status.activeNotesPending)} active pending, ${String(status.deferredNotesPending)} deferred (${String(status.restoredDeferredNotesPending)} restored), oldest deferred age ${String(status.oldestDeferredAdviceAgeMs)} ms, ${String(status.notesSuppressed)} suppressed`,

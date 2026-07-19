@@ -1138,6 +1138,9 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			{ errorMessage: "failure one" },
 			{ errorMessage: "failure two" },
 			{ errorMessage: "failure three" },
+			{ errorMessage: "failure four" },
+			{ errorMessage: "failure five" },
+			{ errorMessage: "failure six" },
 		]);
 		const warnings: string[] = [];
 		let runtime: AdvisorRuntime | undefined;
@@ -1158,17 +1161,19 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			await harness.session.prompt("first failure turn");
 			await waitFor(() => runtime?.getStatus().failedReviews === 2);
 			await harness.session.prompt("second failure turn");
-			await waitFor(() => runtime?.getStatus().failedReviews === 3);
+			await waitFor(() => runtime?.getStatus().failedReviews === 4);
+			await harness.session.prompt("third failure turn");
+			await waitFor(() => runtime?.getStatus().failedReviews === 6);
 			expect(runtime?.getStatus()).toMatchObject({
 				paused: true,
 				consecutiveFailures: 3,
-				failedReviews: 3,
-				retryAttempts: 1,
+				failedReviews: 6,
+				retryAttempts: 3,
 				warnings: 1,
 			});
 			expect(warnings).toHaveLength(1);
 			await harness.session.prompt("turn after pause");
-			expect(advisor.requests).toHaveLength(3);
+			expect(advisor.requests).toHaveLength(6);
 		} finally {
 			await harness.dispose();
 		}

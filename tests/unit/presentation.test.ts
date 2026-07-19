@@ -15,15 +15,19 @@ import {
 	MAX_PENDING_ADVICE_ITEMS,
 	renderAdviceCards,
 	renderAdviceMessage,
+	renderLateAdviceEntry,
 	type AdvicePresentationNote,
 	type AdvisorRuntimeStatus,
 } from "../../src/index.js";
 
-function fixtureTheme(ansi: boolean): Theme {
+function fixtureTheme(ansi: boolean, borderColors?: string[]): Theme {
 	const style = (open: string, text: string): string =>
 		ansi ? `\u001B[${open}m${text}\u001B[0m` : text;
 	return {
-		fg: (_color: string, text: string) => style("33", text),
+		fg: (color: string, text: string) => {
+			if (text === "│") borderColors?.push(color);
+			return style("33", text);
+		},
 		bg: (_color: string, text: string) => style("40", text),
 		bold: (text: string) => style("1", text),
 		italic: (text: string) => text,
@@ -31,6 +35,10 @@ function fixtureTheme(ansi: boolean): Theme {
 		inverse: (text: string) => text,
 		strikethrough: (text: string) => text,
 	} as Theme;
+}
+
+function recordingTheme(borderColors: string[]): Theme {
+	return fixtureTheme(false, borderColors);
 }
 
 function presentationNote(
@@ -169,6 +177,75 @@ describe("Advisor presentation and diagnostics through Slice 5", () => {
 			expect(lines.length).toBeGreaterThan(0);
 			for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 		}
+	});
+
+	it("colors every card border by severity and Memory suggestions independently", () => {
+		const borderColors: string[] = [];
+		const memoryNote: AdvicePresentationNote = {
+			intent: "memory-suggestion",
+			note: "Remember the durable procedure.",
+			memory: {
+				text: "Use the verified procedure.",
+				category: "project",
+				basis: "project-procedure",
+			},
+			delivery: "active",
+			truncated: false,
+			originalCharacters: 31,
+			originalEstimatedTokens: 8,
+			createdAt: 1_700_000_000_000,
+		};
+		const component = renderAdviceCards(
+			[
+				presentationNote({ severity: "nit" }),
+				presentationNote({ severity: "concern" }),
+				presentationNote({ severity: "blocker" }),
+				memoryNote,
+			],
+			false,
+			recordingTheme(borderColors),
+			1_700_000_000_000,
+		);
+		const lines = component.render(60);
+		component.invalidate();
+		expect(lines.filter((line) => line.length > 0 && !line.startsWith("│ "))).toEqual([]);
+		expect(new Set(borderColors)).toEqual(new Set(["accent", "warning", "error"]));
+		expect(borderColors[0]).toBe("accent");
+		expect(borderColors).toContain("warning");
+		expect(borderColors).toContain("error");
+		expect(borderColors.at(-1)).toBe("accent");
+	});
+
+	it("uses the bordered shared render path for messages and late entries", () => {
+		const note = presentationNote({ severity: "blocker" });
+		const theme = fixtureTheme(false);
+		const messageComponent = renderAdviceMessage(
+			{
+				role: "custom",
+				customType: "pi-advisor-note",
+				content: "advice",
+				display: true,
+				details: { notes: [note] },
+				timestamp: note.createdAt,
+			},
+			{ expanded: false },
+			theme,
+		);
+		const lateComponent = renderLateAdviceEntry(
+			{
+				type: "custom",
+				customType: "pi-advisor-late-note",
+				data: { note, displayedAt: 1 },
+			} as Parameters<typeof renderLateAdviceEntry>[0],
+			{ expanded: false },
+			theme,
+		);
+		expect(
+			messageComponent?.render(60).every((line) => line.length === 0 || line.startsWith("│ ")),
+		).toBe(true);
+		expect(
+			lateComponent?.render(60).every((line) => line.length === 0 || line.startsWith("│ ")),
+		).toBe(true);
 	});
 
 	it("renders restored deferred advice with its age and resume marker", () => {

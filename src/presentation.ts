@@ -1,5 +1,12 @@
 import type { CustomEntry, MessageRenderer, Theme } from "@earendil-works/pi-coding-agent";
-import { Box, Container, Spacer, Text, type Component } from "@earendil-works/pi-tui";
+import {
+	Box,
+	Container,
+	Spacer,
+	Text,
+	truncateToWidth,
+	type Component,
+} from "@earendil-works/pi-tui";
 
 import type { AdviceDelivery, AdviceSeverity, MemorySuggestionQueueState } from "./advice.js";
 import { HARD_LIMITS } from "./config.js";
@@ -211,6 +218,26 @@ function formatDeliveryLabel(delivery: AdviceDelivery): string {
 	return delivery === "active" ? "active guidance" : "next-turn guidance";
 }
 
+class AdvisorCardBorder implements Component {
+	constructor(
+		private readonly child: Component,
+		private readonly theme: Theme,
+		private readonly color: "accent" | "warning" | "error",
+	) {}
+
+	invalidate(): void {
+		this.child.invalidate();
+	}
+
+	render(width: number): string[] {
+		const availableWidth = Math.max(1, width);
+		const prefix = `${this.theme.fg(this.color, "│")} `;
+		return this.child
+			.render(Math.max(1, availableWidth - 2))
+			.map((line) => truncateToWidth(`${prefix}${line}`, availableWidth));
+	}
+}
+
 export function renderAdviceCards(
 	notes: readonly AdvicePresentationNote[],
 	expanded: boolean,
@@ -257,7 +284,7 @@ export function renderAdviceCards(
 			];
 			box.addChild(new Text(theme.fg("dim", details.join(" · ")), 0, 0));
 		}
-		container.addChild(box);
+		container.addChild(new AdvisorCardBorder(box, theme, color));
 	}
 	return container;
 }

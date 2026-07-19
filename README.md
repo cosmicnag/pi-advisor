@@ -57,6 +57,7 @@ Start Pi and run:
 ```
 
 The configuration flow selects an authenticated model, reasoning effort, approved read-only tools, and User instructions.
+In the TUI, the model picker is focused immediately and fuzzy-searches provider, model ID, and display name as you type; RPC clients retain their standard selection dialog.
 It shows a summary and asks for confirmation before atomically saving `~/.pi/agent/WATCHDOG.yml`.
 
 Then enable Advisor for the current session:
@@ -133,6 +134,7 @@ Private Advisor reasoning, rejected notes, duplicate notes, content-free respons
 Advice created during an active run reaches Pi's next steering boundary and does not abort a running tool.
 Late or interruption-time advice waits for the next user-driven turn without triggering another completion.
 Advice is marked potentially stale when the Executor has advanced beyond the reviewed window, and restored advice requires fresh verification.
+Every Advisor card has a severity-colored left border so it remains visually distinct from native tool-call cards; Memory suggestion cards use the Advisor accent color.
 
 ## Security, privacy, and cost
 
@@ -160,6 +162,7 @@ Provider usage or pricing can be missing or incomplete, so explicitly enabled to
 Advisor estimates its private context before each bounded update and asks Pi's public nested `AgentSession.compact()` API to compact when needed.
 If compaction fails or remains unsafe, Advisor clears only its private nested history and retries the same current bounded update once without replaying the full Executor branch.
 If that update still cannot fit fresh context, Advisor drops only that update, warns, and remains active for later updates.
+Three consecutive updates that each exhaust their retry path pause Advisor with one warning that includes the final bounded, secret-redacted failure reason; failed attempts within one update do not advance that streak more than once.
 Branch, session, and confirmed configuration resynchronization may use one bounded branch snapshot, but an unsafe lifecycle snapshot degrades to the current bounded update instead of pausing Advisor.
 
 Pi Advisor writes bounded lifecycle state as Pi custom entries outside model context when required for correct compatible resume and delivery.
