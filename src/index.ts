@@ -143,10 +143,11 @@ async function pickAdvisorInstructions(
 		return "";
 	}
 	if (choice !== "Add custom instructions" && choice !== "Edit instructions") return undefined;
-	return ctx.ui.editor(
+	const edited = await ctx.ui.editor(
 		`Configuration step: ${choice === "Add custom instructions" ? "add" : "edit"} User Advisor instructions (fixed safety policy always remains authoritative)`,
 		choice === "Add custom instructions" ? "" : currentInstructions,
 	);
+	return edited?.trim();
 }
 
 export async function pickAdvisorInteractiveConfiguration(

@@ -134,6 +134,30 @@ describe("WATCHDOG configuration", () => {
 		expect(editor).toHaveBeenCalledWith(expect.stringContaining("Configuration step: add"), "");
 	});
 
+	it("normalizes whitespace-only editor input to no instructions", async () => {
+		const select = vi
+			.fn<ExtensionCommandContext["ui"]["select"]>()
+			.mockResolvedValueOnce("fixture/advisor")
+			.mockResolvedValueOnce("high")
+			.mockResolvedValueOnce("Done - use 4 read-only tools")
+			.mockResolvedValueOnce("Add custom instructions");
+		const configured = await pickAdvisorInteractiveConfiguration(
+			{
+				mode: "rpc",
+				modelRegistry: {
+					getAvailable: () => [{ provider: "fixture", id: "advisor" }],
+				} as ExtensionCommandContext["modelRegistry"],
+				ui: {
+					select,
+					editor: vi.fn().mockResolvedValue(" \n\t "),
+					notify: vi.fn(),
+				} as unknown as ExtensionCommandContext["ui"],
+			},
+			structuredClone(DEFAULT_ADVISOR_CONFIG),
+		);
+		expect(configured?.instructions).toBe("");
+	});
+
 	it("lets the TUI continue without instructions without opening an editor", async () => {
 		const custom = vi.fn().mockResolvedValue("fixture/advisor");
 		const select = vi
