@@ -35,6 +35,7 @@ describe("public release surface", () => {
 			"README.md",
 			"LICENSE",
 			"THIRD_PARTY_NOTICES.md",
+			"docs/assets/advisor-in-action.png",
 			"docs/configuration.md",
 			"docs/security.md",
 		]);

@@ -10,6 +10,10 @@ It stays silent when work is sound and delivers a bounded, actionable note when 
 > Review this package before installing it.
 > When Advisor is active, it sends bounded session content and allowed file content to the model provider you select, which can create additional usage and cost.
 
+![Pi Advisor surfaces a concern about stale cache data after reviewing an Executor response](docs/assets/advisor-in-action.png)
+
+_Pi Advisor reviewing a synthetic cache implementation in a privacy-safe demo session._
+
 ## Features
 
 - Automatic review without relying on the Executor to request it.
