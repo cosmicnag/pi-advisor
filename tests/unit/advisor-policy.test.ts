@@ -88,6 +88,8 @@ function runtimeStatus(): AdvisorRuntimeStatus {
 		compactionUsageUnavailable: 0,
 		contextReprimesCompleted: 0,
 		contextReprimeFailures: 0,
+		sessionTokenSoftCap: "off",
+		sessionCostSoftCapUsd: "off",
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, costUsd: 0 },
 		reviewRequests: 0,
 		reviewsCompleted: 0,
@@ -216,6 +218,8 @@ describe("Slice 1 configuration and emission policy", () => {
 		expect(output).toContain(
 			"Session tokens: 155 total (100 input, 20 output, 30 cache read, 5 cache write)",
 		);
+		expect(output).toContain("Session tokens: 155 total");
+		expect(output).toContain("cap off");
 		expect(output).toContain("Reviews: 4 requests, 3 completed");
 		expect(output).toContain("7 suppressed");
 		expect(output).toContain("Transcript persistence: enabled, 9 records persisted, 1");

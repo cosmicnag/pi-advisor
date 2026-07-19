@@ -89,10 +89,19 @@ Redaction reduces accidental exposure but cannot recognize every credential form
 User WATCHDOG files apply across repositories.
 Pi reads Project WATCHDOG files only when it reports the project as trusted.
 Trusted Project configuration may narrow tools and limits, add protected paths, or add lower-authority instructions.
+For cumulative usage caps, a finite Project value may narrow User `off`, while Project `off` cannot remove or raise a finite User cap.
 It cannot activate Advisor, select a model, increase spending or exposure, remove protections, create exceptions, or enable transcript persistence.
 
 Trusted Project instructions still reach the selected model and retain residual prompt-injection risk.
 Fixed Advisor policy and code-enforced safety controls remain higher authority than freeform instructions.
+
+## Usage and cost controls
+
+Advisor input, output, cache-read, cache-write, total-token, and provider-reported cost accounting remains visible for the lifetime of the runtime.
+The cumulative token and reported-cost caps default to `off` so private-context maintenance does not stop normal background review merely because cache-heavy lifetime totals grow.
+Users who require a spending stop can configure a positive token cap, reported-cost cap, or both.
+Provider reporting can be missing or incomplete, and Pi 0.80.7 does not expose nested compaction usage, so these controls cannot guarantee a complete monetary bound.
+Clearing private Advisor context does not reset or conceal lifetime usage totals.
 
 ## Persistence
 

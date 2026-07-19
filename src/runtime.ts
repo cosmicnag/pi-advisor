@@ -5,6 +5,7 @@ import {
 	type AgentMessage,
 } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
+import { isContextOverflow } from "@earendil-works/pi-ai/compat";
 import {
 	createAgentSession,
 	DefaultResourceLoader,
@@ -122,6 +123,13 @@ function adviceQueueBytes(advice: AcceptedAdvice): number {
 		Buffer.byteLength(advice.note, "utf8") +
 		(advice.intent === "memory-suggestion" ? Buffer.byteLength(advice.memory.text, "utf8") : 0)
 	);
+}
+
+function lifecycleSnapshotEntries(branch: SessionEntry[]): SessionEntry[] {
+	for (let index = branch.length - 1; index >= 0; index--) {
+		if (branch[index]?.type === "compaction") return branch.slice(index);
+	}
+	return branch;
 }
 
 function branchHasNewerExecutorState(branch: SessionEntry[], window: AdvisorCursor): boolean {
@@ -254,6 +262,8 @@ export interface AdvisorRuntimeStatus {
 	compactionUsageUnavailable: number;
 	contextReprimesCompleted: number;
 	contextReprimeFailures: number;
+	sessionTokenSoftCap: AdvisorConfig["limits"]["sessionTokenSoftCap"];
+	sessionCostSoftCapUsd: AdvisorConfig["limits"]["sessionCostSoftCapUsd"];
 	usage: AdvisorUsageTotals;
 	reviewRequests: number;
 	reviewsCompleted: number;
@@ -305,6 +315,7 @@ interface CurrentRun {
 	deferAdvice: boolean;
 	governorFailure?: string;
 	providerFailure?: string;
+	providerOverflow: boolean;
 	toolFailure?: string;
 	usage: AdvisorUsageTotals;
 	stopReason: string;
@@ -466,6 +477,8 @@ export function formatAdvisorDiagnosticsDump(
 		compactionUsageUnavailable: status.compactionUsageUnavailable,
 		contextReprimesCompleted: status.contextReprimesCompleted,
 		contextReprimeFailures: status.contextReprimeFailures,
+		sessionTokenSoftCap: status.sessionTokenSoftCap,
+		sessionCostSoftCapUsd: status.sessionCostSoftCapUsd,
 		usage: status.usage,
 		reviewRequests: status.reviewRequests,
 		reviewsCompleted: status.reviewsCompleted,
@@ -632,7 +645,10 @@ export class AdvisorRuntime {
 	private lastReviewSubmittedTurn?: number;
 	private lastReviewSubmittedAt?: number;
 	private usageAnchorInvalidated = false;
-	private configurationReprimeSnapshot?: string;
+	private configurationReprimeSnapshot?: {
+		text: string;
+		reason: "configuration-apply" | "lifecycle";
+	};
 	private memorySuggestionAdmissions = 0;
 	private lastMemorySuggestionTurn?: number;
 	private lastMemorySuggestionAt?: number;
@@ -691,6 +707,8 @@ export class AdvisorRuntime {
 			compactionUsageUnavailable: 0,
 			contextReprimesCompleted: 0,
 			contextReprimeFailures: 0,
+			sessionTokenSoftCap: this.config.limits.sessionTokenSoftCap,
+			sessionCostSoftCapUsd: this.config.limits.sessionCostSoftCapUsd,
 			usage: emptyUsage(),
 			reviewRequests: 0,
 			reviewsCompleted: 0,
@@ -789,6 +807,8 @@ export class AdvisorRuntime {
 		this.config = normalizeAdvisorConfig(config);
 		this.projectInstructions = projectInstructions;
 		this.status.effort = this.config.effort;
+		this.status.sessionTokenSoftCap = this.config.limits.sessionTokenSoftCap;
+		this.status.sessionCostSoftCapUsd = this.config.limits.sessionCostSoftCapUsd;
 		if (this.config.model === undefined) delete this.status.model;
 		else this.status.model = this.config.model;
 		this.status.transcriptPersistenceEnabled = this.config.persistence.transcript;
@@ -837,6 +857,8 @@ export class AdvisorRuntime {
 		this.config = normalizeAdvisorConfig(config);
 		this.projectInstructions = projectInstructions;
 		this.status.effort = this.config.effort;
+		this.status.sessionTokenSoftCap = this.config.limits.sessionTokenSoftCap;
+		this.status.sessionCostSoftCapUsd = this.config.limits.sessionCostSoftCapUsd;
 		this.status.transcriptPersistenceEnabled = this.config.persistence.transcript;
 		this.status.memorySuggestionsRemaining = Math.max(
 			0,
@@ -859,24 +881,27 @@ export class AdvisorRuntime {
 		if (wasEnabled) {
 			this.applySessionSoftCaps();
 			await this.enable(ctx, activationSource);
-			this.seedConfigurationReprime(ctx);
+			this.seedLifecycleReprime(ctx.sessionManager.getBranch(), "configuration-apply");
 		}
 		this.persistState();
 		this.publishStatus();
 	}
 
-	private seedConfigurationReprime(ctx: ExtensionContext): void {
+	private seedLifecycleReprime(
+		branch: ReturnType<ExtensionContext["sessionManager"]["getBranch"]>,
+		reason: "configuration-apply" | "lifecycle",
+	): void {
 		const session = this.session;
-		const branch = ctx.sessionManager.getBranch();
-		if (session === undefined || branch.length === 0) return;
+		const contextEntries = lifecycleSnapshotEntries(branch);
+		if (session === undefined || contextEntries.length === 0) return;
 		let tokenBudget = Math.max(
 			1,
 			Math.min(this.config.limits.maxReprimeTokens, this.status.contextLimitTokens),
 		);
 		while (tokenBudget >= 1) {
-			const snapshot = renderAdvisorReprimeSnapshot(branch, tokenBudget);
+			const snapshot = renderAdvisorReprimeSnapshot(contextEntries, tokenBudget);
 			if (snapshot.text.trim().length === 0) break;
-			const prompt = `<advisor-reprime reason="configuration-apply">\n${snapshot.text}\n</advisor-reprime>`;
+			const prompt = `<advisor-reprime reason="${reason}">\n${snapshot.text}\n</advisor-reprime>`;
 			const estimate = estimateAdvisorContext(
 				[],
 				prompt,
@@ -885,7 +910,7 @@ export class AdvisorRuntime {
 				session.agent.state.tools,
 			);
 			if (estimate.tokens <= this.status.contextLimitTokens) {
-				this.configurationReprimeSnapshot = snapshot.text;
+				this.configurationReprimeSnapshot = { text: snapshot.text, reason };
 				this.usageAnchorInvalidated = true;
 				this.status.contextReprimesCompleted++;
 				this.status.redactions += snapshot.redactions;
@@ -896,7 +921,6 @@ export class AdvisorRuntime {
 			tokenBudget = Math.max(1, Math.floor(tokenBudget / 2));
 		}
 		this.status.contextReprimeFailures++;
-		this.pause("Advisor configuration re-prime snapshot could not be built safely");
 	}
 
 	private restorePersistedState(ctx: ExtensionContext): void {
@@ -1296,6 +1320,7 @@ export class AdvisorRuntime {
 			}
 			if (event.message.stopReason === "error") {
 				run.providerFailure = boundedReason(event.message.errorMessage ?? "Advisor provider error");
+				run.providerOverflow = isContextOverflow(event.message, model.contextWindow);
 			}
 			const errorResult = event.toolResults.find(
 				(resultMessage) =>
@@ -1647,54 +1672,31 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		);
 	}
 
-	private rePrimePrompt(session: AgentSession, submittedPrompt: string): string | undefined {
-		const branch = this.hostContext?.sessionManager.getBranch();
-		if (branch === undefined || branch.length === 0) return undefined;
-		let tokenBudget = Math.max(
-			1,
-			Math.min(this.config.limits.maxReprimeTokens, this.status.contextLimitTokens),
-		);
-		while (tokenBudget >= 1) {
-			const snapshot = renderAdvisorReprimeSnapshot(branch, tokenBudget);
-			if (snapshot.text.trim().length === 0) return undefined;
-			const prompt = `<advisor-reprime>\n${snapshot.text}\n</advisor-reprime>\n\n${submittedPrompt}`;
-			const estimate = estimateAdvisorContext(
-				[],
-				prompt,
-				buildAdvisorSystemPrompt(this.config, this.projectInstructions),
-				false,
-				session.agent.state.tools,
-			);
-			if (estimate.tokens <= this.status.contextLimitTokens) {
-				this.status.epoch++;
-				for (const outstanding of this.activeAdvice.values()) {
-					outstanding.epoch = this.status.epoch;
-				}
-				this.extractStaleNestedQueue(session);
-				session.state.messages = [];
-				session.sessionManager.resetLeaf();
-				this.usageAnchorInvalidated = true;
-				this.status.contextReprimesCompleted++;
-				this.updateContextEstimate(estimate);
-				return prompt;
-			}
-			if (tokenBudget === 1) break;
-			tokenBudget = Math.max(1, Math.floor(tokenBudget / 2));
+	private clearPrivateContextAtCurrentCursor(session: AgentSession): void {
+		this.status.epoch++;
+		for (const outstanding of this.activeAdvice.values()) {
+			outstanding.epoch = this.status.epoch;
 		}
-		return undefined;
+		this.extractStaleNestedQueue(session);
+		session.state.messages = [];
+		session.sessionManager.resetLeaf();
+		this.usageAnchorInvalidated = true;
+		this.status.contextReprimesCompleted++;
+		this.status.consecutiveFailures = 0;
 	}
 
-	private pauseForUnsafeReprime(reason: string): undefined {
+	private dropFreshContextUpdate(reason: string): undefined {
 		this.status.contextReprimeFailures++;
 		this.status.failedReviews++;
-		this.status.consecutiveFailures++;
 		this.status.lastFailure = reason;
 		this.persistTranscriptDetails({
 			kind: "failure",
 			reason,
-			stopReason: "unsafe-reprime",
+			stopReason: "fresh-context-overflow",
 		});
-		this.pause("Advisor re-prime snapshot could not be built safely");
+		this.warn(
+			"Advisor update could not fit fresh private context and was dropped. Advisor remains active for later updates.",
+		);
 		return undefined;
 	}
 
@@ -1712,11 +1714,15 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		session: AgentSession,
 		submittedPrompt: string,
 		branchWindow: AdvisorCursor,
-	): Promise<{ prompt: string; epoch: number } | undefined> {
+	): Promise<{ prompt: string; epoch: number; freshContext: boolean } | undefined> {
 		let estimate = this.estimateNextAdvisorContext(session, submittedPrompt);
 		this.updateContextEstimate(estimate);
 		if (estimate.tokens <= this.status.contextLimitTokens) {
-			return { prompt: submittedPrompt, epoch: this.status.epoch };
+			return {
+				prompt: submittedPrompt,
+				epoch: this.status.epoch,
+				freshContext: session.messages.length === 0,
+			};
 		}
 
 		const epoch = this.status.epoch;
@@ -1744,24 +1750,18 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			estimate = this.estimateNextAdvisorContext(session, submittedPrompt, false);
 			this.updateContextEstimate(estimate);
 			if (estimate.tokens <= this.status.contextLimitTokens) {
-				return { prompt: submittedPrompt, epoch: this.status.epoch };
+				return { prompt: submittedPrompt, epoch: this.status.epoch, freshContext: false };
 			}
 		}
 
-		let reprimePrompt: string | undefined;
-		try {
-			reprimePrompt = this.rePrimePrompt(session, submittedPrompt);
-		} catch (error) {
-			return this.pauseForUnsafeReprime(
-				`Advisor bounded re-prime snapshot failed: ${boundedReason(error)}`,
-			);
+		this.clearPrivateContextAtCurrentCursor(session);
+		estimate = this.estimateNextAdvisorContext(session, submittedPrompt, false);
+		this.updateContextEstimate(estimate);
+		if (estimate.tokens <= this.status.contextLimitTokens) {
+			return { prompt: submittedPrompt, epoch: this.status.epoch, freshContext: true };
 		}
-		if (reprimePrompt !== undefined) {
-			return { prompt: reprimePrompt, epoch: this.status.epoch };
-		}
-		return this.pauseForUnsafeReprime(
-			compactionFailure ??
-				"Advisor context remains over policy after compaction and the bounded re-prime snapshot remains unsafe",
+		return this.dropFreshContextUpdate(
+			compactionFailure ?? "Advisor update remains over policy against fresh private context",
 		);
 	}
 
@@ -1777,14 +1777,15 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		return this.status.enabled && this.status.active && !this.status.paused && !this.disposed;
 	}
 
-	private configurationReprimeWithUpdate(
+	private lifecycleReprimeWithUpdate(
 		session: AgentSession,
 		updatePrompt: string,
-	): string | undefined {
-		let snapshot = this.configurationReprimeSnapshot;
-		if (snapshot === undefined) return updatePrompt;
+	): { prompt: string; usedSnapshot: boolean } {
+		const pending = this.configurationReprimeSnapshot;
+		if (pending === undefined) return { prompt: updatePrompt, usedSnapshot: false };
+		let snapshot = pending.text;
 		for (;;) {
-			const prompt = `<advisor-reprime reason="configuration-apply">\n${snapshot}\n</advisor-reprime>\n\n${updatePrompt}`;
+			const prompt = `<advisor-reprime reason="${pending.reason}">\n${snapshot}\n</advisor-reprime>\n\n${updatePrompt}`;
 			const estimate = estimateAdvisorContext(
 				[],
 				prompt,
@@ -1792,18 +1793,20 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				false,
 				session.agent.state.tools,
 			);
-			if (estimate.tokens <= this.status.contextLimitTokens) return prompt;
+			if (estimate.tokens <= this.status.contextLimitTokens) {
+				return { prompt, usedSnapshot: true };
+			}
 			const bytes = Buffer.byteLength(snapshot, "utf8");
 			if (bytes <= 1) break;
 			snapshot = truncateUtf8TailBytes(
 				snapshot,
 				Math.max(1, Math.floor(bytes / 2)),
-				"[Older configuration re-prime content truncated]\n",
+				"[Older lifecycle re-prime content truncated]\n",
 			);
 		}
 		this.status.contextReprimeFailures++;
-		this.pause("Advisor configuration re-prime snapshot could not fit the next update safely");
-		return undefined;
+		delete this.configurationReprimeSnapshot;
+		return { prompt: updatePrompt, usedSnapshot: false };
 	}
 
 	private async runUpdate(update: QueuedAdvisorUpdate): Promise<void> {
@@ -1823,8 +1826,8 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				? `${this.memorySuggestionPolicyInstructions()}\n\n${boundedUpdate}`
 				: boundedUpdate;
 		const updatePrompt = `<advisor-update>\n${submittedUpdate}\n</advisor-update>`;
-		const submittedPrompt = this.configurationReprimeWithUpdate(session, updatePrompt);
-		if (submittedPrompt === undefined) return;
+		const lifecycleReprime = this.lifecycleReprimeWithUpdate(session, updatePrompt);
+		const submittedPrompt = lifecycleReprime.prompt;
 		const currentBranch = ctx.sessionManager.getBranch();
 		if (!cursorMatches(currentBranch, update.window)) {
 			await this.resetForBranchMismatch(currentBranch);
@@ -1834,7 +1837,8 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		if (maintenance?.epoch !== this.status.epoch || !this.updateCanContinue(session)) {
 			return;
 		}
-		const maintainedPrompt = maintenance.prompt;
+		let promptForAttempt = maintenance.prompt;
+		let contextWasFresh = maintenance.freshContext;
 		delete this.configurationReprimeSnapshot;
 		const branchAfterMaintenance = ctx.sessionManager.getBranch();
 		if (!cursorMatches(branchAfterMaintenance, update.window)) {
@@ -1847,7 +1851,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			entryCount: update.persistedEntryCount,
 			truncated: update.persistedTruncated,
 		});
-		const epoch = this.status.epoch;
+		let epoch = this.status.epoch;
 		for (let attempt = 0; attempt <= MAX_ADVISOR_RETRIES_PER_UPDATE; attempt++) {
 			this.resetCollectorForAttempt(update, capability);
 			const messagesBeforeAttempt = structuredClone(session.messages);
@@ -1856,6 +1860,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				turns: 0,
 				toolCalls: 0,
 				deferAdvice: false,
+				providerOverflow: false,
 				usage: emptyUsage(),
 				stopReason: "unknown",
 				transcriptRecords: [],
@@ -1864,7 +1869,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			let thrownFailure: string | undefined;
 			try {
 				this.status.reviewRequests++;
-				await session.prompt(maintainedPrompt, {
+				await session.prompt(promptForAttempt, {
 					expandPromptTemplates: false,
 					source: "extension",
 				});
@@ -1937,6 +1942,27 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			}
 
 			this.rollbackNestedAttempt(session, messagesBeforeAttempt);
+			if (run.providerOverflow) {
+				if (
+					(!contextWasFresh || lifecycleReprime.usedSnapshot) &&
+					attempt < MAX_ADVISOR_RETRIES_PER_UPDATE
+				) {
+					this.clearPrivateContextAtCurrentCursor(session);
+					epoch = this.status.epoch;
+					promptForAttempt = lifecycleReprime.usedSnapshot ? updatePrompt : promptForAttempt;
+					const freshEstimate = this.estimateNextAdvisorContext(session, promptForAttempt, false);
+					this.updateContextEstimate(freshEstimate);
+					if (freshEstimate.tokens <= this.status.contextLimitTokens) {
+						contextWasFresh = true;
+						this.status.retryAttempts++;
+						continue;
+					}
+				}
+				this.dropFreshContextUpdate(
+					run.providerFailure ?? "Advisor provider reported fresh private context overflow",
+				);
+				break;
+			}
 			if (run.governorFailure !== undefined && accepted?.intent === "review") {
 				try {
 					const delivered = this.deliver(accepted, ctx, stale, run.deferAdvice, update.turnNumber);
@@ -2312,19 +2338,21 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 	}
 
 	async handleLifecycleHint(ctx: ExtensionContext): Promise<void> {
-		await this.resetForBranchMismatch(ctx.sessionManager.getBranch());
+		await this.resetForBranchMismatch(ctx.sessionManager.getBranch(), false);
 		this.lifecycleResetEpoch = this.status.epoch;
 	}
 
 	async handleBranchChange(ctx: ExtensionContext): Promise<void> {
+		const branch = ctx.sessionManager.getBranch();
 		if (this.lifecycleResetEpoch === this.status.epoch) {
 			delete this.lifecycleResetEpoch;
-			this.cursor = cursorAtTail(ctx.sessionManager.getBranch());
+			this.cursor = cursorAtTail(branch);
+			this.seedLifecycleReprime(branch, "lifecycle");
 			this.persistState();
 			this.publishStatus();
 			return;
 		}
-		await this.resetForBranchMismatch(ctx.sessionManager.getBranch());
+		await this.resetForBranchMismatch(branch);
 	}
 
 	private recordDeliveryFailure(error: unknown): void {
@@ -2343,14 +2371,13 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 	}
 
 	private applySessionSoftCaps(): void {
-		if (this.status.usage.total >= this.config.limits.sessionTokenSoftCap) {
+		const tokenCap = this.config.limits.sessionTokenSoftCap;
+		if (tokenCap !== "off" && this.status.usage.total >= tokenCap) {
 			this.pause("Advisor session token soft cap reached");
 			return;
 		}
-		if (
-			this.status.usage.costUsd > 0 &&
-			this.status.usage.costUsd >= this.config.limits.sessionCostSoftCapUsd
-		) {
+		const costCap = this.config.limits.sessionCostSoftCapUsd;
+		if (costCap !== "off" && this.status.usage.costUsd >= costCap) {
 			this.pause("Advisor session cost soft cap reached");
 		}
 	}
@@ -2384,6 +2411,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 
 	private async resetForBranchMismatch(
 		branch: ReturnType<ExtensionContext["sessionManager"]["getBranch"]>,
+		prepareReprime = true,
 	): Promise<void> {
 		this.status.epoch++;
 		this.status.branchResets++;
@@ -2416,6 +2444,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			this.usageAnchorInvalidated = false;
 		}
 		this.cursor = cursorAtTail(branch);
+		if (prepareReprime) this.seedLifecycleReprime(branch, "lifecycle");
 		this.updateBacklogStatus();
 		this.persistState();
 		this.publishStatus();
@@ -2524,7 +2553,8 @@ export function formatAdvisorEnableStatus(
 export function formatAdvisorFooterStatus(status: AdvisorRuntimeStatus): string | undefined {
 	if (!status.enabled) return undefined;
 	const state = status.paused ? "paused" : status.active ? "active" : "inactive";
-	return `Advisor ${state}${status.backlog ? ` · ${String(status.pendingTranscriptBytes)} B queued` : ""}`;
+	const queuedUnit = status.pendingTranscriptBytes === 1 ? "byte" : "bytes";
+	return `Advisor ${state}${status.backlog ? ` · ${String(status.pendingTranscriptBytes)} ${queuedUnit} queued` : ""}`;
 }
 
 export function formatAdvisorStatus(status: AdvisorRuntimeStatus): string {
@@ -2543,8 +2573,8 @@ export function formatAdvisorStatus(status: AdvisorRuntimeStatus): string {
 		`Context estimate: ${String(status.contextEstimateTokens)}/${String(status.contextLimitTokens)} tokens (${String(status.contextUsageTokens)} reported + ${String(status.contextTrailingEstimateTokens)} estimated, ${status.contextEstimateSource})`,
 		`Context compaction: ${String(status.compactionsCompleted)} completed, ${String(status.compactionFailures)} failed, ${String(status.compactionUsageUnavailable)} operations with usage unavailable through Pi public APIs`,
 		`Context re-prime: ${String(status.contextReprimesCompleted)} completed, ${String(status.contextReprimeFailures)} failed`,
-		`Session tokens: ${String(status.usage.total)} total (${String(status.usage.input)} input, ${String(status.usage.output)} output, ${String(status.usage.cacheRead)} cache read, ${String(status.usage.cacheWrite)} cache write)`,
-		`Session cost: $${status.usage.costUsd.toFixed(4)}`,
+		`Session tokens: ${String(status.usage.total)} total (${String(status.usage.input)} input, ${String(status.usage.output)} output, ${String(status.usage.cacheRead)} cache read, ${String(status.usage.cacheWrite)} cache write), cap ${String(status.sessionTokenSoftCap)}`,
+		`Session cost: $${status.usage.costUsd.toFixed(4)}, cap ${String(status.sessionCostSoftCapUsd)}`,
 		`Reviews: ${String(status.reviewRequests)} requests, ${String(status.reviewsCompleted)} completed, ${String(status.silentReviews)} silent, ${String(status.failedReviews)} failed`,
 		`Failures: ${String(status.consecutiveFailures)} consecutive, ${String(status.retryAttempts)} retry attempts`,
 		`Delivery failures: ${String(status.deliveryFailures)}`,

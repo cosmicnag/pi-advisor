@@ -74,6 +74,8 @@ function runtimeStatus(): AdvisorRuntimeStatus {
 		compactionUsageUnavailable: 1,
 		contextReprimesCompleted: 0,
 		contextReprimeFailures: 0,
+		sessionTokenSoftCap: "off",
+		sessionCostSoftCapUsd: "off",
 		usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, total: 10, costUsd: 0.01 },
 		reviewRequests: 1,
 		reviewsCompleted: 1,
@@ -112,9 +114,12 @@ describe("Advisor presentation and diagnostics through Slice 5", () => {
 	it("renders a compact active, queued, paused, or hidden footer status", () => {
 		const status = runtimeStatus();
 		expect(formatAdvisorFooterStatus(status)).toBe("Advisor active");
+		expect(formatAdvisorFooterStatus({ ...status, backlog: true, pendingTranscriptBytes: 1 })).toBe(
+			"Advisor active · 1 byte queued",
+		);
 		expect(
 			formatAdvisorFooterStatus({ ...status, backlog: true, pendingTranscriptBytes: 2048 }),
-		).toBe("Advisor active · 2048 B queued");
+		).toBe("Advisor active · 2048 bytes queued");
 		expect(formatAdvisorFooterStatus({ ...status, active: false, paused: true })).toBe(
 			"Advisor paused",
 		);

@@ -25,7 +25,8 @@ It then shows one summary and asks for confirmation before saving.
 Cancellation at any step leaves the file and runtime unchanged.
 The tool picker cannot select `bash`, `edit`, `write`, an extension tool, or any other mutating or unapproved tool.
 A confirmed save atomically replaces the User YAML file with mode `0600` and immediately rebuilds the current runtime.
-The rebuild invalidates stale in-flight output, preserves delivered-note and aggregate usage totals, and prepares one bounded current-branch re-prime for the next eligible update.
+The rebuild invalidates stale in-flight output, preserves delivered-note and lifetime usage totals, and prepares one bounded current-branch re-prime for the next eligible update.
+If that lifecycle snapshot cannot fit safely, Advisor discards only the snapshot and reviews the current bounded update against fresh private context instead of pausing.
 The workflow remains available when Advisor is disabled, paused, missing a model, or otherwise has no live nested runtime.
 Non-dialog clients receive this reference path instead of a partial editor.
 Protected paths, activation, limits, Memory suggestions, persistence, and other advanced fields are edited directly in YAML.
@@ -93,29 +94,33 @@ tools: [read, grep]
 
 ### Context fields
 
-| YAML path                 | Type                           | Release default | Scope and Project merge         | Effect                                                                                                       |
-| ------------------------- | ------------------------------ | --------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `context.maxFraction`     | Number from `0.01` through `1` | `0.65`          | User sets; Project may lower    | Sets the fraction of model context available before compaction or re-prime, trading continuity for headroom. |
-| `context.reserveTokens`   | Number at least `0`            | `8192`          | User sets; Project may increase | Reserves response space and can trigger earlier maintenance.                                                 |
-| `context.maxUpdateTokens` | Number at least `1`            | `24000`         | User sets; Project may lower    | Bounds each redacted Executor update and limits provider exposure and cost.                                  |
+| YAML path                 | Type                           | Release default | Scope and Project merge         | Effect                                                                                                   |
+| ------------------------- | ------------------------------ | --------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `context.maxFraction`     | Number from `0.01` through `1` | `0.65`          | User sets; Project may lower    | Sets the fraction of model context available before private compaction or fresh current-update recovery. |
+| `context.reserveTokens`   | Number at least `0`            | `8192`          | User sets; Project may increase | Reserves response space and can trigger earlier maintenance.                                             |
+| `context.maxUpdateTokens` | Number at least `1`            | `24000`         | User sets; Project may lower    | Bounds each redacted Executor update and limits provider exposure and cost.                              |
 
 ### Review, delivery, and session limits
 
-| YAML path                             | Type                | Release default | Hard maximum | Scope and Project merge         | Effect                                                                                                  |
-| ------------------------------------- | ------------------- | --------------- | ------------ | ------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `limits.maxAdviceCharacters`          | Number at least `1` | `2000`          | `8000`       | User sets; Project may lower    | Bounds accepted note characters and visibly truncates oversized ordinary rationale.                     |
-| `limits.maxAdviceTokens`              | Number at least `1` | `512`           | `2048`       | User sets; Project may lower    | Adds an estimated-token bound to accepted notes.                                                        |
-| `limits.maxAdvisorTurnsPerUpdate`     | Number at least `1` | `4`             | `12`         | User sets; Project may lower    | Stops long private Advisor tool loops.                                                                  |
-| `limits.maxToolCallsPerUpdate`        | Number at least `0` | `8`             | `32`         | User sets; Project may lower    | Caps read-only calls in one update. `0` disables read-only calls while preserving `advise`.             |
-| `limits.maxPendingTranscriptBytes`    | Number at least `1` | `200000`        | `1000000`    | User sets; Project may lower    | Bounds coalesced Executor backlog and associated bounded metadata.                                      |
-| `limits.maxReprimeTokens`             | Number at least `1` | `32000`         | `128000`     | User sets; Project may lower    | Bounds a redacted current-branch re-prime snapshot.                                                     |
-| `limits.minTurnsBetweenReviews`       | Number at least `1` | `1`             | None         | User sets; Project may increase | Reduces review frequency by requiring more meaningful Executor turns.                                   |
-| `limits.minIntervalMs`                | Number at least `0` | `0`             | None         | User sets; Project may increase | Reduces review frequency by requiring elapsed time while retaining one bounded coalesced update.        |
-| `limits.deferredAdviceRetentionHours` | Number at least `0` | `24`            | None         | User sets; Project may lower    | Controls cross-exit retention for accepted deferred advice. `0` disables new cross-exit note retention. |
-| `limits.sessionTokenSoftCap`          | Number at least `1` | `1000000`       | None         | User sets; Project may lower    | Pauses only Advisor when exact reported review tokens reach the cap.                                    |
-| `limits.sessionCostSoftCapUsd`        | Number at least `0` | `10`            | None         | User sets; Project may lower    | Pauses only Advisor when provider-reported review cost reaches the cap. `0` permits no reported spend.  |
+| YAML path                             | Type                             | Release default | Hard maximum | Scope and Project merge         | Effect                                                                                                  |
+| ------------------------------------- | -------------------------------- | --------------- | ------------ | ------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `limits.maxAdviceCharacters`          | Number at least `1`              | `2000`          | `8000`       | User sets; Project may lower    | Bounds accepted note characters and visibly truncates oversized ordinary rationale.                     |
+| `limits.maxAdviceTokens`              | Number at least `1`              | `512`           | `2048`       | User sets; Project may lower    | Adds an estimated-token bound to accepted notes.                                                        |
+| `limits.maxAdvisorTurnsPerUpdate`     | Number at least `1`              | `4`             | `12`         | User sets; Project may lower    | Stops long private Advisor tool loops.                                                                  |
+| `limits.maxToolCallsPerUpdate`        | Number at least `0`              | `8`             | `32`         | User sets; Project may lower    | Caps read-only calls in one update. `0` disables read-only calls while preserving `advise`.             |
+| `limits.maxPendingTranscriptBytes`    | Number at least `1`              | `200000`        | `1000000`    | User sets; Project may lower    | Bounds coalesced Executor backlog and associated bounded metadata.                                      |
+| `limits.maxReprimeTokens`             | Number at least `1`              | `32000`         | `128000`     | User sets; Project may lower    | Bounds a redacted current-branch re-prime snapshot.                                                     |
+| `limits.minTurnsBetweenReviews`       | Number at least `1`              | `1`             | None         | User sets; Project may increase | Reduces review frequency by requiring more meaningful Executor turns.                                   |
+| `limits.minIntervalMs`                | Number at least `0`              | `0`             | None         | User sets; Project may increase | Reduces review frequency by requiring elapsed time while retaining one bounded coalesced update.        |
+| `limits.deferredAdviceRetentionHours` | Number at least `0`              | `24`            | None         | User sets; Project may lower    | Controls cross-exit retention for accepted deferred advice. `0` disables new cross-exit note retention. |
+| `limits.sessionTokenSoftCap`          | `off` or number at least `1`     | `off`           | None         | User sets; Project may lower    | Optionally pauses only Advisor when exact reported lifetime review tokens reach the configured cap.     |
+| `limits.sessionCostSoftCapUsd`        | `off` or number greater than `0` | `off`           | None         | User sets; Project may lower    | Optionally pauses only Advisor when provider-reported lifetime review cost reaches the configured cap.  |
 
-Provider pricing or usage can be absent or incomplete, so token and dollar caps are both retained.
+Both cumulative caps are opt-in and are disabled by default so normal Advisor review continues across long cache-heavy sessions.
+Input, output, cache-read, cache-write, total-token, and provider-reported cost accounting remains visible when a cap is `off`.
+A trusted Project finite cap may narrow a User `off` value.
+A Project `off` value cannot disable or raise a finite User cap.
+Provider pricing or usage can be absent or incomplete, so explicitly enabled token and dollar caps remain independent safeguards.
 Compaction request usage is unavailable in Pi 0.80.7 and is counted separately rather than estimated into exact totals.
 
 ### Protected paths
@@ -218,7 +223,10 @@ Pi extensions execute with the user's full system permissions, so review package
 When Advisor is active, the selected model provider receives bounded Executor messages, exposed reasoning, tool activity and results, tagged context, and allowed file content.
 Reasoning exposure depends on Pi and the provider, and higher effort can increase provider traffic, latency, and cost.
 Protected read tools and redaction cannot guarantee that every secret is excluded.
-Automatic review creates additional paid provider requests until disabled or paused by a governor.
+Automatic review creates additional paid provider requests until disabled or paused by an enabled governor.
+Cumulative token and reported-cost caps default to `off`; configure a positive limit when a session-wide spending stop is required.
+Private context pressure compacts first, then clears only private Advisor history and retries the same bounded update once when compaction cannot restore safe headroom.
+An update that still cannot fit fresh private context is dropped with a bounded warning while Advisor remains active for later updates.
 Optional transcript persistence stores private local audit data and is disabled by default.
 Pi Advisor sends no product analytics, usage telemetry, or automatic crash reports to Ribbons Digital or another analytics service.
 Provider requests are necessary for the explicitly selected Advisor model, while `/advisor dump` remains local unless the user chooses to share it.

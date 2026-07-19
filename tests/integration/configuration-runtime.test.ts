@@ -124,6 +124,74 @@ describe.sequential("Slice 5A runtime configuration apply", () => {
 		}
 	});
 
+	it("retries a fresh lifecycle snapshot overflow with only the bounded update", async () => {
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "first primary answer" }] },
+			{ content: [{ type: "text", text: "second primary answer after apply" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			{ content: [] },
+			{ errorMessage: "context_length_exceeded: scripted lifecycle snapshot overflow" },
+			{ content: [] },
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		let hostContext: ExtensionContext | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [
+				{
+					name: "configuration-context-probe",
+					factory: (pi) => {
+						pi.on("session_start", (_event, ctx) => {
+							hostContext = ctx;
+						});
+					},
+				},
+				{
+					name: "pi-advisor-under-test",
+					factory: createPiAdvisorExtension({
+						config: configFor(advisor),
+						hooks: { onRuntime: (value) => (runtime = value) },
+					}),
+				},
+			],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("first user request establishes lifecycle context");
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 1);
+			if (runtime === undefined || hostContext === undefined) {
+				throw new Error("Expected initialized Advisor runtime and host context");
+			}
+
+			await runtime.applyConfiguration(configFor(advisor), hostContext);
+			expect(runtime.getNestedMessageCount()).toBe(0);
+			await harness.session.prompt("second user request after configuration apply");
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 2);
+
+			expect(advisor.requests).toHaveLength(3);
+			const snapshotAttempt = JSON.stringify(advisor.requests[1]?.context.messages);
+			const boundedRetry = JSON.stringify(advisor.requests[2]?.context.messages);
+			expect(snapshotAttempt).toContain('reason=\\"configuration-apply\\"');
+			expect(snapshotAttempt).toContain("first user request establishes lifecycle context");
+			expect(snapshotAttempt).toContain("second user request after configuration apply");
+			expect(boundedRetry).not.toContain("advisor-reprime");
+			expect(boundedRetry).not.toContain("first user request establishes lifecycle context");
+			expect(boundedRetry).toContain("second user request after configuration apply");
+			expect(runtime.getStatus()).toMatchObject({
+				active: true,
+				paused: false,
+				failedReviews: 0,
+				retryAttempts: 1,
+				reviewsCompleted: 2,
+			});
+		} finally {
+			await harness.dispose();
+		}
+	});
+
 	it("updates configured model status while the disabled runtime remains inactive", async () => {
 		const primary = createPrimaryProvider([]);
 		const initial = structuredClone(DEFAULT_ADVISOR_CONFIG);

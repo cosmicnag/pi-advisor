@@ -1445,7 +1445,7 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 		}
 	});
 
-	it("pauses before submission and warns once when no safe re-prime can fit", async () => {
+	it("drops an update without pausing when fresh private context cannot fit", async () => {
 		const primary = createPrimaryProvider([
 			{ content: [{ type: "text", text: "answer" }] },
 			{ content: [{ type: "text", text: "answer while paused" }] },
@@ -1471,12 +1471,13 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 		});
 		try {
 			await harness.session.prompt("exhaust context policy");
-			await waitFor(() => runtime?.getStatus().paused === true);
+			await waitFor(() => runtime?.getStatus().failedReviews === 1);
 			expect(runtime?.getStatus()).toMatchObject({
-				pauseReason: "Advisor re-prime snapshot could not be built safely",
+				active: true,
+				paused: false,
 				compactionsCompleted: 0,
 				compactionFailures: 1,
-				contextReprimesCompleted: 0,
+				contextReprimesCompleted: 1,
 				contextReprimeFailures: 1,
 				warnings: 1,
 			});
@@ -1484,14 +1485,16 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			expect(warnings).toHaveLength(1);
 			expect(advisor.requests).toHaveLength(0);
 
-			await harness.session.prompt("continue while Advisor remains paused");
+			await harness.session.prompt("continue while Advisor remains active");
+			await waitFor(() => runtime?.getStatus().failedReviews === 2);
 			expect(runtime?.getStatus()).toMatchObject({
-				paused: true,
-				compactionFailures: 1,
-				contextReprimeFailures: 1,
-				warnings: 1,
+				active: true,
+				paused: false,
+				compactionFailures: 2,
+				contextReprimeFailures: 2,
+				warnings: 2,
 			});
-			expect(warnings).toHaveLength(1);
+			expect(warnings).toHaveLength(2);
 			expect(advisor.requests).toHaveLength(0);
 		} finally {
 			await harness.dispose();
