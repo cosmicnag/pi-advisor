@@ -52,6 +52,7 @@ describe("packed Pi package", () => {
 			expect(pack).toMatchObject({ name: "@ribbons-digital/pi-advisor", version: "0.1.1" });
 			expect(paths).toContain("src/index.ts");
 			expect(paths).toContain("docs/configuration.md");
+			expect(paths).toContain("docs/assets/advisor-in-action.png");
 			expect(paths).toContain("LICENSE");
 			expect(paths).toContain("THIRD_PARTY_NOTICES.md");
 			expect(paths.some((path) => path === "CONTEXT.md" || path.startsWith("docs/internal/"))).toBe(
