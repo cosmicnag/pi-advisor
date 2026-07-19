@@ -176,18 +176,55 @@ describe.sequential("current implementation evidence review policy", () => {
 
 	it("defers scripted concrete advice and preserves observed review-before-PR chronology", async () => {
 		const concreteDefect = "The new cancellation branch leaves the temporary file behind.";
+		const observedExecutions: string[] = [];
+		const recordReview = defineTool({
+			name: "record_review",
+			label: "record_review",
+			description: "Record the completed review as a distinct session event.",
+			parameters: Type.Object({}),
+			execute: () => {
+				observedExecutions.push("review-event");
+				return Promise.resolve({
+					content: [{ type: "text" as const, text: "Review completed: NO ISSUES." }],
+					details: {},
+				});
+			},
+		});
+		const createPr = defineTool({
+			name: "create_pr",
+			label: "create_pr",
+			description: "Create the PR after review as a distinct session event.",
+			parameters: Type.Object({}),
+			execute: () => {
+				observedExecutions.push("pr-event");
+				return Promise.resolve({
+					content: [{ type: "text" as const, text: "PR creation completed." }],
+					details: {},
+				});
+			},
+		});
 		const primary = createPrimaryProvider([
+			{
+				content: [{ type: "toolCall", id: "review-event", name: "record_review", arguments: {} }],
+				stopReason: "toolUse",
+			},
+			{
+				content: [{ type: "toolCall", id: "pr-event", name: "create_pr", arguments: {} }],
+				stopReason: "toolUse",
+			},
 			{
 				content: [
 					{
 						type: "text",
-						text: "Review result at 10:00: NO ISSUES. PR creation completed at 10:01. Current implementation evidence: cancellation leaves WATCHDOG.yml.tmp behind.",
+						text: "Current implementation evidence: cancellation leaves WATCHDOG.yml.tmp behind. Custom workflow completed.",
 					},
 				],
 			},
 			{ content: [{ type: "text", text: "Removed the temporary file on cancellation." }] },
 		]);
 		const advisor = createAdvisorProvider([
+			{ content: [] },
+			{ content: [] },
 			advice(concreteDefect, "cancellation leaks temporary configuration file", "deferred-defect"),
 			{ content: [] },
 		]);
@@ -196,7 +233,8 @@ describe.sequential("current implementation evidence review policy", () => {
 			provider: primary,
 			advisorProvider: advisor,
 			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
-			tools: [],
+			customTools: [recordReview, createPr],
+			tools: ["record_review", "create_pr"],
 			mode: "rpc",
 		});
 		try {
@@ -204,22 +242,32 @@ describe.sequential("current implementation evidence review policy", () => {
 				"Follow this complete custom workflow: implement, obtain review, then create the PR. A recalled summary names the equivalent Blaze workflow, but this request does not invoke it.",
 			);
 			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
-			expect(primary.requests).toHaveLength(1);
+			expect(primary.requests).toHaveLength(3);
+			expect(observedExecutions).toEqual(["review-event", "pr-event"]);
 
-			const observed = JSON.stringify(advisor.requests[0]?.context);
-			expect(observed.indexOf("Review result at 10:00")).toBeLessThan(
-				observed.indexOf("PR creation completed at 10:01"),
-			);
-			expect(advisor.requests[0]?.context.systemPrompt).toContain(
+			expect(advisor.requests).toHaveLength(3);
+			const completedWorkflowReview = advisor.requests[2];
+			const observedToolEvents =
+				completedWorkflowReview?.context.messages.flatMap((message) => {
+					if (message.role !== "user") return [];
+					const match = /\[Executor tool result ([^\]]+)\]/.exec(JSON.stringify(message.content));
+					return match?.[1] === undefined ? [] : [match[1]];
+				}) ?? [];
+			expect(observedToolEvents).toEqual(["record_review", "create_pr"]);
+			expect(completedWorkflowReview?.context.systemPrompt).toContain(
 				"verify the latest User request and newest Executor actions, tool results, and review results",
 			);
 
 			await harness.session.prompt("Apply current concrete advice only.");
-			const delivered = JSON.stringify(primary.requests[1]?.context);
+			const delivered = JSON.stringify(primary.requests[3]?.context);
 			expect(delivered).toContain(concreteDefect);
 			expect(delivered).toContain(
 				'severity=\\"concern\\" delivery=\\"deferred\\" stale=\\"true\\"',
 			);
+			expect(runtime?.getStatus()).toMatchObject({
+				notesDelivered: 1,
+				deferredNotesPending: 0,
+			});
 		} finally {
 			await harness.dispose();
 		}
