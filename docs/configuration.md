@@ -20,10 +20,12 @@ External edits are not watched and remain unapplied until Pi `/reload` or a conf
 ## Interactive configuration
 
 Run `/advisor` or `/advisor configure` in a dialog-capable TUI or RPC client.
-The workflow selects an authenticated model, reasoning effort, any subset of the four approved read-only tools, and multiline User instructions.
+The workflow selects an authenticated model, reasoning effort, any subset of the four approved read-only tools, and optional User instructions.
 The TUI model step starts focused and fuzzy-searches provider, model ID, and display name while RPC clients keep the standard selection dialog.
+After tool selection, a separate instructions step lets users continue without custom instructions or explicitly open the multiline editor to add them.
+When instructions already exist, that step offers deliberate keep, edit, and clear choices, and only edit opens the multiline editor.
 It then shows one summary and asks for confirmation before saving.
-Cancellation at any step leaves the file and runtime unchanged.
+Cancellation at the instructions choice, multiline editor, or any other step leaves the file and runtime unchanged.
 The tool picker cannot select `bash`, `edit`, `write`, an extension tool, or any other mutating or unapproved tool.
 A confirmed save atomically replaces the User YAML file with mode `0600` and immediately rebuilds the current runtime.
 The rebuild invalidates stale in-flight output, preserves delivered-note and lifetime usage totals, and prepares one bounded current-branch re-prime for the next eligible update.

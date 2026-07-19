@@ -87,7 +87,7 @@ describe("WATCHDOG configuration", () => {
 		expect(select).toHaveBeenCalledWith("Select Advisor reasoning level", expect.any(Array));
 	});
 
-	it("selects only approved read-only tools and edits instructions", async () => {
+	it("selects only approved read-only tools", async () => {
 		const select = vi
 			.fn<ExtensionCommandContext["ui"]["select"]>()
 			.mockResolvedValueOnce("[x] grep - search file contents")
@@ -101,12 +101,15 @@ describe("WATCHDOG configuration", () => {
 		expect(
 			select.mock.calls.flatMap((call) => call[1]).some((choice) => choice.includes("bash")),
 		).toBe(false);
+	});
 
-		const configureSelect = vi
+	it("opens the RPC instructions editor only after Add is selected", async () => {
+		const select = vi
 			.fn<ExtensionCommandContext["ui"]["select"]>()
 			.mockResolvedValueOnce("fixture/advisor")
 			.mockResolvedValueOnce("high")
-			.mockResolvedValueOnce("Done - use 4 read-only tools");
+			.mockResolvedValueOnce("Done - use 4 read-only tools")
+			.mockResolvedValueOnce("Add custom instructions");
 		const editor = vi.fn().mockResolvedValue("Focus on migration safety.");
 		const configured = await pickAdvisorInteractiveConfiguration(
 			{
@@ -114,11 +117,7 @@ describe("WATCHDOG configuration", () => {
 				modelRegistry: {
 					getAvailable: () => [{ provider: "fixture", id: "advisor" }],
 				} as ExtensionCommandContext["modelRegistry"],
-				ui: {
-					select: configureSelect,
-					editor,
-					notify: vi.fn(),
-				} as unknown as ExtensionCommandContext["ui"],
+				ui: { select, editor, notify: vi.fn() } as unknown as ExtensionCommandContext["ui"],
 			},
 			structuredClone(DEFAULT_ADVISOR_CONFIG),
 		);
@@ -128,7 +127,79 @@ describe("WATCHDOG configuration", () => {
 			tools: ["read", "grep", "find", "ls"],
 			instructions: "Focus on migration safety.",
 		});
-		expect(editor).toHaveBeenCalledWith(expect.stringContaining("fixed safety policy"), "");
+		expect(select).toHaveBeenLastCalledWith(
+			"Choose optional User Advisor instructions for this configuration",
+			["Continue without custom instructions", "Add custom instructions"],
+		);
+		expect(editor).toHaveBeenCalledWith(expect.stringContaining("Configuration step: add"), "");
+	});
+
+	it("lets the TUI continue without instructions without opening an editor", async () => {
+		const custom = vi.fn().mockResolvedValue("fixture/advisor");
+		const select = vi
+			.fn<ExtensionCommandContext["ui"]["select"]>()
+			.mockResolvedValueOnce("high")
+			.mockResolvedValueOnce("Done - use 4 read-only tools")
+			.mockResolvedValueOnce("Continue without custom instructions");
+		const editor = vi.fn();
+		const configured = await pickAdvisorInteractiveConfiguration(
+			{
+				mode: "tui",
+				modelRegistry: {
+					getAvailable: () => [{ provider: "fixture", id: "advisor" }],
+				} as ExtensionCommandContext["modelRegistry"],
+				ui: { custom, select, editor, notify: vi.fn() } as unknown as ExtensionCommandContext["ui"],
+			},
+			structuredClone(DEFAULT_ADVISOR_CONFIG),
+		);
+		expect(configured?.instructions).toBe("");
+		expect(editor).not.toHaveBeenCalled();
+		expect(select).toHaveBeenLastCalledWith(
+			"Choose optional User Advisor instructions for this configuration",
+			["Continue without custom instructions", "Add custom instructions"],
+		);
+	});
+
+	it("offers deliberate keep, edit, and clear choices for existing instructions", async () => {
+		const cases = [
+			{ choice: "Keep current instructions", expected: "Current focus.", opensEditor: false },
+			{ choice: "Edit instructions", expected: "Updated focus.", opensEditor: true },
+			{ choice: "Clear instructions", expected: "", opensEditor: false },
+		];
+		for (const testCase of cases) {
+			const select = vi
+				.fn<ExtensionCommandContext["ui"]["select"]>()
+				.mockResolvedValueOnce("fixture/advisor")
+				.mockResolvedValueOnce("high")
+				.mockResolvedValueOnce("Done - use 4 read-only tools")
+				.mockResolvedValueOnce(testCase.choice);
+			const editor = vi.fn().mockResolvedValue("Updated focus.");
+			const current = structuredClone(DEFAULT_ADVISOR_CONFIG);
+			current.instructions = "Current focus.";
+			const configured = await pickAdvisorInteractiveConfiguration(
+				{
+					mode: "rpc",
+					modelRegistry: {
+						getAvailable: () => [{ provider: "fixture", id: "advisor" }],
+					} as ExtensionCommandContext["modelRegistry"],
+					ui: { select, editor, notify: vi.fn() } as unknown as ExtensionCommandContext["ui"],
+				},
+				current,
+			);
+			expect(configured?.instructions).toBe(testCase.expected);
+			expect(select).toHaveBeenLastCalledWith(
+				"Choose optional User Advisor instructions for this configuration",
+				["Keep current instructions", "Edit instructions", "Clear instructions"],
+			);
+			if (testCase.opensEditor) {
+				expect(editor).toHaveBeenCalledWith(
+					expect.stringContaining("Configuration step: edit"),
+					"Current focus.",
+				);
+			} else {
+				expect(editor).not.toHaveBeenCalled();
+			}
+		}
 	});
 
 	it("completes configuration and atomic apply without a live nested Advisor runtime", async () => {
@@ -140,8 +211,10 @@ describe("WATCHDOG configuration", () => {
 			.mockResolvedValueOnce("fixture/advisor")
 			.mockResolvedValueOnce("low")
 			.mockResolvedValueOnce("[x] ls - list directories")
-			.mockResolvedValueOnce("Done - use 3 read-only tools");
+			.mockResolvedValueOnce("Done - use 3 read-only tools")
+			.mockResolvedValueOnce("Add custom instructions");
 		const notify = vi.fn();
+		const confirm = vi.fn().mockResolvedValue(true);
 		const applyConfiguration = vi.fn().mockResolvedValue(undefined);
 		const ctx = {
 			hasUI: true,
@@ -153,7 +226,7 @@ describe("WATCHDOG configuration", () => {
 			ui: {
 				select,
 				editor: vi.fn().mockResolvedValue("Review public API compatibility."),
-				confirm: vi.fn().mockResolvedValue(true),
+				confirm,
 				notify,
 			},
 		} as unknown as ExtensionCommandContext;
@@ -175,10 +248,131 @@ describe("WATCHDOG configuration", () => {
 				tools: ["read", "grep", "find"],
 				instructions: "Review public API compatibility.",
 			});
+			expect(confirm).toHaveBeenCalledWith(
+				"Apply Advisor configuration?",
+				expect.stringContaining("Instructions: set"),
+			);
 			expect(notify).toHaveBeenLastCalledWith(
 				expect.stringContaining("docs/configuration.md"),
 				"info",
 			);
+		} finally {
+			if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		}
+	});
+
+	it("continues directly from no instructions to confirmation and atomic apply", async () => {
+		const { agentDir, cwd } = await fixture();
+		const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		const select = vi
+			.fn<ExtensionCommandContext["ui"]["select"]>()
+			.mockResolvedValueOnce("fixture/advisor")
+			.mockResolvedValueOnce("medium")
+			.mockResolvedValueOnce("Done - use 4 read-only tools")
+			.mockResolvedValueOnce("Continue without custom instructions");
+		const editor = vi.fn();
+		const confirm = vi.fn().mockResolvedValue(true);
+		const applyConfiguration = vi.fn().mockResolvedValue(undefined);
+		const ctx = {
+			hasUI: true,
+			cwd,
+			isProjectTrusted: () => false,
+			modelRegistry: {
+				getAvailable: () => [{ provider: "fixture", id: "advisor" }],
+			},
+			ui: { select, editor, confirm, notify: vi.fn() },
+		} as unknown as ExtensionCommandContext;
+		try {
+			await configureAdvisor(
+				ctx,
+				{ applyConfiguration } as unknown as Parameters<typeof configureAdvisor>[1],
+				structuredClone(DEFAULT_ADVISOR_CONFIG),
+			);
+			const saved = await readFile(join(agentDir, "WATCHDOG.yml"), "utf8");
+			expect(editor).not.toHaveBeenCalled();
+			expect(confirm).toHaveBeenCalledOnce();
+			expect(saved).toContain('instructions: ""');
+			expect(applyConfiguration).toHaveBeenCalledOnce();
+			expect(applyConfiguration.mock.calls[0]?.[0]).toMatchObject({ instructions: "" });
+		} finally {
+			if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		}
+	});
+
+	it("keeps persisted configuration and runtime unchanged when instructions or confirmation is cancelled", async () => {
+		const scenarios = [
+			{
+				name: "instructions choice",
+				selections: ["fixture/advisor", "medium", "Done - use 4 read-only tools", undefined],
+				editorResult: "unused",
+				confirmResult: true,
+				expectedConfirmCalls: 0,
+			},
+			{
+				name: "instructions editor",
+				selections: [
+					"fixture/advisor",
+					"medium",
+					"Done - use 4 read-only tools",
+					"Add custom instructions",
+				],
+				editorResult: undefined,
+				confirmResult: true,
+				expectedConfirmCalls: 0,
+			},
+			{
+				name: "final confirmation",
+				selections: [
+					"fixture/advisor",
+					"medium",
+					"Done - use 4 read-only tools",
+					"Continue without custom instructions",
+				],
+				editorResult: "unused",
+				confirmResult: false,
+				expectedConfirmCalls: 1,
+			},
+		];
+		const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+		try {
+			for (const scenario of scenarios) {
+				const { agentDir, cwd } = await fixture();
+				process.env.PI_CODING_AGENT_DIR = agentDir;
+				const priorYaml = [
+					"version: 1",
+					"model: fixture/advisor",
+					"effort: medium",
+					"instructions: ''",
+					"",
+				].join("\n");
+				const path = join(agentDir, "WATCHDOG.yml");
+				await writeFile(path, priorYaml);
+				const pendingSelections = [...scenario.selections];
+				const select = vi.fn(() => Promise.resolve(pendingSelections.shift()));
+				const editor = vi.fn().mockResolvedValue(scenario.editorResult);
+				const confirm = vi.fn().mockResolvedValue(scenario.confirmResult);
+				const applyConfiguration = vi.fn().mockResolvedValue(undefined);
+				const ctx = {
+					hasUI: true,
+					cwd,
+					isProjectTrusted: () => false,
+					modelRegistry: {
+						getAvailable: () => [{ provider: "fixture", id: "advisor" }],
+					},
+					ui: { select, editor, confirm, notify: vi.fn() },
+				} as unknown as ExtensionCommandContext;
+				await configureAdvisor(
+					ctx,
+					{ applyConfiguration } as unknown as Parameters<typeof configureAdvisor>[1],
+					structuredClone(DEFAULT_ADVISOR_CONFIG),
+				);
+				expect(await readFile(path, "utf8"), scenario.name).toBe(priorYaml);
+				expect(applyConfiguration, scenario.name).not.toHaveBeenCalled();
+				expect(confirm, scenario.name).toHaveBeenCalledTimes(scenario.expectedConfirmCalls);
+			}
 		} finally {
 			if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 			else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
