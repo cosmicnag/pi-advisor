@@ -8,7 +8,7 @@ import { redactSecrets } from "./redaction.js";
 import { cursorMatches, type AdvisorCursor } from "./transcript.js";
 
 export const ADVISOR_RUNTIME_STATE_ENTRY_TYPE = "pi-advisor-runtime-state";
-export const ADVISOR_RUNTIME_STATE_VERSION = 1 as const;
+export const ADVISOR_RUNTIME_STATE_VERSION = 2 as const;
 export const ADVISOR_TRANSCRIPT_ENTRY_TYPE = "pi-advisor-transcript-record";
 export const ADVISOR_TRANSCRIPT_RECORD_VERSION = 1 as const;
 export const MAX_PERSISTED_DEDUPE_HASHES = 128;
@@ -127,7 +127,7 @@ function isAdviceSeverity(value: unknown): value is AdviceSeverity {
 	return value === "nit" || value === "concern" || value === "blocker";
 }
 
-function isAcceptedAdvice(value: unknown): value is AcceptedAdvice {
+function isAcceptedAdvice(value: unknown, allowFindingKeyHash: boolean): value is AcceptedAdvice {
 	if (typeof value !== "object" || value === null) return false;
 	const advice = value as Record<string, unknown>;
 	if (
@@ -145,11 +145,17 @@ function isAcceptedAdvice(value: unknown): value is AcceptedAdvice {
 				"intent",
 				"note",
 				"severity",
+				...(allowFindingKeyHash ? ["findingKeyHash"] : []),
 				"truncated",
 				"originalCharacters",
 				"originalEstimatedTokens",
 				"createdAt",
-			]) && isAdviceSeverity(advice.severity)
+			]) &&
+			isAdviceSeverity(advice.severity) &&
+			(!allowFindingKeyHash ||
+				advice.findingKeyHash === undefined ||
+				(typeof advice.findingKeyHash === "string" &&
+					/^[a-f0-9]{64}$/u.test(advice.findingKeyHash)))
 		);
 	}
 	if (
@@ -177,7 +183,10 @@ function isAcceptedAdvice(value: unknown): value is AcceptedAdvice {
 	);
 }
 
-function isPersistedDeferredAdvice(value: unknown): value is PersistedDeferredAdvice {
+function isPersistedDeferredAdvice(
+	value: unknown,
+	allowFindingKeyHash: boolean,
+): value is PersistedDeferredAdvice {
 	if (typeof value !== "object" || value === null) return false;
 	const pending = value as Record<string, unknown>;
 	return (
@@ -188,7 +197,7 @@ function isPersistedDeferredAdvice(value: unknown): value is PersistedDeferredAd
 			"displayedInEntry",
 			"restoredAfterResume",
 		]) &&
-		isAcceptedAdvice(pending.advice) &&
+		isAcceptedAdvice(pending.advice, allowFindingKeyHash) &&
 		typeof pending.stale === "boolean" &&
 		isCursor(pending.branchWindow) &&
 		typeof pending.displayedInEntry === "boolean" &&
@@ -246,6 +255,7 @@ export function parsePersistedAdvisorRuntimeState(
 		return undefined;
 	}
 	const state = value as Record<string, unknown>;
+	const version = state.version;
 	if (
 		!hasOnlyKeys(state, [
 			"version",
@@ -257,7 +267,7 @@ export function parsePersistedAdvisorRuntimeState(
 			"memorySuggestions",
 			"notesDelivered",
 		]) ||
-		state.version !== ADVISOR_RUNTIME_STATE_VERSION ||
+		(version !== 1 && version !== ADVISOR_RUNTIME_STATE_VERSION) ||
 		state.sessionId !== expectedSessionId ||
 		typeof state.sessionId !== "string" ||
 		state.sessionId.length === 0 ||
@@ -267,7 +277,9 @@ export function parsePersistedAdvisorRuntimeState(
 		!cursorMatches(branch, state.cursor) ||
 		!Array.isArray(state.deferredAdvice) ||
 		state.deferredAdvice.length > MAX_PENDING_ADVICE_ITEMS ||
-		!state.deferredAdvice.every(isPersistedDeferredAdvice) ||
+		!state.deferredAdvice.every((pending) =>
+			isPersistedDeferredAdvice(pending, version === ADVISOR_RUNTIME_STATE_VERSION),
+		) ||
 		!Array.isArray(state.dedupeHashes) ||
 		state.dedupeHashes.length > MAX_PERSISTED_DEDUPE_HASHES ||
 		!state.dedupeHashes.every((hash) => typeof hash === "string" && /^[a-f0-9]{64}$/u.test(hash)) ||
@@ -277,7 +289,14 @@ export function parsePersistedAdvisorRuntimeState(
 	) {
 		return undefined;
 	}
-	return structuredClone(value) as PersistedAdvisorRuntimeState;
+	const migrated = structuredClone(value) as Omit<PersistedAdvisorRuntimeState, "version"> & {
+		version: 1 | typeof ADVISOR_RUNTIME_STATE_VERSION;
+	};
+	return {
+		...migrated,
+		version: ADVISOR_RUNTIME_STATE_VERSION,
+		...(version === 1 ? { dedupeHashes: [] } : {}),
+	};
 }
 
 export function parsePersistedAdvisorTranscriptRecord(
@@ -381,7 +400,7 @@ export function parsePersistedAdvisorTranscriptRecord(
 					"delivery",
 					"stale",
 				]) &&
-				isAcceptedAdvice(record.advice) &&
+				isAcceptedAdvice(record.advice, false) &&
 				(record.delivery === "active" || record.delivery === "deferred") &&
 				typeof record.stale === "boolean";
 			break;

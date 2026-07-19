@@ -1641,7 +1641,7 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 		}
 	});
 
-	it("delivers the same normalized note again when severity changes", async () => {
+	it("suppresses the same normalized note when severity changes", async () => {
 		const primary = createPrimaryProvider([
 			{ content: [{ type: "text", text: "first terminal answer" }] },
 			{ content: [{ type: "text", text: "second terminal answer" }] },
@@ -1664,17 +1664,15 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			await harness.session.prompt("first severity");
 			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
 			await harness.session.prompt("materialize concern and review again");
-			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
-			await harness.session.prompt("materialize blocker escalation");
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 2);
+			await harness.session.prompt("inspect severity suppression");
 			expect(JSON.stringify(primary.requests[1]?.context)).toContain(
 				'severity=\\"concern\\" delivery=\\"deferred\\" stale=\\"true\\"',
 			);
-			expect(JSON.stringify(primary.requests[2]?.context)).toContain(
-				'severity=\\"blocker\\" delivery=\\"deferred\\" stale=\\"true\\"',
-			);
+			expect(JSON.stringify(primary.requests[2]?.context)).not.toContain('severity=\\"blocker\\"');
 			expect(runtime?.getStatus()).toMatchObject({
-				notesDelivered: 2,
-				notesSuppressed: 0,
+				notesDelivered: 1,
+				notesSuppressed: 1,
 			});
 		} finally {
 			await harness.dispose();

@@ -498,14 +498,6 @@ describe.sequential("Token-aware Advisor context through Slice 4B", () => {
 						},
 					],
 				},
-				{
-					content: [
-						{
-							type: "text",
-							text: "## Constraints & Preferences\n- Preserve MUST-RUN-LONG-CONTEXT-CHECK before completion.",
-						},
-					],
-				},
 				acceptedAdvice(violationAdvice),
 				{ content: [] },
 			],

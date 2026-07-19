@@ -34,6 +34,7 @@ interface AcceptedAdviceBase {
 export interface AcceptedReviewAdvice extends AcceptedAdviceBase {
 	intent: "review";
 	severity: AdviceSeverity;
+	findingKeyHash?: string;
 }
 
 export interface AcceptedMemorySuggestion extends AcceptedAdviceBase {
@@ -145,8 +146,17 @@ export function normalizeMemoryTextForDedupe(input: string): string {
 }
 
 export type AdviceDedupeIdentity =
-	| (Pick<AcceptedReviewAdvice, "note" | "severity"> & { intent?: "review" })
+	| (Pick<AcceptedReviewAdvice, "note"> &
+			Partial<Pick<AcceptedReviewAdvice, "severity" | "findingKeyHash">> & {
+				intent?: "review";
+			})
 	| Pick<AcceptedMemorySuggestion, "intent" | "memory">;
+
+function findingKeyHash(input: string): string | undefined {
+	const normalized = normalizeAdviceForDedupe(input);
+	if (normalized.length === 0) return undefined;
+	return createHash("sha256").update(`review-finding:${normalized}`).digest("hex");
+}
 
 export function adviceDedupeKey(advice: AdviceDedupeIdentity): string {
 	const identity =
@@ -157,7 +167,9 @@ export function adviceDedupeKey(advice: AdviceDedupeIdentity): string {
 					advice.memory.basis,
 					normalizeMemoryTextForDedupe(advice.memory.text),
 				])
-			: JSON.stringify(["review", advice.severity, normalizeAdviceForDedupe(advice.note)]);
+			: advice.findingKeyHash === undefined
+				? JSON.stringify(["review", normalizeAdviceForDedupe(advice.note)])
+				: JSON.stringify(["review", "finding", advice.findingKeyHash]);
 	return createHash("sha256").update(identity).digest("hex");
 }
 
@@ -402,6 +414,14 @@ export function createAdviseTool(
 					note: Type.String({ minLength: 1 }),
 					severity: Type.Optional(StringEnum(["nit", "concern", "blocker"] as const)),
 					intent: Type.Optional(StringEnum(["review"] as const)),
+					findingKey: Type.Optional(
+						Type.String({
+							minLength: 1,
+							maxLength: 200,
+							description:
+								"Canonical identity for exactly one concrete underlying defect. Reuse it for paraphrases or severity changes of that defect; never reuse it for a materially different defect.",
+						}),
+					),
 				},
 				{ additionalProperties: false },
 			),
@@ -424,7 +444,12 @@ export function createAdviseTool(
 		execute(_id, params) {
 			collector.validCalls++;
 			const input = params as
-				| { note: string; severity?: AdviceSeverity; intent?: "review" }
+				| {
+						note: string;
+						severity?: AdviceSeverity;
+						intent?: "review";
+						findingKey?: string;
+				  }
 				| {
 						note: string;
 						intent: "memory-suggestion";
@@ -447,9 +472,12 @@ export function createAdviseTool(
 				if (collector.accepted?.intent === "memory-suggestion") {
 					suppressMemory(collector, "policy");
 				}
+				const semanticHash =
+					input.findingKey === undefined ? undefined : findingKeyHash(input.findingKey);
 				collector.accepted = {
 					...boundAdvice(input.note, config),
 					severity: input.severity ?? "concern",
+					...(semanticHash === undefined ? {} : { findingKeyHash: semanticHash }),
 				};
 			}
 			return Promise.resolve({
