@@ -125,6 +125,31 @@ export async function pickAdvisorTools(
 	}
 }
 
+async function pickAdvisorInstructions(
+	ctx: Pick<ExtensionCommandContext, "ui">,
+	currentInstructions: string,
+): Promise<string | undefined> {
+	const hasCurrentInstructions = currentInstructions.trim().length > 0;
+	const choices = hasCurrentInstructions
+		? ["Keep current instructions", "Edit instructions", "Clear instructions"]
+		: ["Continue without custom instructions", "Add custom instructions"];
+	const choice = await ctx.ui.select(
+		"Choose optional User Advisor instructions for this configuration",
+		choices,
+	);
+	if (choice === undefined) return undefined;
+	if (choice === "Keep current instructions") return currentInstructions;
+	if (choice === "Clear instructions" || choice === "Continue without custom instructions") {
+		return "";
+	}
+	if (choice !== "Add custom instructions" && choice !== "Edit instructions") return undefined;
+	const edited = await ctx.ui.editor(
+		`Configuration step: ${choice === "Add custom instructions" ? "add" : "edit"} User Advisor instructions (fixed safety policy always remains authoritative)`,
+		choice === "Add custom instructions" ? "" : currentInstructions,
+	);
+	return edited?.trim();
+}
+
 export async function pickAdvisorInteractiveConfiguration(
 	ctx: Pick<ExtensionCommandContext, "mode" | "modelRegistry" | "ui">,
 	current: AdvisorConfig,
@@ -133,10 +158,7 @@ export async function pickAdvisorInteractiveConfiguration(
 	if (modelAndEffort === undefined) return undefined;
 	const tools = await pickAdvisorTools(ctx, current.tools);
 	if (tools === undefined) return undefined;
-	const instructions = await ctx.ui.editor(
-		"Edit User Advisor instructions (fixed safety policy always remains authoritative)",
-		current.instructions,
-	);
+	const instructions = await pickAdvisorInstructions(ctx, current.instructions);
 	if (instructions === undefined) return undefined;
 	return normalizeAdvisorConfig({
 		...structuredClone(current),
@@ -175,7 +197,7 @@ export async function configureAdvisor(
 			`Model: ${selectedModel}`,
 			`Reasoning: ${nextUserConfig.effort}`,
 			`Read-only tools: ${nextUserConfig.tools.join(", ") || "none"}`,
-			`Instructions: ${nextUserConfig.instructions.trim().length === 0 ? "none" : "edited"}`,
+			`Instructions: ${nextUserConfig.instructions.trim().length === 0 ? "none" : "set"}`,
 			"",
 			`Save atomically to ${loaded.paths.userYaml} and rebuild this session now?`,
 			`Reference: ${CONFIGURATION_REFERENCE}`,
