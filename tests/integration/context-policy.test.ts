@@ -36,10 +36,14 @@ function configFor(
 function extensionFor(
 	config: AdvisorConfig,
 	onRuntime: (runtime: AdvisorRuntime) => void,
+	onWarning?: (message: string) => void,
 ): InlineExtension {
 	return {
 		name: "pi-advisor-context-policy-test",
-		factory: createPiAdvisorExtension({ config, hooks: { onRuntime } }),
+		factory: createPiAdvisorExtension({
+			config,
+			hooks: { onRuntime, ...(onWarning === undefined ? {} : { onWarning }) },
+		}),
 	};
 }
 
@@ -564,7 +568,7 @@ describe.sequential("Token-aware Advisor context through Slice 4B", () => {
 		}
 	});
 
-	it("falls back to bounded re-prime after compaction failure and can repeat safely", async () => {
+	it("clears private context after compaction failure without replaying the primary branch", async () => {
 		const primary = createPrimaryProvider([
 			{ content: [{ type: "text", text: "REPRIME-REQUIREMENT must survive." }] },
 			{ content: [{ type: "text", text: "SECOND-LONG-SESSION-UPDATE" }] },
@@ -616,12 +620,17 @@ describe.sequential("Token-aware Advisor context through Slice 4B", () => {
 			);
 
 			expect(advisor.requests).toHaveLength(3);
-			const reprimeReviews = [advisor.requests[1], advisor.requests[2]];
-			expect(JSON.stringify(reprimeReviews[0]?.context.messages)).toContain("REPRIME-REQUIREMENT");
-			expect(JSON.stringify(reprimeReviews[0]?.context.messages)).toContain(
+			const recoveredReviews = [advisor.requests[1], advisor.requests[2]];
+			expect(JSON.stringify(recoveredReviews[0]?.context.messages)).not.toContain(
+				"REPRIME-REQUIREMENT",
+			);
+			expect(JSON.stringify(recoveredReviews[0]?.context.messages)).toContain(
 				"SECOND-LONG-SESSION-UPDATE",
 			);
-			expect(JSON.stringify(reprimeReviews[1]?.context.messages)).toContain(
+			expect(JSON.stringify(recoveredReviews[1]?.context.messages)).not.toContain(
+				"REPRIME-REQUIREMENT",
+			);
+			expect(JSON.stringify(recoveredReviews[1]?.context.messages)).toContain(
 				"THIRD-LONG-SESSION-UPDATE",
 			);
 			expect(runtime?.getStatus()).toMatchObject({
@@ -653,6 +662,138 @@ describe.sequential("Token-aware Advisor context through Slice 4B", () => {
 				total: 6_120,
 			});
 			expect(runtime?.getStatus().usage.costUsd).toBeCloseTo(0.07);
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("retries one provider overflow against only the same fresh bounded update, then continues", async () => {
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "FIRST-PRIVATE-CONTEXT" }] },
+			{ content: [{ type: "text", text: "SECOND-OVERFLOW-UPDATE" }] },
+			{ content: [{ type: "text", text: "THIRD-SMALLER-UPDATE" }] },
+		]);
+		const advisor = new ScriptedProvider({
+			providerId: "pi-advisor-fixture-advisor",
+			modelId: "advisor-scripted-overflow-recovery",
+			api: ADVISOR_SCRIPTED_API,
+			responses: [
+				{ content: [] },
+				{ errorMessage: "context_length_exceeded: scripted accumulated overflow" },
+				{ errorMessage: "context_length_exceeded: scripted fresh overflow" },
+				{ content: [] },
+			],
+		});
+		const warnings: string[] = [];
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [
+				extensionFor(
+					configFor(advisor),
+					(value) => (runtime = value),
+					(message) => warnings.push(message),
+				),
+			],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("establish private context");
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 1);
+			await harness.session.prompt("overflow accumulated context");
+			await waitFor(() => runtime?.getStatus().failedReviews === 1);
+
+			expect(advisor.requests).toHaveLength(3);
+			const accumulatedAttempt = JSON.stringify(advisor.requests[1]?.context.messages);
+			const freshAttempt = JSON.stringify(advisor.requests[2]?.context.messages);
+			expect(accumulatedAttempt).toContain("FIRST-PRIVATE-CONTEXT");
+			expect(accumulatedAttempt).toContain("SECOND-OVERFLOW-UPDATE");
+			expect(freshAttempt).not.toContain("FIRST-PRIVATE-CONTEXT");
+			expect(freshAttempt).toContain("SECOND-OVERFLOW-UPDATE");
+			expect(runtime?.getStatus()).toMatchObject({
+				active: true,
+				paused: false,
+				failedReviews: 1,
+				retryAttempts: 1,
+				warnings: 1,
+			});
+			expect(warnings).toHaveLength(1);
+
+			await harness.session.prompt("continue with smaller update");
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 2);
+			expect(JSON.stringify(advisor.requests[3]?.context.messages)).toContain(
+				"THIRD-SMALLER-UPDATE",
+			);
+			expect(runtime?.getStatus()).toMatchObject({ active: true, paused: false });
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("keeps default-off caps active above legacy totals while dropping only an unfit update", async () => {
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "CACHE-HEAVY-SEED" }] },
+			{ content: [{ type: "text", text: `OVERSIZED-${"x".repeat(30_000)}` }] },
+			{ content: [{ type: "text", text: "SMALL-AFTER-OVERSIZED" }] },
+		]);
+		const advisor = new ScriptedProvider({
+			providerId: "pi-advisor-fixture-advisor",
+			modelId: "advisor-scripted-caps-off",
+			api: ADVISOR_SCRIPTED_API,
+			contextWindow: 4_000,
+			maxTokens: 512,
+			responses: [
+				{
+					content: [],
+					usage: { input: 100, output: 20, cacheRead: 1_000_001, cacheWrite: 10, costUsd: 11 },
+				},
+				{ content: [{ type: "text", text: "bounded compaction summary" }] },
+				{ content: [{ type: "text", text: "bounded suffix summary" }] },
+				{ content: [] },
+			],
+		});
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [
+				extensionFor(
+					configFor(advisor, (config) => {
+						config.context.maxFraction = 0.65;
+						config.context.reserveTokens = 300;
+					}),
+					(value) => (runtime = value),
+				),
+			],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("seed cache-heavy usage");
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 1);
+			expect(runtime?.getStatus()).toMatchObject({
+				active: true,
+				paused: false,
+				sessionTokenSoftCap: "off",
+				sessionCostSoftCapUsd: "off",
+				usage: { costUsd: 11 },
+			});
+			expect(runtime?.getStatus().usage.total).toBeGreaterThan(1_000_000);
+
+			await harness.session.prompt("submit oversized update");
+			await waitFor(() => runtime?.getStatus().failedReviews === 1);
+			expect(runtime?.getStatus()).toMatchObject({ active: true, paused: false, warnings: 1 });
+
+			await harness.session.prompt("submit smaller update");
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 2);
+			expect(runtime?.getStatus()).toMatchObject({ active: true, paused: false });
+			expect(
+				advisor.requests.some((request) =>
+					JSON.stringify(request.context.messages).includes("SMALL-AFTER-OVERSIZED"),
+				),
+			).toBe(true);
 		} finally {
 			await harness.dispose();
 		}

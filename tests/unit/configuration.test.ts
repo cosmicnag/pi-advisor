@@ -11,6 +11,7 @@ import {
 	hasAdvisorCommandCollision,
 	loadAdvisorConfiguration,
 	MAX_WATCHDOG_MARKDOWN_BYTES,
+	mergeProjectConfiguration,
 	pickAdvisorInteractiveConfiguration,
 	pickAdvisorModelAndEffort,
 	pickAdvisorTools,
@@ -190,6 +191,75 @@ describe("WATCHDOG configuration", () => {
 		expect(loaded.userConfig.limits).toMatchObject({
 			sessionCostSoftCapUsd: 2,
 			maxAdviceCharacters: DEFAULT_ADVISOR_CONFIG.limits.maxAdviceCharacters,
+		});
+	});
+
+	it("loads and serializes default-off cumulative caps", async () => {
+		const { agentDir, cwd } = await fixture();
+		await writeFile(
+			join(agentDir, "WATCHDOG.yml"),
+			["version: 1", "limits:", "  sessionTokenSoftCap: off", "  sessionCostSoftCapUsd: off"].join(
+				"\n",
+			),
+		);
+		const loaded = await loadAdvisorConfiguration({ agentDir, cwd, projectTrusted: false });
+		expect(loaded.warnings).toEqual([]);
+		expect(loaded.userConfig.limits).toMatchObject({
+			sessionTokenSoftCap: "off",
+			sessionCostSoftCapUsd: "off",
+		});
+
+		const savedPath = join(agentDir, "saved.yml");
+		await saveUserConfigurationAtomic(savedPath, loaded.userConfig);
+		const saved = await readFile(savedPath, "utf8");
+		expect(saved).toContain("sessionTokenSoftCap: off");
+		expect(saved).toContain("sessionCostSoftCapUsd: off");
+		expect(saved).not.toMatch(/(?:Infinity|NaN)/u);
+	});
+
+	it("merges cumulative caps with off treated as unbounded only for comparison", () => {
+		const userOff = structuredClone(DEFAULT_ADVISOR_CONFIG);
+		const projectFinite = mergeProjectConfiguration(userOff, {
+			limits: { sessionTokenSoftCap: 100, sessionCostSoftCapUsd: 2 },
+		});
+		expect(projectFinite.limits).toMatchObject({
+			sessionTokenSoftCap: 100,
+			sessionCostSoftCapUsd: 2,
+		});
+
+		const userFinite = structuredClone(DEFAULT_ADVISOR_CONFIG);
+		userFinite.limits.sessionTokenSoftCap = 100;
+		userFinite.limits.sessionCostSoftCapUsd = 2;
+		expect(
+			mergeProjectConfiguration(userFinite, {
+				limits: { sessionTokenSoftCap: "off", sessionCostSoftCapUsd: "off" },
+			}).limits,
+		).toMatchObject({ sessionTokenSoftCap: 100, sessionCostSoftCapUsd: 2 });
+		expect(
+			mergeProjectConfiguration(userFinite, {
+				limits: { sessionTokenSoftCap: 200, sessionCostSoftCapUsd: 1 },
+			}).limits,
+		).toMatchObject({ sessionTokenSoftCap: 100, sessionCostSoftCapUsd: 1 });
+	});
+
+	it("rejects non-positive cumulative caps with path-specific value-free warnings", async () => {
+		const { agentDir, cwd } = await fixture();
+		await writeFile(
+			join(agentDir, "WATCHDOG.yml"),
+			["version: 1", "limits:", "  sessionTokenSoftCap: 0", "  sessionCostSoftCapUsd: 0"].join(
+				"\n",
+			),
+		);
+		const loaded = await loadAdvisorConfiguration({ agentDir, cwd, projectTrusted: false });
+		expect(loaded.warnings.map((warning) => warning.path)).toEqual(
+			expect.arrayContaining(["limits.sessionTokenSoftCap", "limits.sessionCostSoftCapUsd"]),
+		);
+		for (const warning of loaded.warnings) {
+			expect(warning.message).not.toContain("configured value");
+		}
+		expect(loaded.effectiveConfig.limits).toMatchObject({
+			sessionTokenSoftCap: "off",
+			sessionCostSoftCapUsd: "off",
 		});
 	});
 

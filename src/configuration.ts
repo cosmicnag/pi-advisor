@@ -58,8 +58,12 @@ const LimitsSchema = Type.Object(
 		minTurnsBetweenReviews: Type.Optional(Type.Number({ minimum: 1 })),
 		minIntervalMs: Type.Optional(Type.Number({ minimum: 0 })),
 		deferredAdviceRetentionHours: Type.Optional(Type.Number({ minimum: 0 })),
-		sessionTokenSoftCap: Type.Optional(Type.Number({ minimum: 1 })),
-		sessionCostSoftCapUsd: Type.Optional(Type.Number({ minimum: 0 })),
+		sessionTokenSoftCap: Type.Optional(
+			Type.Union([Type.Literal("off"), Type.Number({ minimum: 1 })]),
+		),
+		sessionCostSoftCapUsd: Type.Optional(
+			Type.Union([Type.Literal("off"), Type.Number({ exclusiveMinimum: 0 })]),
+		),
 	},
 	{ additionalProperties: false },
 );
@@ -373,9 +377,16 @@ const PROJECT_LOWER_LIMIT_KEYS = [
 	"maxPendingTranscriptBytes",
 	"maxReprimeTokens",
 	"deferredAdviceRetentionHours",
-	"sessionTokenSoftCap",
-	"sessionCostSoftCapUsd",
 ] as const;
+
+function narrowerSessionCap(
+	userCap: AdvisorConfig["limits"]["sessionTokenSoftCap"],
+	projectCap: AdvisorConfig["limits"]["sessionTokenSoftCap"] | undefined,
+): AdvisorConfig["limits"]["sessionTokenSoftCap"] {
+	if (projectCap === undefined || projectCap === "off") return userCap;
+	if (userCap === "off") return projectCap;
+	return Math.min(userCap, projectCap);
+}
 
 export function mergeProjectConfiguration(
 	userConfig: AdvisorConfig,
@@ -387,6 +398,14 @@ export function mergeProjectConfiguration(
 		const candidate = project.limits?.[key];
 		if (candidate !== undefined) limits[key] = Math.min(userConfig.limits[key], candidate);
 	}
+	limits.sessionTokenSoftCap = narrowerSessionCap(
+		userConfig.limits.sessionTokenSoftCap,
+		project.limits?.sessionTokenSoftCap,
+	);
+	limits.sessionCostSoftCapUsd = narrowerSessionCap(
+		userConfig.limits.sessionCostSoftCapUsd,
+		project.limits?.sessionCostSoftCapUsd,
+	);
 	if (project.limits?.minTurnsBetweenReviews !== undefined) {
 		limits.minTurnsBetweenReviews = Math.max(
 			userConfig.limits.minTurnsBetweenReviews,

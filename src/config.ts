@@ -16,6 +16,8 @@ export interface AdvisorContextConfig {
 	maxUpdateTokens: number;
 }
 
+export type AdvisorSessionCap = number | "off";
+
 export interface AdvisorLimitConfig {
 	maxAdviceCharacters: number;
 	maxAdviceTokens: number;
@@ -26,8 +28,8 @@ export interface AdvisorLimitConfig {
 	minTurnsBetweenReviews: number;
 	minIntervalMs: number;
 	deferredAdviceRetentionHours: number;
-	sessionTokenSoftCap: number;
-	sessionCostSoftCapUsd: number;
+	sessionTokenSoftCap: AdvisorSessionCap;
+	sessionCostSoftCapUsd: AdvisorSessionCap;
 }
 
 export interface MemorySuggestionConfig {
@@ -100,8 +102,8 @@ const CANONICAL_DEFAULT_ADVISOR_CONFIG: AdvisorConfig = deepFreeze({
 		minTurnsBetweenReviews: 1,
 		minIntervalMs: 0,
 		deferredAdviceRetentionHours: 24,
-		sessionTokenSoftCap: 1_000_000,
-		sessionCostSoftCapUsd: 10,
+		sessionTokenSoftCap: "off",
+		sessionCostSoftCapUsd: "off",
 	},
 	security: {
 		additionalProtectedPaths: [],
@@ -146,6 +148,14 @@ function finiteAtLeast(value: number, minimum: number, fallback: number): number
 
 function finiteClamped(value: number, minimum: number, maximum: number, fallback: number): number {
 	return Math.min(maximum, finiteAtLeast(value, minimum, fallback));
+}
+
+function positiveSessionCap(
+	value: AdvisorSessionCap,
+	fallback: AdvisorSessionCap,
+): AdvisorSessionCap {
+	if (value === "off") return value;
+	return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
 export function normalizeAdvisorConfig(input: AdvisorConfig): AdvisorConfig {
@@ -218,14 +228,12 @@ export function normalizeAdvisorConfig(input: AdvisorConfig): AdvisorConfig {
 				0,
 				defaults.limits.deferredAdviceRetentionHours,
 			),
-			sessionTokenSoftCap: finiteAtLeast(
+			sessionTokenSoftCap: positiveSessionCap(
 				input.limits.sessionTokenSoftCap,
-				1,
 				defaults.limits.sessionTokenSoftCap,
 			),
-			sessionCostSoftCapUsd: finiteAtLeast(
+			sessionCostSoftCapUsd: positiveSessionCap(
 				input.limits.sessionCostSoftCapUsd,
-				0,
 				defaults.limits.sessionCostSoftCapUsd,
 			),
 		},

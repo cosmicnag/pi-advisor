@@ -18,7 +18,7 @@ It stays silent when work is sound and delivers a bounded, actionable note when 
 - Silence-first review with at most one bounded visible note per update.
 - Active, deferred, restored, and potentially stale delivery states.
 - Protected and bounded `read`, `grep`, `find`, and `ls` tools, with no mutating Advisor tools.
-- Context, update, tool-call, turn, token, cost, and pending-byte governors.
+- Context, update, tool-call, turn, pending-byte, and opt-in cumulative token and reported-cost governors.
 - Branch, compaction, session replacement, retry, and compatible-resume handling.
 - Optional capability-based Memory suggestions without a Memory Lane dependency.
 - Optional reasoning-free, redacted, bounded transcript records, disabled by default.
@@ -152,8 +152,15 @@ Secrets can exist in ordinary source files, generated output, hard-link aliases,
 See [Security](docs/security.md) for the protected targets, tool bounds, controls, and residual risks.
 
 Automatic review creates additional provider requests, latency, token usage, and cost.
-Session token and reported-cost caps pause only Advisor and never interrupt the Executor.
-Provider usage or pricing can be missing or incomplete, so token and dollar caps remain independent safeguards.
+Cumulative session token and reported-cost caps default to `off`, while complete lifetime usage remains visible in `/advisor status`.
+An explicitly configured positive cap pauses only Advisor and never interrupts the Executor.
+A trusted Project may add or lower a finite cap but cannot remove or raise a finite User cap.
+Provider usage or pricing can be missing or incomplete, so explicitly enabled token and dollar caps remain independent safeguards.
+
+Advisor estimates its private context before each bounded update and asks Pi's public nested `AgentSession.compact()` API to compact when needed.
+If compaction fails or remains unsafe, Advisor clears only its private nested history and retries the same current bounded update once without replaying the full Executor branch.
+If that update still cannot fit fresh context, Advisor drops only that update, warns, and remains active for later updates.
+Branch, session, and confirmed configuration resynchronization may use one bounded branch snapshot, but an unsafe lifecycle snapshot degrades to the current bounded update instead of pausing Advisor.
 
 Pi Advisor writes bounded lifecycle state as Pi custom entries outside model context when required for correct compatible resume and delivery.
 Optional transcript-record persistence is controlled by `persistence.transcript` and is disabled by default.
@@ -188,6 +195,8 @@ Pi Advisor intentionally:
 - Coalesces bounded backlog instead of blocking the Executor until review catches up.
 - Keeps mutating Advisor tools and destructive-command interception out of scope.
 - Provides a Pi-native configuration flow rather than a fullscreen multi-pane editor.
+- Uses Pi's public nested `AgentSession.compact()` behavior rather than OMP's private in-memory LLM-summary implementation.
+- Does not perform OMP context-model promotion because Pi exposes no equivalent public policy primitive for this nested runtime.
 
 ## Public documentation
 
