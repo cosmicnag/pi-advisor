@@ -109,7 +109,7 @@ To update only Pi Advisor:
 pi update npm:@ribbons-digital/pi-advisor
 ```
 
-A version-pinned source such as `npm:@ribbons-digital/pi-advisor@0.1.0` is intentionally skipped by package updates.
+A version-pinned source such as `npm:@ribbons-digital/pi-advisor@0.1.1` is intentionally skipped by package updates.
 Install the unpinned source shown above if you want normal extension updates.
 
 ## Uninstall
