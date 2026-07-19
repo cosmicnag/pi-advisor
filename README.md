@@ -128,6 +128,10 @@ Delete affected Pi sessions through Pi or remove their session JSONL files while
 ## How review and delivery work
 
 Advisor reviews meaningful completed Executor turns in a separate in-memory Pi session.
+It prioritizes current implementation evidence such as code, UX, cancellation, atomicity, tests, safety, correctness, and scope.
+Recalled memories, handoffs, summaries, and historical process text are subordinate supporting evidence rather than independent sources of active obligations.
+The latest explicit user request controls the active workflow unless it invokes a historical process, and an equivalent current workflow does not need to use a remembered process or skill name.
+Workflow or gate advice is checked against recent Executor actions, tool results, and review results before delivery, and repeated findings can be suppressed by semantic identity.
 Only an accepted Advisory note enters the Executor context.
 Private Advisor reasoning, rejected notes, duplicate notes, content-free responses, and ordinary silent reviews remain outside the Executor context.
 

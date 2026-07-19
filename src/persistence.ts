@@ -145,11 +145,16 @@ function isAcceptedAdvice(value: unknown): value is AcceptedAdvice {
 				"intent",
 				"note",
 				"severity",
+				"findingKeyHash",
 				"truncated",
 				"originalCharacters",
 				"originalEstimatedTokens",
 				"createdAt",
-			]) && isAdviceSeverity(advice.severity)
+			]) &&
+			isAdviceSeverity(advice.severity) &&
+			(advice.findingKeyHash === undefined ||
+				(typeof advice.findingKeyHash === "string" &&
+					/^[a-f0-9]{64}$/u.test(advice.findingKeyHash)))
 		);
 	}
 	if (

@@ -124,6 +124,37 @@ describe("Slice 3A lifecycle state primitives", () => {
 		).toBeUndefined();
 	});
 
+	it("accepts only opaque semantic finding hashes in persisted review advice", () => {
+		const manager = SessionManager.inMemory();
+		manager.appendMessage({ role: "user", content: "root", timestamp: 1 });
+		const branch = manager.getBranch();
+		const semanticAdvice = advice("Verify the concrete cancellation defect.");
+		if (semanticAdvice.intent !== "review") throw new Error("Expected review advice fixture");
+		semanticAdvice.findingKeyHash = "a".repeat(64);
+		const valid = {
+			...stateFor(manager),
+			deferredAdvice: [
+				{
+					advice: semanticAdvice,
+					stale: true,
+					branchWindow: cursorAtTail(branch),
+					displayedInEntry: false,
+				},
+			],
+			dedupeHashes: [adviceDedupeKey(semanticAdvice)],
+		};
+		expect(parsePersistedAdvisorRuntimeState(valid, manager.getSessionId(), branch)).toEqual(valid);
+
+		const invalid = structuredClone(valid);
+		if (invalid.deferredAdvice[0]?.advice.intent !== "review") {
+			throw new Error("Expected persisted review advice fixture");
+		}
+		invalid.deferredAdvice[0].advice.findingKeyHash = "historical-workflow";
+		expect(
+			parsePersistedAdvisorRuntimeState(invalid, manager.getSessionId(), branch),
+		).toBeUndefined();
+	});
+
 	it("exports only the newest bounded dedupe hashes and restores them safely", () => {
 		const dedupe = new BoundedAdviceDedupe(4);
 		const notes = ["one", "two", "three", "four"].map(advice);
