@@ -21,6 +21,7 @@ External edits are not watched and remain unapplied until Pi `/reload` or a conf
 
 Run `/advisor` or `/advisor configure` in a dialog-capable TUI or RPC client.
 The workflow selects an authenticated model, reasoning effort, any subset of the four approved read-only tools, and multiline User instructions.
+The TUI model step starts focused and fuzzy-searches provider, model ID, and display name while RPC clients keep the standard selection dialog.
 It then shows one summary and asks for confirmation before saving.
 Cancellation at any step leaves the file and runtime unchanged.
 The tool picker cannot select `bash`, `edit`, `write`, an extension tool, or any other mutating or unapproved tool.
@@ -227,6 +228,8 @@ Automatic review creates additional paid provider requests until disabled or pau
 Cumulative token and reported-cost caps default to `off`; configure a positive limit when a session-wide spending stop is required.
 Private context pressure compacts first, then clears only private Advisor history and retries the same bounded update once when compaction cannot restore safe headroom.
 An update that still cannot fit fresh private context is dropped with a bounded warning while Advisor remains active for later updates.
+Three consecutive updates that each fail after bounded retry handling pause Advisor with one warning containing the final bounded, secret-redacted failure reason.
+Provider attempts remain separately visible in request, retry, usage, and failed-review diagnostics.
 Optional transcript persistence stores private local audit data and is disabled by default.
 Pi Advisor sends no product analytics, usage telemetry, or automatic crash reports to Ribbons Digital or another analytics service.
 Provider requests are necessary for the explicitly selected Advisor model, while `/advisor dump` remains local unless the user chooses to share it.

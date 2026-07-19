@@ -22,6 +22,7 @@ import {
 	renderAdviceMessage,
 	renderLateAdviceEntry,
 } from "./presentation.js";
+import { AdvisorModelPicker, advisorModelOptions } from "./model-picker.js";
 import { ADVISOR_CUSTOM_TYPE } from "./transcript.js";
 import {
 	AdvisorRuntime,
@@ -50,17 +51,10 @@ export const CONFIGURATION_REFERENCE =
 	"docs/configuration.md (https://github.com/ribbons-digital/pi-advisor/blob/main/docs/configuration.md)";
 
 export async function pickAdvisorModelAndEffort(
-	ctx: Pick<ExtensionCommandContext, "modelRegistry" | "ui">,
+	ctx: Pick<ExtensionCommandContext, "mode" | "modelRegistry" | "ui">,
 	current?: Pick<AdvisorConfig, "model" | "effort">,
 ): Promise<{ model: string; effort: AdvisorConfig["effort"] } | undefined> {
-	const models = [
-		...new Set(
-			ctx.modelRegistry
-				.getAvailable()
-				.map((model) => `${model.provider}/${model.id}`)
-				.sort((left, right) => left.localeCompare(right, "en-US")),
-		),
-	];
+	const models = advisorModelOptions(ctx.modelRegistry.getAvailable(), current?.model);
 	if (models.length === 0) {
 		ctx.ui.notify(
 			"No authenticated Advisor models are available. Configure provider credentials, then retry.",
@@ -68,12 +62,16 @@ export async function pickAdvisorModelAndEffort(
 		);
 		return undefined;
 	}
-	const currentModel = current?.model;
-	const modelOptions =
-		currentModel !== undefined && models.includes(currentModel)
-			? [currentModel, ...models.filter((candidate) => candidate !== currentModel)]
-			: models;
-	const model = await ctx.ui.select("Select Advisor model", modelOptions);
+	const model =
+		ctx.mode === "tui"
+			? await ctx.ui.custom<string | undefined>(
+					(tui, theme, keybindings, done) =>
+						new AdvisorModelPicker(models, tui, theme, done, keybindings),
+				)
+			: await ctx.ui.select(
+					"Select Advisor model",
+					models.map((candidate) => candidate.reference),
+				);
 	if (model === undefined) return undefined;
 	const effortOptions: AdvisorConfig["effort"][] = [
 		"off",
@@ -128,7 +126,7 @@ export async function pickAdvisorTools(
 }
 
 export async function pickAdvisorInteractiveConfiguration(
-	ctx: Pick<ExtensionCommandContext, "modelRegistry" | "ui">,
+	ctx: Pick<ExtensionCommandContext, "mode" | "modelRegistry" | "ui">,
 	current: AdvisorConfig,
 ): Promise<AdvisorConfig | undefined> {
 	const modelAndEffort = await pickAdvisorModelAndEffort(ctx, current);
@@ -362,6 +360,7 @@ export * from "./advice.js";
 export * from "./config.js";
 export * from "./configuration.js";
 export * from "./delivery.js";
+export * from "./model-picker.js";
 export * from "./persistence.js";
 export * from "./presentation.js";
 export * from "./redaction.js";

@@ -46,6 +46,7 @@ describe("WATCHDOG configuration", () => {
 			.mockResolvedValueOnce("alpha/model-a")
 			.mockResolvedValueOnce("xhigh");
 		const result = await pickAdvisorModelAndEffort({
+			mode: "rpc",
 			modelRegistry: {
 				getAvailable: () => [
 					{ provider: "zeta", id: "model-z" },
@@ -65,6 +66,25 @@ describe("WATCHDOG configuration", () => {
 			"xhigh",
 			"max",
 		]);
+	});
+
+	it("uses custom model search only in TUI mode and keeps later dialogs unchanged", async () => {
+		const custom = vi.fn().mockResolvedValue("alpha/model-a");
+		const select = vi.fn().mockResolvedValue("high");
+		const result = await pickAdvisorModelAndEffort(
+			{
+				mode: "tui",
+				modelRegistry: {
+					getAvailable: () => [{ provider: "alpha", id: "model-a", name: "Alpha" }],
+				} as ExtensionCommandContext["modelRegistry"],
+				ui: { custom, select, notify: vi.fn() } as unknown as ExtensionCommandContext["ui"],
+			},
+			{ model: "alpha/model-a", effort: "high" },
+		);
+		expect(result).toEqual({ model: "alpha/model-a", effort: "high" });
+		expect(custom).toHaveBeenCalledOnce();
+		expect(select).toHaveBeenCalledOnce();
+		expect(select).toHaveBeenCalledWith("Select Advisor reasoning level", expect.any(Array));
 	});
 
 	it("selects only approved read-only tools and edits instructions", async () => {
@@ -90,6 +110,7 @@ describe("WATCHDOG configuration", () => {
 		const editor = vi.fn().mockResolvedValue("Focus on migration safety.");
 		const configured = await pickAdvisorInteractiveConfiguration(
 			{
+				mode: "rpc",
 				modelRegistry: {
 					getAvailable: () => [{ provider: "fixture", id: "advisor" }],
 				} as ExtensionCommandContext["modelRegistry"],
