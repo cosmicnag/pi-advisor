@@ -18,6 +18,7 @@ import {
 	renderLateAdviceEntry,
 	type AdvicePresentationNote,
 	type AdvisorRuntimeStatus,
+	type PersistedAdvisorTranscriptRecord,
 } from "../../src/index.js";
 
 function fixtureTheme(ansi: boolean, borderColors?: string[]): Theme {
@@ -355,6 +356,37 @@ describe("Advisor presentation and diagnostics through Slice 5", () => {
 				),
 			).toBeUndefined();
 		}
+	});
+
+	it("labels mixed legacy and metadata-only activity records accurately", () => {
+		const status = runtimeStatus();
+		const config = structuredClone(DEFAULT_ADVISOR_CONFIG);
+		const records: PersistedAdvisorTranscriptRecord[] = [
+			{
+				version: 1,
+				sessionId: "session-1",
+				savedAt: 1,
+				kind: "advisor-tool-result",
+				toolName: "read",
+				isError: false,
+				text: "legacy file body",
+			},
+			{
+				version: 2,
+				sessionId: "session-1",
+				savedAt: 2,
+				reviewId: "review-1",
+				kind: "review-start",
+				entryCount: 1,
+				truncated: false,
+			},
+		];
+		const dump = formatAdvisorDiagnosticsDump(status, config, 1_700_000_000_000, records);
+		expect(dump).toContain('"recordSchema": "legacy-content-v1"');
+		expect(dump).toContain('"recordSchema": "activity-v2"');
+		expect(dump).toContain('"fileContentBodiesIncluded": true');
+		expect(dump).toContain('"legacyContentRecordsPresent": true');
+		expect(dump).toContain('"newActivityRecordsMetadataOnly": true');
 	});
 
 	it("creates a bounded redacted dump without transcripts, notes, instructions, or paths", () => {

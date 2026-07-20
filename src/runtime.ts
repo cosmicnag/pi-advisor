@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import {
 	calculateContextTokens,
 	estimateContextTokens,
@@ -61,13 +63,15 @@ import {
 	ADVISOR_TRANSCRIPT_RECORD_VERSION,
 	deferredAdviceIdentity,
 	MAX_INSPECTED_TRANSCRIPT_RECORDS,
+	MAX_PERSISTED_ACTIVITY_TARGET_BYTES,
 	MAX_PERSISTED_DEDUPE_HASHES,
 	MAX_PERSISTED_RUNTIME_STATE_BYTES,
-	MAX_PERSISTED_TRANSCRIPT_RECORD_BYTES,
 	parsePersistedAdvisorRuntimeState,
 	parsePersistedAdvisorTranscriptRecord,
 	type PersistedAdvisorRuntimeState,
+	type PersistedAdvisorToolAttempt,
 	type PersistedAdvisorTranscriptRecord,
+	type PersistedAdvisorTranscriptRecordV2,
 	type PersistedDeferredAdvice,
 } from "./persistence.js";
 import {
@@ -77,7 +81,6 @@ import {
 	isMeaningfulExecutorTurn,
 	renderAdvisorDelta,
 	renderAdvisorReprimeSnapshot,
-	renderPersistedAdvisorUpdate,
 	successfulMemoryToolTexts,
 	validateCursor,
 	type AdvisorCursor,
@@ -125,12 +128,6 @@ function adviceQueueBytes(advice: AcceptedAdvice): number {
 			? Buffer.byteLength(advice.memory.text, "utf8")
 			: Buffer.byteLength(advice.findingKeyHash ?? "", "utf8"))
 	);
-}
-
-function adviceForTranscript(advice: AcceptedAdvice): AcceptedAdvice {
-	const persisted = structuredClone(advice);
-	if (persisted.intent === "review") delete persisted.findingKeyHash;
-	return persisted;
 }
 
 function lifecycleSnapshotEntries(branch: SessionEntry[]): SessionEntry[] {
@@ -324,6 +321,8 @@ export interface DeferredAdviceMaterialization {
 
 interface CurrentRun {
 	epoch: number;
+	reviewId: string;
+	reviewOrdinal: { next: number };
 	turns: number;
 	toolCalls: number;
 	deferAdvice: boolean;
@@ -333,7 +332,7 @@ interface CurrentRun {
 	toolFailure?: string;
 	usage: AdvisorUsageTotals;
 	stopReason: string;
-	transcriptRecords: PersistedAdvisorTranscriptRecord[];
+	transcriptRecords: PersistedAdvisorToolAttempt[];
 }
 
 interface PendingAdvice {
@@ -344,17 +343,16 @@ interface PendingAdvice {
 	restoredAfterResume?: boolean;
 }
 
-type TranscriptRecordDetails = PersistedAdvisorTranscriptRecord extends infer Record
-	? Record extends PersistedAdvisorTranscriptRecord
+type TranscriptRecordDetails = PersistedAdvisorTranscriptRecordV2 extends infer Record
+	? Record extends PersistedAdvisorTranscriptRecordV2
 		? Omit<Record, "version" | "sessionId" | "savedAt">
 		: never
 	: never;
 
 interface QueuedAdvisorUpdate {
 	text: string;
-	persistedText: string;
-	persistedEntryCount: number;
-	persistedTruncated: boolean;
+	entryCount: number;
+	truncated: boolean;
 	window: AdvisorCursor;
 	turnNumber: number;
 	successfulMemoryTexts: Set<string>;
@@ -379,6 +377,15 @@ function addUsage(target: AdvisorUsageTotals, message: AssistantMessage): void {
 	target.costUsd += message.usage.cost.total;
 }
 
+function addUsageTotals(target: AdvisorUsageTotals, usage: AdvisorUsageTotals): void {
+	target.input += usage.input;
+	target.output += usage.output;
+	target.cacheRead += usage.cacheRead;
+	target.cacheWrite += usage.cacheWrite;
+	target.total += usage.total;
+	target.costUsd += usage.costUsd;
+}
+
 function hasToolCall(message: AssistantMessage): boolean {
 	return message.content.some((content) => content.type === "toolCall");
 }
@@ -388,14 +395,73 @@ function boundedReason(error: unknown): string {
 	return redactSecrets(message).text.slice(0, 500);
 }
 
-function governorRecordOutcome(
-	outcome: AdvisorGovernorOutcome,
-):
-	| { outcome: "Advisor tool-call limit reached"; stopReason: "tool-call-limit" }
-	| { outcome: "Advisor turn limit reached"; stopReason: "turn-limit" } {
-	return outcome === "Advisor tool-call limit reached"
-		? { outcome, stopReason: "tool-call-limit" }
-		: { outcome, stopReason: "turn-limit" };
+function boundedActivityTarget(value: unknown, fallback?: string): string | undefined {
+	const target = typeof value === "string" ? value : fallback;
+	if (target === undefined) return undefined;
+	return truncateUtf8Bytes(
+		redactSecrets(target).text,
+		MAX_PERSISTED_ACTIVITY_TARGET_BYTES,
+		"[truncated]",
+	);
+}
+
+function boundedRequiredActivityTarget(value: unknown, fallback: string): string {
+	return boundedActivityTarget(value, fallback) ?? fallback;
+}
+
+function activityTargets(
+	toolName: string,
+	value: unknown,
+): Pick<PersistedAdvisorToolAttempt, "path" | "pattern"> {
+	const arguments_ =
+		typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+	switch (toolName) {
+		case "read":
+			return { path: boundedRequiredActivityTarget(arguments_.path, ".") };
+		case "ls":
+			return { path: boundedRequiredActivityTarget(arguments_.path, ".") };
+		case "find":
+		case "grep":
+			return {
+				path: boundedRequiredActivityTarget(arguments_.path, "."),
+				pattern: boundedRequiredActivityTarget(arguments_.pattern, "[missing]"),
+			};
+		default:
+			return {};
+	}
+}
+
+function safeCountAdd(total: number, increment: number): number {
+	return Math.min(Number.MAX_SAFE_INTEGER, total + Math.max(0, increment));
+}
+
+function textLineCount(text: string): number {
+	if (text.length === 0) return 0;
+	let lines = text.endsWith("\n") ? 0 : 1;
+	for (const character of text) {
+		if (character === "\n") lines = safeCountAdd(lines, 1);
+	}
+	return lines;
+}
+
+export function measureAdvisorToolOutput(content: unknown): {
+	outputBytes: number;
+	outputLines: number;
+} {
+	if (!Array.isArray(content)) return { outputBytes: 0, outputLines: 0 };
+	let outputBytes = 0;
+	let outputLines = 0;
+	for (const part of content) {
+		if (typeof part !== "object" || part === null) continue;
+		const record = part as Record<string, unknown>;
+		if (record.type === "text" && typeof record.text === "string") {
+			outputBytes = safeCountAdd(outputBytes, Buffer.byteLength(record.text, "utf8"));
+			outputLines = safeCountAdd(outputLines, textLineCount(record.text));
+		} else if (record.type === "image" && typeof record.data === "string") {
+			outputBytes = safeCountAdd(outputBytes, Buffer.byteLength(record.data, "base64"));
+		}
+	}
+	return { outputBytes, outputLines };
 }
 
 function boundedPersistedValue(value: unknown, maximumBytes = 64 * 1_024): string {
@@ -428,40 +494,52 @@ function transcriptPreview(records: readonly PersistedAdvisorTranscriptRecord[])
 	for (let index = records.length - 1; index >= 0 && newest.length < 32; index--) {
 		const record = records[index];
 		if (record === undefined) continue;
-		const bounded = redactDiagnosticValue(
-			record.kind === "update"
-				? { ...record, text: truncateUtf8Bytes(record.text, 1_024, "[truncated]") }
-				: record.kind === "advisor-tool-call"
+		const preview =
+			record.version === ADVISOR_TRANSCRIPT_RECORD_VERSION
+				? { recordSchema: "activity-v2", ...record }
+				: record.kind === "update"
 					? {
+							recordSchema: "legacy-content-v1",
 							...record,
-							arguments: truncateUtf8Bytes(record.arguments, 1_024, "[truncated]"),
+							text: truncateUtf8Bytes(record.text, 1_024, "[truncated]"),
 						}
-					: record.kind === "advisor-tool-result"
-						? { ...record, text: truncateUtf8Bytes(record.text, 1_024, "[truncated]") }
-						: record.kind === "accepted-advice"
+					: record.kind === "advisor-tool-call"
+						? {
+								recordSchema: "legacy-content-v1",
+								...record,
+								arguments: truncateUtf8Bytes(record.arguments, 1_024, "[truncated]"),
+							}
+						: record.kind === "advisor-tool-result"
 							? {
+									recordSchema: "legacy-content-v1",
 									...record,
-									advice:
-										record.advice.intent === "memory-suggestion"
-											? {
-													...record.advice,
-													note: truncateUtf8Bytes(record.advice.note, 1_024, "[truncated]"),
-													memory: {
-														...record.advice.memory,
-														text: truncateUtf8Bytes(
-															record.advice.memory.text,
-															1_024,
-															"[truncated]",
-														),
-													},
-												}
-											: {
-													...record.advice,
-													note: truncateUtf8Bytes(record.advice.note, 1_024, "[truncated]"),
-												},
+									text: truncateUtf8Bytes(record.text, 1_024, "[truncated]"),
 								}
-							: record,
-		);
+							: record.kind === "accepted-advice"
+								? {
+										recordSchema: "legacy-content-v1",
+										...record,
+										advice:
+											record.advice.intent === "memory-suggestion"
+												? {
+														...record.advice,
+														note: truncateUtf8Bytes(record.advice.note, 1_024, "[truncated]"),
+														memory: {
+															...record.advice.memory,
+															text: truncateUtf8Bytes(
+																record.advice.memory.text,
+																1_024,
+																"[truncated]",
+															),
+														},
+													}
+												: {
+														...record.advice,
+														note: truncateUtf8Bytes(record.advice.note, 1_024, "[truncated]"),
+													},
+									}
+								: { recordSchema: "legacy-content-v1", ...record };
+		const bounded = redactDiagnosticValue(preview);
 		const recordBytes = Buffer.byteLength(JSON.stringify(bounded), "utf8");
 		if (bytes + recordBytes > 8 * 1_024) break;
 		newest.push(bounded);
@@ -554,18 +632,30 @@ export function formatAdvisorDiagnosticsDump(
 			memorySuggestions: config.memorySuggestions,
 			transcriptPersistenceEnabled: config.persistence.transcript,
 		},
-		transcriptPersistence: {
+		localRedactedActivityRecord: {
 			enabled: config.persistence.transcript,
 			availableRecordCount: transcriptRecords.length,
-			recentRecords: recentTranscriptRecords,
+			newRecordSchema: "activity-v2-metadata-only",
+			recentActivity: recentTranscriptRecords,
 		},
 		privacy: {
-			executorTranscriptIncluded: transcriptRecords.some((record) => record.kind === "update"),
-			advisorTranscriptIncluded: transcriptRecords.some((record) =>
-				record.kind.startsWith("advisor-tool-"),
+			executorTranscriptIncluded: transcriptRecords.some(
+				(record) => record.version === 1 && record.kind === "update",
+			),
+			advisorTranscriptIncluded: transcriptRecords.some(
+				(record) =>
+					record.version === 1 &&
+					(record.kind === "advisor-tool-call" || record.kind === "advisor-tool-result"),
+			),
+			fileContentBodiesIncluded: transcriptRecords.some(
+				(record) => record.version === 1 && record.kind === "advisor-tool-result",
 			),
 			reasoningIncluded: false,
-			noteContentIncluded: transcriptRecords.some((record) => record.kind === "accepted-advice"),
+			noteContentIncluded: transcriptRecords.some(
+				(record) => record.version === 1 && record.kind === "accepted-advice",
+			),
+			newActivityRecordsMetadataOnly: true,
+			legacyContentRecordsPresent: transcriptRecords.some((record) => record.version === 1),
 			instructionsIncluded: false,
 			protectedPathsIncluded: false,
 		},
@@ -1033,7 +1123,7 @@ export class AdvisorRuntime {
 		);
 	}
 
-	private appendTranscriptRecord(record: PersistedAdvisorTranscriptRecord): void {
+	private appendTranscriptRecord(record: PersistedAdvisorTranscriptRecordV2): void {
 		if (!this.config.persistence.transcript || this.disposed) return;
 		if (parsePersistedAdvisorTranscriptRecord(record, record.sessionId) === undefined) {
 			this.status.transcriptPersistenceFailures++;
@@ -1053,7 +1143,7 @@ export class AdvisorRuntime {
 
 	private transcriptRecord(
 		details: TranscriptRecordDetails,
-	): PersistedAdvisorTranscriptRecord | undefined {
+	): PersistedAdvisorTranscriptRecordV2 | undefined {
 		const sessionId = this.sessionId;
 		if (sessionId === undefined) return undefined;
 		return {
@@ -1061,7 +1151,7 @@ export class AdvisorRuntime {
 			sessionId,
 			savedAt: Date.now(),
 			...details,
-		} as PersistedAdvisorTranscriptRecord;
+		} as PersistedAdvisorTranscriptRecordV2;
 	}
 
 	private persistTranscriptDetails(details: TranscriptRecordDetails): void {
@@ -1336,24 +1426,27 @@ export class AdvisorRuntime {
 			addUsage(run.usage, event.message);
 			run.stopReason = event.message.stopReason;
 			if (this.config.persistence.transcript) {
+				const results = new Map(event.toolResults.map((result) => [result.toolCallId, result]));
 				for (const content of event.message.content) {
-					if (content.type !== "toolCall" || content.name === "advise") continue;
+					if (content.type !== "toolCall") continue;
+					const result = results.get(content.id);
+					const toolName = content.name.slice(0, 256);
+					const output =
+						result === undefined
+							? { outputBytes: 0, outputLines: 0 }
+							: measureAdvisorToolOutput(result.content);
 					const record = this.transcriptRecord({
-						kind: "advisor-tool-call",
-						toolName: content.name.slice(0, 256),
-						arguments: boundedPersistedValue(content.arguments),
+						kind: "tool-attempt",
+						reviewId: run.reviewId,
+						ordinal: run.reviewOrdinal.next++,
+						toolName,
+						internal: toolName === "advise",
+						...(toolName === "advise" ? {} : activityTargets(toolName, content.arguments)),
+						completed: result !== undefined,
+						isError: result?.isError ?? false,
+						...output,
 					});
-					if (record !== undefined) run.transcriptRecords.push(record);
-				}
-				for (const result of event.toolResults) {
-					if (result.toolName === "advise") continue;
-					const record = this.transcriptRecord({
-						kind: "advisor-tool-result",
-						toolName: result.toolName.slice(0, 256),
-						isError: result.isError,
-						text: boundedPersistedValue(result.content),
-					});
-					if (record !== undefined) run.transcriptRecords.push(record);
+					if (record?.kind === "tool-attempt") run.transcriptRecords.push(record);
 				}
 			}
 			if (event.message.stopReason === "error") {
@@ -1505,23 +1598,13 @@ export class AdvisorRuntime {
 			return;
 		}
 		const rendered = renderAdvisorDelta(entries, this.config.context.maxUpdateTokens);
-		const persisted = this.config.persistence.transcript
-			? renderPersistedAdvisorUpdate(
-					entries,
-					Math.min(
-						this.config.context.maxUpdateTokens,
-						Math.floor(MAX_PERSISTED_TRANSCRIPT_RECORD_BYTES / 4),
-					),
-				)
-			: { text: "", entryCount: 0, truncated: false };
 		this.status.redactions += rendered.redactions;
 		if (rendered.text.trim().length === 0) return;
 		this.meaningfulTurnCount++;
 		this.scheduleCadencedUpdate({
 			text: rendered.text,
-			persistedText: persisted.text,
-			persistedEntryCount: persisted.entryCount,
-			persistedTruncated: persisted.truncated,
+			entryCount: rendered.entryCount,
+			truncated: rendered.truncated,
 			window: cursorAtTail(branch),
 			turnNumber: this.meaningfulTurnCount,
 			successfulMemoryTexts: successfulMemoryToolTexts(
@@ -1555,16 +1638,6 @@ export class AdvisorRuntime {
 	): QueuedAdvisorUpdate {
 		const combined = current === undefined ? incoming.text : `${current.text}\n\n${incoming.text}`;
 		const maximum = this.config.limits.maxPendingTranscriptBytes;
-		const persistedCombined = !this.config.persistence.transcript
-			? ""
-			: current === undefined
-				? incoming.persistedText
-				: `${current.persistedText}\n\n${incoming.persistedText}`;
-		const persistedText = truncateUtf8TailBytes(
-			persistedCombined,
-			MAX_PERSISTED_TRANSCRIPT_RECORD_BYTES / 2,
-			PENDING_TRUNCATION_MARKER,
-		);
 		const successfulMemoryTexts = boundNewestTexts(
 			[...(current?.successfulMemoryTexts ?? []), ...incoming.successfulMemoryTexts],
 			this.successfulMemoryTextItemBudget(),
@@ -1583,12 +1656,8 @@ export class AdvisorRuntime {
 		);
 		return {
 			text,
-			persistedText,
-			persistedEntryCount: (current?.persistedEntryCount ?? 0) + incoming.persistedEntryCount,
-			persistedTruncated:
-				(current?.persistedTruncated ?? false) ||
-				incoming.persistedTruncated ||
-				persistedText !== persistedCombined,
+			entryCount: (current?.entryCount ?? 0) + incoming.entryCount,
+			truncated: (current?.truncated ?? false) || incoming.truncated || text !== combined,
 			window: incoming.window,
 			turnNumber: incoming.turnNumber,
 			successfulMemoryTexts,
@@ -1727,19 +1796,13 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		this.status.consecutiveFailures = 0;
 	}
 
-	private dropFreshContextUpdate(reason: string): undefined {
+	private dropFreshContextUpdate(reason: string): void {
 		this.status.contextReprimeFailures++;
 		this.status.failedReviews++;
 		this.status.lastFailure = reason;
-		this.persistTranscriptDetails({
-			kind: "failure",
-			reason,
-			stopReason: "fresh-context-overflow",
-		});
 		this.warn(
 			"Advisor update could not fit fresh private context and was dropped. Advisor remains active for later updates.",
 		);
-		return undefined;
 	}
 
 	private updateCanContinue(session: AgentSession): boolean {
@@ -1756,7 +1819,11 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		session: AgentSession,
 		submittedPrompt: string,
 		branchWindow: AdvisorCursor,
-	): Promise<{ prompt: string; epoch: number; freshContext: boolean } | undefined> {
+	): Promise<
+		| { prompt: string; epoch: number; freshContext: boolean }
+		| { freshContextFailure: string }
+		| undefined
+	> {
 		let estimate = this.estimateNextAdvisorContext(session, submittedPrompt);
 		this.updateContextEstimate(estimate);
 		if (estimate.tokens <= this.status.contextLimitTokens) {
@@ -1802,9 +1869,10 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		if (estimate.tokens <= this.status.contextLimitTokens) {
 			return { prompt: submittedPrompt, epoch: this.status.epoch, freshContext: true };
 		}
-		return this.dropFreshContextUpdate(
-			compactionFailure ?? "Advisor update remains over policy against fresh private context",
-		);
+		const freshContextFailure =
+			compactionFailure ?? "Advisor update remains over policy against fresh private context";
+		this.dropFreshContextUpdate(freshContextFailure);
+		return { freshContextFailure };
 	}
 
 	private async waitForRetry(epoch: number): Promise<boolean> {
@@ -1875,10 +1943,44 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			await this.resetForBranchMismatch(currentBranch);
 			return;
 		}
+
+		const reviewId = randomUUID();
+		const reviewOrdinal = { next: 1 };
+		const reviewUsage = emptyUsage();
+		this.persistTranscriptDetails({
+			kind: "review-start",
+			reviewId,
+			entryCount: update.entryCount,
+			truncated: update.truncated,
+		});
+		const persistOutcome = (
+			details:
+				| { outcome: "silent" }
+				| { outcome: "accepted"; delivery: "active" | "deferred"; stale: boolean }
+				| { outcome: "governor-skipped" | "failed"; reason: string },
+			stopReason: string,
+		): void => {
+			this.persistTranscriptDetails({
+				kind: "review-outcome",
+				reviewId,
+				...details,
+				...reviewUsage,
+				stopReason: boundedPersistedValue(stopReason, 256),
+			});
+		};
+
 		const maintenance = await this.maintainContextPolicy(session, submittedPrompt, update.window);
-		if (maintenance?.epoch !== this.status.epoch || !this.updateCanContinue(session)) {
+		if (maintenance === undefined || !this.updateCanContinue(session)) return;
+		if ("freshContextFailure" in maintenance) {
+			persistOutcome(
+				{ outcome: "failed", reason: maintenance.freshContextFailure },
+				"fresh-context-overflow",
+			);
+			this.persistState();
+			this.publishStatus();
 			return;
 		}
+		if (maintenance.epoch !== this.status.epoch) return;
 		let promptForAttempt = maintenance.prompt;
 		let contextWasFresh = maintenance.freshContext;
 		delete this.configurationReprimeSnapshot;
@@ -1887,12 +1989,6 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			await this.resetForBranchMismatch(branchAfterMaintenance);
 			return;
 		}
-		this.persistTranscriptDetails({
-			kind: "update",
-			text: update.persistedText,
-			entryCount: update.persistedEntryCount,
-			truncated: update.persistedTruncated,
-		});
 		let epoch = this.status.epoch;
 		let abandonedFailure: string | undefined;
 		for (let attempt = 0; attempt <= MAX_ADVISOR_RETRIES_PER_UPDATE; attempt++) {
@@ -1900,6 +1996,8 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			const messagesBeforeAttempt = structuredClone(session.messages);
 			const run: CurrentRun = {
 				epoch,
+				reviewId,
+				reviewOrdinal,
 				turns: 0,
 				toolCalls: 0,
 				deferAdvice: false,
@@ -1922,12 +2020,8 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				delete this.currentRun;
 				delete this.collector.memoryPolicy;
 			}
-			this.status.usage.input += run.usage.input;
-			this.status.usage.output += run.usage.output;
-			this.status.usage.cacheRead += run.usage.cacheRead;
-			this.status.usage.cacheWrite += run.usage.cacheWrite;
-			this.status.usage.total += run.usage.total;
-			this.status.usage.costUsd += run.usage.costUsd;
+			addUsageTotals(this.status.usage, run.usage);
+			addUsageTotals(reviewUsage, run.usage);
 			if (this.status.enabled && !this.disposed) this.applySessionSoftCaps();
 			if (epoch !== this.status.epoch || !this.status.enabled || this.disposed) return;
 			const branchAfterAttempt = ctx.sessionManager.getBranch();
@@ -1936,16 +2030,6 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				return;
 			}
 			for (const record of run.transcriptRecords) this.appendTranscriptRecord(record);
-			this.persistTranscriptDetails({
-				kind: "usage",
-				input: run.usage.input,
-				output: run.usage.output,
-				cacheRead: run.usage.cacheRead,
-				cacheWrite: run.usage.cacheWrite,
-				total: run.usage.total,
-				costUsd: run.usage.costUsd,
-				stopReason: boundedPersistedValue(run.stopReason, 256),
-			});
 			const stale = branchHasNewerExecutorState(branchAfterAttempt, update.window);
 			const failure =
 				thrownFailure ?? run.governorFailure ?? run.toolFailure ?? run.providerFailure;
@@ -1963,11 +2047,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 					this.rollbackNestedAttempt(session, messagesBeforeAttempt);
 					const reason = boundedReason(error);
 					this.recordAttemptFailure(reason);
-					this.persistTranscriptDetails({
-						kind: "failure",
-						reason,
-						stopReason: "delivery-failure",
-					});
+					persistOutcome({ outcome: "failed", reason }, "delivery-failure");
 					abandonedFailure = reason;
 					break;
 				}
@@ -1977,17 +2057,21 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				this.status.memorySuggestionsPolicySuppressed += this.collector.memoryPolicySuppressedCalls;
 				this.status.memorySuggestionsLimitSuppressed += this.collector.memoryLimitSuppressedCalls;
 				if (delivered && accepted !== undefined) {
-					this.persistTranscriptDetails({
-						kind: "accepted-advice",
-						advice: adviceForTranscript(accepted),
-						delivery:
-							run.deferAdvice || ctx.signal?.aborted === true || ctx.isIdle()
-								? "deferred"
-								: "active",
-						stale,
-					});
+					persistOutcome(
+						{
+							outcome: "accepted",
+							delivery:
+								run.deferAdvice || ctx.signal?.aborted === true || ctx.isIdle()
+									? "deferred"
+									: "active",
+							stale,
+						},
+						run.stopReason,
+					);
+				} else {
+					this.status.silentReviews++;
+					persistOutcome({ outcome: "silent" }, run.stopReason);
 				}
-				if (!delivered) this.status.silentReviews++;
 				break;
 			}
 
@@ -2008,9 +2092,10 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 						continue;
 					}
 				}
-				this.dropFreshContextUpdate(
-					run.providerFailure ?? "Advisor provider reported fresh private context overflow",
-				);
+				const reason =
+					run.providerFailure ?? "Advisor provider reported fresh private context overflow";
+				this.dropFreshContextUpdate(reason);
+				persistOutcome({ outcome: "failed", reason }, "fresh-context-overflow");
 				break;
 			}
 			if (run.governorFailure !== undefined) {
@@ -2019,56 +2104,34 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				// provisional Executor handoffs and are intentionally discarded with the rollback.
 				if (accepted?.intent === "review") {
 					try {
-						const delivered = this.deliver(
-							accepted,
-							ctx,
-							stale,
-							run.deferAdvice,
-							update.turnNumber,
-						);
-						if (delivered) {
-							this.persistTranscriptDetails({
-								kind: "accepted-advice",
-								advice: adviceForTranscript(accepted),
-								delivery:
-									run.deferAdvice || ctx.signal?.aborted === true || ctx.isIdle()
-										? "deferred"
-										: "active",
-								stale,
-							});
-						}
+						this.deliver(accepted, ctx, stale, run.deferAdvice, update.turnNumber);
 					} catch (error) {
 						deliveryFailure = boundedReason(error);
 					}
 				}
-				this.persistTranscriptDetails({
-					kind: "governor-exhaustion",
-					...governorRecordOutcome(run.governorFailure),
-				});
 				// The handled governor outcome clears the prior ordinary streak. A separate delivery
 				// failure is recorded afterward so it alone owns any new ordinary failure streak.
 				this.recordGovernorSkip(run.governorFailure);
 				if (deliveryFailure !== undefined) {
 					this.recordAttemptFailure(deliveryFailure);
-					this.persistTranscriptDetails({
-						kind: "failure",
-						reason: deliveryFailure,
-						stopReason: "delivery-failure",
-					});
+					persistOutcome({ outcome: "failed", reason: deliveryFailure }, "delivery-failure");
 					abandonedFailure = deliveryFailure;
+				} else {
+					persistOutcome(
+						{ outcome: "governor-skipped", reason: run.governorFailure },
+						run.governorFailure === "Advisor tool-call limit reached"
+							? "tool-call-limit"
+							: "turn-limit",
+					);
 				}
 				break;
 			}
-			this.persistTranscriptDetails({
-				kind: "failure",
-				reason: failure,
-				stopReason: boundedPersistedValue(run.stopReason, 256),
-			});
 			this.recordAttemptFailure(failure);
 			const retryable =
 				thrownFailure !== undefined ||
 				(run.toolFailure === undefined && run.providerFailure !== undefined);
 			if (!retryable || attempt >= MAX_ADVISOR_RETRIES_PER_UPDATE) {
+				persistOutcome({ outcome: "failed", reason: failure }, run.stopReason);
 				abandonedFailure = failure;
 				break;
 			}
@@ -2670,7 +2733,7 @@ export function formatAdvisorStatus(status: AdvisorRuntimeStatus): string {
 		`Notes: ${String(status.notesDelivered)} delivered, ${String(status.activeNotesPending)} active pending, ${String(status.deferredNotesPending)} deferred (${String(status.restoredDeferredNotesPending)} restored), oldest deferred age ${String(status.oldestDeferredAdviceAgeMs)} ms, ${String(status.notesSuppressed)} suppressed`,
 		`Memory suggestions: ${status.memorySuggestionsEnabled ? "enabled" : "disabled"}, capability ${status.memorySuggestionCapability.state}, ${String(status.memorySuggestionsDelivered)} delivered, ${String(status.memorySuggestionsRemaining)} remaining, ${String(status.memorySuggestionsPolicySuppressed)} policy-suppressed, ${String(status.memorySuggestionsLimitSuppressed)} limit-suppressed`,
 		`Memory suggestion next eligibility: turn ${String(status.memorySuggestionNextEligibleTurn)}, ${new Date(status.memorySuggestionNextEligibleAt).toISOString()}`,
-		`Transcript persistence: ${status.transcriptPersistenceEnabled ? "enabled" : "disabled"}, ${String(status.transcriptRecordsPersisted)} records persisted, ${String(status.transcriptPersistenceFailures)} write or validation failures`,
+		`Local redacted activity record: ${status.transcriptPersistenceEnabled ? "enabled" : "disabled"}, ${String(status.transcriptRecordsPersisted)} records available, ${String(status.transcriptPersistenceFailures)} write or validation failures; new records never include reasoning or file-content bodies`,
 	];
 	if (status.memorySuggestionCapability.reason) {
 		lines.push(`Memory suggestion capability: ${status.memorySuggestionCapability.reason}`);

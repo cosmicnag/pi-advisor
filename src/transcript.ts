@@ -369,11 +369,3 @@ export function renderAdvisorReprimeSnapshot(
 ): RenderedAdvisorDelta {
 	return renderBoundedEntries(entries, maxReprimeTokens, REPRIME_TRUNCATION_MARKER);
 }
-
-/** Render a persistence-safe update with Executor reasoning removed before redaction and bounds. */
-export function renderPersistedAdvisorUpdate(
-	entries: SessionEntry[],
-	maximumTokens: number,
-): RenderedAdvisorDelta {
-	return renderBoundedEntries(entries, maximumTokens, UPDATE_TRUNCATION_MARKER, false);
-}

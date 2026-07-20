@@ -502,9 +502,11 @@ describe("WATCHDOG configuration", () => {
 		});
 	});
 
-	it("uses release defaults for fields omitted from a durable User file", async () => {
+	it("uses release defaults without rewriting fields omitted from a durable User file", async () => {
 		const { agentDir, cwd } = await fixture();
-		await writeFile(join(agentDir, "WATCHDOG.yml"), "version: 1\nmodel: fixture/advisor\n");
+		const userYaml = join(agentDir, "WATCHDOG.yml");
+		const original = "version: 1\nmodel: fixture/advisor\n";
+		await writeFile(userYaml, original);
 		const fallback = structuredClone(DEFAULT_ADVISOR_CONFIG);
 		fallback.defaultEnabled = true;
 		fallback.effort = "max";
@@ -525,7 +527,9 @@ describe("WATCHDOG configuration", () => {
 			limits: {
 				sessionCostSoftCapUsd: DEFAULT_ADVISOR_CONFIG.limits.sessionCostSoftCapUsd,
 			},
+			persistence: { transcript: true },
 		});
+		expect(await readFile(userYaml, "utf8")).toBe(original);
 	});
 
 	it("fails malformed or mutating User configuration safely inactive", async () => {
@@ -537,12 +541,25 @@ describe("WATCHDOG configuration", () => {
 		const loaded = await loadAdvisorConfiguration({ agentDir, cwd, projectTrusted: false });
 		expect(loaded.effectiveConfig.defaultEnabled).toBe(false);
 		expect(loaded.effectiveConfig.model).toBeUndefined();
+		expect(loaded.effectiveConfig.persistence.transcript).toBe(false);
 		expect(loaded.warnings.some((warning) => warning.path.includes("tools"))).toBe(true);
 
 		await writeFile(join(agentDir, "WATCHDOG.yml"), "version: [broken\n");
 		const malformed = await loadAdvisorConfiguration({ agentDir, cwd, projectTrusted: false });
 		expect(malformed.effectiveConfig.defaultEnabled).toBe(false);
+		expect(malformed.effectiveConfig.persistence.transcript).toBe(false);
 		expect(malformed.warnings[0]?.message).toContain("malformed YAML");
+	});
+
+	it("keeps the local activity record off when User configuration cannot be read", async () => {
+		const { agentDir, cwd } = await fixture();
+		await mkdir(join(agentDir, "WATCHDOG.yml"));
+		const loaded = await loadAdvisorConfiguration({ agentDir, cwd, projectTrusted: false });
+		expect(loaded.effectiveConfig).toMatchObject({
+			defaultEnabled: false,
+			persistence: { transcript: false },
+		});
+		expect(loaded.warnings[0]?.message).toContain("could not be read");
 	});
 
 	it("ignores Project files when trust is inactive", async () => {
@@ -617,7 +634,7 @@ describe("WATCHDOG configuration", () => {
 				protectedPathExceptions: ["allowed.txt"],
 			},
 			memorySuggestions: { enabled: false },
-			persistence: { transcript: false },
+			persistence: { transcript: true },
 		});
 		expect(loaded.projectInstructions).toContain("Focus on project invariants.");
 		expect(loaded.projectInstructions).toContain("Also inspect migration ordering.");

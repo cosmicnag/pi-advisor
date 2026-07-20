@@ -90,7 +90,7 @@ User WATCHDOG files apply across repositories.
 Pi reads Project WATCHDOG files only when it reports the project as trusted.
 Trusted Project configuration may narrow tools and limits, add protected paths, or add lower-authority instructions.
 For cumulative usage caps, a finite Project value may narrow User `off`, while Project `off` cannot remove or raise a finite User cap.
-It cannot activate Advisor, select a model, increase spending or exposure, remove protections, create exceptions, or enable transcript persistence.
+It cannot activate Advisor, select a model, increase spending or exposure, remove protections, create exceptions, or change local activity recording.
 
 Trusted Project instructions still reach the selected model and retain residual prompt-injection risk.
 Fixed Advisor policy and code-enforced safety controls remain higher authority than freeform instructions.
@@ -105,9 +105,13 @@ Clearing private Advisor context does not reset or conceal lifetime usage totals
 
 ## Persistence
 
-Lifecycle state and optional transcript records use Pi custom entries outside model context.
-Optional transcript records are disabled by default and exclude Executor and Advisor reasoning.
-Redaction and bounding still cannot guarantee that every stored value is non-sensitive.
+Lifecycle state and local redacted activity records use Pi custom entries outside model context.
+The activity record is enabled by default for valid User configurations and can be disabled for future records with `persistence.transcript: false`.
+Existing explicit `false` configurations remain off, loading does not rewrite the User file, and malformed or unreadable User configuration fails privacy-safe with recording off.
+New version 2 records contain review grouping, ordered tool metadata, bounded redacted targets, completion and output-size metadata, final outcomes, provider-reported usage, cost, and stop reason.
+They never contain Executor update bodies, file-tool result bodies, Executor or Advisor reasoning, internal `advise` notes or arguments, raw provider payloads, protected-path content, or rejected or suppressed note content.
+Valid legacy version 1 records may still contain bounded bodies written by earlier releases and are labeled as legacy in diagnostics.
+Redaction and bounding reduce risk but cannot guarantee detection of every sensitive value in paths or search patterns.
 Delete the associated Pi session if you need to remove existing records.
 See the [configuration reference](configuration.md#persistence-retention-inspection-and-deletion) for exact record fields and retention behavior.
 

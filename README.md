@@ -25,7 +25,7 @@ _Pi Advisor reviewing a synthetic cache implementation in a privacy-safe demo se
 - Context, update, tool-call, turn, pending-byte, and opt-in cumulative token and reported-cost governors.
 - Branch, compaction, session replacement, retry, and compatible-resume handling.
 - Optional capability-based Memory suggestions without a Memory Lane dependency.
-- Optional reasoning-free, redacted, bounded transcript records, disabled by default.
+- Local redacted activity records enabled by default, with metadata-only review, tool-order, outcome, usage, and cost details.
 - No product telemetry or automatic crash reporting.
 
 ## Requirements
@@ -127,7 +127,7 @@ pi remove npm:@ribbons-digital/pi-advisor
 Uninstallation removes the package from Pi settings and package storage.
 It does not delete your User WATCHDOG files or existing Pi session files.
 Remove `~/.pi/agent/WATCHDOG.yml` and `~/.pi/agent/WATCHDOG.md` yourself if you no longer want the configuration.
-Delete affected Pi sessions through Pi or remove their session JSONL files while Pi is not using them if you also want to delete previously persisted lifecycle or optional transcript records.
+Delete affected Pi sessions through Pi or remove their session JSONL files while Pi is not using them if you also want to delete previously persisted lifecycle or local activity records.
 
 ## How review and delivery work
 
@@ -181,9 +181,14 @@ Three consecutive ordinary updates that each exhaust their retry path pause Advi
 Branch, session, and confirmed configuration resynchronization may use one bounded branch snapshot, but an unsafe lifecycle snapshot degrades to the current bounded update instead of pausing Advisor.
 
 Pi Advisor writes bounded lifecycle state as Pi custom entries outside model context when required for correct compatible resume and delivery.
-Optional transcript-record persistence is controlled by `persistence.transcript` and is disabled by default.
-When enabled, it stores reasoning-free, redacted, bounded records in the active Pi session, but disabling it does not delete existing records.
-See [Configuration: persistence, retention, inspection, and deletion](docs/configuration.md#persistence-retention-inspection-and-deletion) for exact stored and excluded fields.
+The local redacted activity record is controlled by `persistence.transcript` and is enabled by default for valid User configurations.
+Set `persistence.transcript: false` to stop future activity records; an existing explicit `false` remains off after update, and loading does not rewrite the User file.
+Malformed or unreadable User configuration fails privacy-safe with activity recording off until the configuration is repaired.
+New version 2 activity records contain review identifiers, update counts, ordered tool metadata, redacted bounded targets, completion and output-size metadata, final outcome, usage, cost, and stop reason.
+They never contain Executor update bodies, file-tool result bodies, Advisor or Executor reasoning, internal `advise` arguments or notes, raw provider payloads, protected-path content, or rejected or suppressed note content.
+Older valid version 1 records may contain the bounded content stored by earlier releases and remain visible as legacy records in `/advisor dump`.
+Disabling future records does not delete existing records.
+See [Configuration: persistence, retention, inspection, and deletion](docs/configuration.md#persistence-retention-inspection-and-deletion) for exact stored and excluded fields, retention, and deletion instructions.
 
 ## Telemetry and diagnostics
 

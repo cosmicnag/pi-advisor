@@ -118,7 +118,7 @@ const CANONICAL_DEFAULT_ADVISOR_CONFIG: AdvisorConfig = deepFreeze({
 		maxProposedMemoryTokens: 256,
 	},
 	persistence: {
-		transcript: false,
+		transcript: true,
 	},
 });
 

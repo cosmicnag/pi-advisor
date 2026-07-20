@@ -22,6 +22,7 @@ import {
 	MAX_ADVISOR_TOOL_RESULT_BYTES,
 	MAX_ADVISOR_TOOL_RESULT_LINES,
 	MAX_DEFERRED_DELIVERY_BYTES,
+	measureAdvisorToolOutput,
 	normalizeAdviceForDedupe,
 	normalizeAdvisorConfig,
 	parsePersistedAdvisorTranscriptRecord,
@@ -29,7 +30,6 @@ import {
 	redactSecrets,
 	renderAdvisorDelta,
 	renderAdvisorReprimeSnapshot,
-	renderPersistedAdvisorUpdate,
 	successfulMemoryToolTexts,
 	takeRenderedPrefix,
 	type AdviceDedupeIdentity,
@@ -128,6 +128,7 @@ describe("Slice 1 configuration and emission policy", () => {
 	it("keeps release defaults deeply immutable and normalization fallbacks canonical", () => {
 		expect(Object.isFrozen(DEFAULT_ADVISOR_CONFIG)).toBe(true);
 		expect(Object.isFrozen(DEFAULT_ADVISOR_CONFIG.limits)).toBe(true);
+		expect(DEFAULT_ADVISOR_CONFIG.persistence.transcript).toBe(true);
 		expect(Reflect.set(DEFAULT_ADVISOR_CONFIG.limits, "maxAdviceCharacters", 1)).toBe(false);
 		const input = structuredClone(DEFAULT_ADVISOR_CONFIG);
 		input.limits.maxAdviceCharacters = Number.NaN;
@@ -226,7 +227,8 @@ describe("Slice 1 configuration and emission policy", () => {
 		expect(output).toContain("Reviews: 4 requests, 3 completed");
 		expect(output).toContain("Governor skips: 2, latest Advisor turn limit reached");
 		expect(output).toContain("7 suppressed");
-		expect(output).toContain("Transcript persistence: enabled, 9 records persisted, 1");
+		expect(output).toContain("Local redacted activity record: enabled, 9 records available, 1");
+		expect(output).toContain("never include reasoning or file-content bodies");
 	});
 
 	it("keeps even extremely small configured note bounds within their limit", () => {
@@ -378,93 +380,87 @@ describe("Usage estimation and bounded transcript serialization through Slice 4B
 		expect(reprime.text).not.toContain("tool-result-secret");
 	});
 
-	it("removes Executor reasoning from redacted bounded persistence updates", () => {
-		const manager = SessionManager.inMemory();
-		manager.appendMessage({
-			role: "assistant",
-			content: [
-				{ type: "thinking", thinking: "EXECUTOR-REASONING-MUST-NOT-PERSIST" },
-				{ type: "text", text: "Visible Executor conclusion." },
-			],
-			api: "test" as AssistantMessage["api"],
-			provider: "test",
-			model: "test",
-			usage: assistant([]).usage,
-			stopReason: "stop",
-			timestamp: 1,
+	it("counts text and image tool output without retaining content", () => {
+		const measured = measureAdvisorToolOutput([
+			{ type: "text", text: "alpha\nbeta\n" },
+			{ type: "text", text: "gamma" },
+			{ type: "image", data: Buffer.from("four bytes", "utf8").toString("base64") },
+		]);
+		expect(measured).toEqual({
+			outputBytes: Buffer.byteLength("alpha\nbeta\ngammafour bytes", "utf8"),
+			outputLines: 3,
 		});
-		const rendered = renderPersistedAdvisorUpdate(manager.getBranch(), 128);
-		expect(rendered.text).toContain("Visible Executor conclusion");
-		expect(rendered.text).not.toContain("EXECUTOR-REASONING-MUST-NOT-PERSIST");
-		expect(rendered.text).not.toContain("[reasoning]");
+		expect(measureAdvisorToolOutput([{ type: "text", text: "" }])).toEqual({
+			outputBytes: 0,
+			outputLines: 0,
+		});
+	});
 
-		const record = {
-			version: ADVISOR_TRANSCRIPT_RECORD_VERSION,
+	it("strictly separates legacy content records from metadata-only activity records", () => {
+		const legacyUpdate = {
+			version: 1 as const,
 			sessionId: "session-1",
 			savedAt: 1,
 			kind: "update" as const,
-			text: rendered.text,
-			entryCount: rendered.entryCount,
-			truncated: rendered.truncated,
+			text: "Visible legacy Executor conclusion.",
+			entryCount: 1,
+			truncated: false,
 		};
-		expect(parsePersistedAdvisorTranscriptRecord(record, "session-1")).toEqual(record);
-		expect(
-			parsePersistedAdvisorTranscriptRecord(
-				{ ...record, text: "API_KEY=unsafe-persisted-secret" },
-				"session-1",
-			),
-		).toBeUndefined();
+		expect(parsePersistedAdvisorTranscriptRecord(legacyUpdate, "session-1")).toEqual(legacyUpdate);
 
-		const acceptedAdvice = {
-			...boundAdvice("Verify atomic cancellation.", DEFAULT_ADVISOR_CONFIG),
-			findingKeyHash: "a".repeat(64),
-		};
-		const acceptedRecord = {
+		const start = {
 			version: ADVISOR_TRANSCRIPT_RECORD_VERSION,
 			sessionId: "session-1",
-			savedAt: 1,
-			kind: "accepted-advice" as const,
-			advice: acceptedAdvice,
-			delivery: "deferred" as const,
-			stale: true,
+			savedAt: 2,
+			reviewId: "review-1",
+			kind: "review-start" as const,
+			entryCount: 3,
+			truncated: true,
 		};
-		expect(parsePersistedAdvisorTranscriptRecord(acceptedRecord, "session-1")).toBeUndefined();
-		const compatibleRecord = {
-			...acceptedRecord,
-			advice: boundAdvice("Verify atomic cancellation.", DEFAULT_ADVISOR_CONFIG),
-		};
-		expect(parsePersistedAdvisorTranscriptRecord(compatibleRecord, "session-1")).toEqual(
-			compatibleRecord,
-		);
-
-		const governorRecord = {
+		const attempt = {
 			version: ADVISOR_TRANSCRIPT_RECORD_VERSION,
 			sessionId: "session-1",
-			savedAt: 1,
-			kind: "governor-exhaustion" as const,
-			outcome: "Advisor tool-call limit reached",
-			stopReason: "tool-call-limit",
+			savedAt: 3,
+			reviewId: "review-1",
+			kind: "tool-attempt" as const,
+			ordinal: 1,
+			toolName: "grep",
+			internal: false,
+			path: "src",
+			pattern: "reviewId",
+			completed: true,
+			isError: false,
+			outputBytes: 42,
+			outputLines: 2,
 		};
-		expect(parsePersistedAdvisorTranscriptRecord(governorRecord, "session-1")).toEqual(
-			governorRecord,
-		);
-		const turnGovernorRecord = {
-			...governorRecord,
-			outcome: "Advisor turn limit reached",
-			stopReason: "turn-limit",
+		const outcome = {
+			version: ADVISOR_TRANSCRIPT_RECORD_VERSION,
+			sessionId: "session-1",
+			savedAt: 4,
+			reviewId: "review-1",
+			kind: "review-outcome" as const,
+			outcome: "silent" as const,
+			input: 10,
+			output: 2,
+			cacheRead: 3,
+			cacheWrite: 0,
+			total: 15,
+			costUsd: 0.01,
+			stopReason: "stop",
 		};
-		expect(parsePersistedAdvisorTranscriptRecord(turnGovernorRecord, "session-1")).toEqual(
-			turnGovernorRecord,
-		);
-		for (const invalidGovernorRecord of [
-			{ ...governorRecord, outcome: "unrecognized governor" },
-			{ ...governorRecord, stopReason: "turn-limit" },
-			{ ...governorRecord, unexpected: true },
-			Object.fromEntries(Object.entries(governorRecord).filter(([key]) => key !== "stopReason")),
+		for (const record of [start, attempt, outcome]) {
+			expect(parsePersistedAdvisorTranscriptRecord(record, "session-1")).toEqual(record);
+		}
+		for (const invalid of [
+			{ ...start, text: "Executor body must not persist" },
+			{ ...attempt, text: "tool result body" },
+			{ ...attempt, arguments: { path: "src" } },
+			{ ...attempt, query: "raw query" },
+			{ ...attempt, pattern: "API_KEY=unsafe-persisted-secret" },
+			{ ...outcome, advice: boundAdvice("private note", DEFAULT_ADVISOR_CONFIG) },
+			{ ...outcome, version: 3 },
 		]) {
-			expect(
-				parsePersistedAdvisorTranscriptRecord(invalidGovernorRecord, "session-1"),
-			).toBeUndefined();
+			expect(parsePersistedAdvisorTranscriptRecord(invalid, "session-1")).toBeUndefined();
 		}
 	});
 

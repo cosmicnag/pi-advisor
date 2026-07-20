@@ -10,19 +10,23 @@ import { cursorMatches, type AdvisorCursor } from "./transcript.js";
 export const ADVISOR_RUNTIME_STATE_ENTRY_TYPE = "pi-advisor-runtime-state";
 export const ADVISOR_RUNTIME_STATE_VERSION = 2 as const;
 export const ADVISOR_TRANSCRIPT_ENTRY_TYPE = "pi-advisor-transcript-record";
-export const ADVISOR_TRANSCRIPT_RECORD_VERSION = 1 as const;
+export const ADVISOR_TRANSCRIPT_LEGACY_RECORD_VERSION = 1 as const;
+export const ADVISOR_TRANSCRIPT_RECORD_VERSION = 2 as const;
 export const MAX_PERSISTED_DEDUPE_HASHES = 128;
 export const MAX_PERSISTED_RUNTIME_STATE_BYTES = 4 * 1_024 * 1_024;
 export const MAX_PERSISTED_TRANSCRIPT_RECORD_BYTES = 256 * 1_024;
 export const MAX_INSPECTED_TRANSCRIPT_RECORDS = 256;
+export const MAX_PERSISTED_ACTIVITY_TARGET_BYTES = 4 * 1_024;
 
-interface PersistedAdvisorTranscriptRecordBase {
-	version: typeof ADVISOR_TRANSCRIPT_RECORD_VERSION;
+interface PersistedAdvisorTranscriptRecordBase<Version extends 1 | 2> {
+	version: Version;
 	sessionId: string;
 	savedAt: number;
 }
 
-export type PersistedAdvisorTranscriptRecord = PersistedAdvisorTranscriptRecordBase &
+export type PersistedAdvisorTranscriptRecordV1 = PersistedAdvisorTranscriptRecordBase<
+	typeof ADVISOR_TRANSCRIPT_LEGACY_RECORD_VERSION
+> &
 	(
 		| { kind: "update"; text: string; entryCount: number; truncated: boolean }
 		| { kind: "advisor-tool-call"; toolName: string; arguments: string }
@@ -55,6 +59,59 @@ export type PersistedAdvisorTranscriptRecord = PersistedAdvisorTranscriptRecordB
 				stopReason: "turn-limit";
 		  }
 	);
+
+interface PersistedAdvisorActivityBase extends PersistedAdvisorTranscriptRecordBase<
+	typeof ADVISOR_TRANSCRIPT_RECORD_VERSION
+> {
+	reviewId: string;
+}
+
+export interface PersistedAdvisorReviewStart extends PersistedAdvisorActivityBase {
+	kind: "review-start";
+	entryCount: number;
+	truncated: boolean;
+}
+
+export interface PersistedAdvisorToolAttempt extends PersistedAdvisorActivityBase {
+	kind: "tool-attempt";
+	ordinal: number;
+	toolName: string;
+	internal: boolean;
+	path?: string;
+	pattern?: string;
+	completed: boolean;
+	isError: boolean;
+	outputBytes: number;
+	outputLines: number;
+}
+
+interface PersistedAdvisorReviewOutcomeBase extends PersistedAdvisorActivityBase {
+	kind: "review-outcome";
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	total: number;
+	costUsd: number;
+	stopReason: string;
+}
+
+export type PersistedAdvisorReviewOutcome = PersistedAdvisorReviewOutcomeBase &
+	(
+		| { outcome: "silent" }
+		| { outcome: "accepted"; delivery: "active" | "deferred"; stale: boolean }
+		| { outcome: "governor-skipped"; reason: string }
+		| { outcome: "failed"; reason: string }
+	);
+
+export type PersistedAdvisorTranscriptRecordV2 =
+	| PersistedAdvisorReviewStart
+	| PersistedAdvisorToolAttempt
+	| PersistedAdvisorReviewOutcome;
+
+export type PersistedAdvisorTranscriptRecord =
+	| PersistedAdvisorTranscriptRecordV1
+	| PersistedAdvisorTranscriptRecordV2;
 
 export interface PersistedDeferredAdvice {
 	advice: AcceptedAdvice;
@@ -309,35 +366,50 @@ export function parsePersistedAdvisorRuntimeState(
 	};
 }
 
-export function parsePersistedAdvisorTranscriptRecord(
-	value: unknown,
+function hasValidTranscriptBase(
+	record: Record<string, unknown>,
 	expectedSessionId: string,
-): PersistedAdvisorTranscriptRecord | undefined {
-	let serialized: unknown;
-	try {
-		serialized = JSON.stringify(value);
-	} catch {
-		return undefined;
+): boolean {
+	return (
+		record.sessionId === expectedSessionId &&
+		typeof record.sessionId === "string" &&
+		record.sessionId.length > 0 &&
+		record.sessionId.length <= 128 &&
+		isTimestamp(record.savedAt)
+	);
+}
+
+function isActivityTarget(value: unknown): value is string {
+	return (
+		typeof value === "string" &&
+		Buffer.byteLength(value, "utf8") <= MAX_PERSISTED_ACTIVITY_TARGET_BYTES &&
+		redactSecrets(value).text === value
+	);
+}
+
+function hasValidToolTargets(record: Record<string, unknown>): boolean {
+	const path = record.path;
+	const pattern = record.pattern;
+	if (record.internal === true) {
+		return record.toolName === "advise" && path === undefined && pattern === undefined;
 	}
-	if (
-		typeof serialized !== "string" ||
-		Buffer.byteLength(serialized, "utf8") > MAX_PERSISTED_TRANSCRIPT_RECORD_BYTES ||
-		typeof value !== "object" ||
-		value === null
-	) {
-		return undefined;
+	if (record.toolName === "advise") return false;
+	switch (record.toolName) {
+		case "read":
+		case "ls":
+			return isActivityTarget(path) && pattern === undefined;
+		case "find":
+		case "grep":
+			return isActivityTarget(path) && isActivityTarget(pattern);
+		default:
+			return path === undefined && pattern === undefined;
 	}
-	const record = value as Record<string, unknown>;
-	if (
-		record.version !== ADVISOR_TRANSCRIPT_RECORD_VERSION ||
-		record.sessionId !== expectedSessionId ||
-		typeof record.sessionId !== "string" ||
-		record.sessionId.length === 0 ||
-		record.sessionId.length > 128 ||
-		!isTimestamp(record.savedAt)
-	) {
-		return undefined;
-	}
+}
+
+function parseLegacyTranscriptRecord(
+	value: unknown,
+	record: Record<string, unknown>,
+): PersistedAdvisorTranscriptRecordV1 | undefined {
 	let valid = false;
 	switch (record.kind) {
 		case "update":
@@ -428,7 +500,136 @@ export function parsePersistedAdvisorTranscriptRecord(
 					(record.outcome === "Advisor turn limit reached" && record.stopReason === "turn-limit"));
 			break;
 	}
-	return valid ? (structuredClone(value) as PersistedAdvisorTranscriptRecord) : undefined;
+	return valid ? (structuredClone(value) as PersistedAdvisorTranscriptRecordV1) : undefined;
+}
+
+function parseActivityTranscriptRecord(
+	value: unknown,
+	record: Record<string, unknown>,
+): PersistedAdvisorTranscriptRecordV2 | undefined {
+	if (!isBoundedName(record.reviewId) || record.reviewId.length > 128) return undefined;
+	let valid = false;
+	switch (record.kind) {
+		case "review-start":
+			valid =
+				hasOnlyKeys(record, [
+					"version",
+					"sessionId",
+					"savedAt",
+					"reviewId",
+					"kind",
+					"entryCount",
+					"truncated",
+				]) &&
+				isFiniteInteger(record.entryCount) &&
+				typeof record.truncated === "boolean";
+			break;
+		case "tool-attempt": {
+			valid =
+				hasOnlyKeys(record, [
+					"version",
+					"sessionId",
+					"savedAt",
+					"reviewId",
+					"kind",
+					"ordinal",
+					"toolName",
+					"internal",
+					"path",
+					"pattern",
+					"completed",
+					"isError",
+					"outputBytes",
+					"outputLines",
+				]) &&
+				isFiniteInteger(record.ordinal, 1) &&
+				isBoundedName(record.toolName) &&
+				typeof record.internal === "boolean" &&
+				typeof record.completed === "boolean" &&
+				typeof record.isError === "boolean" &&
+				isFiniteInteger(record.outputBytes) &&
+				isFiniteInteger(record.outputLines) &&
+				hasValidToolTargets(record);
+			if (
+				valid &&
+				record.completed === false &&
+				(record.isError !== false || record.outputBytes !== 0 || record.outputLines !== 0)
+			) {
+				valid = false;
+			}
+			break;
+		}
+		case "review-outcome": {
+			const commonKeys = [
+				"version",
+				"sessionId",
+				"savedAt",
+				"reviewId",
+				"kind",
+				"outcome",
+				"input",
+				"output",
+				"cacheRead",
+				"cacheWrite",
+				"total",
+				"costUsd",
+				"stopReason",
+			] as const;
+			const validUsage =
+				isFiniteNonNegative(record.input) &&
+				isFiniteNonNegative(record.output) &&
+				isFiniteNonNegative(record.cacheRead) &&
+				isFiniteNonNegative(record.cacheWrite) &&
+				isFiniteNonNegative(record.total) &&
+				isFiniteNonNegative(record.costUsd) &&
+				isSafePersistedText(record.stopReason);
+			if (record.outcome === "silent") {
+				valid = hasOnlyKeys(record, commonKeys) && validUsage;
+			} else if (record.outcome === "accepted") {
+				valid =
+					hasOnlyKeys(record, [...commonKeys, "delivery", "stale"]) &&
+					validUsage &&
+					(record.delivery === "active" || record.delivery === "deferred") &&
+					typeof record.stale === "boolean";
+			} else if (record.outcome === "governor-skipped" || record.outcome === "failed") {
+				valid =
+					hasOnlyKeys(record, [...commonKeys, "reason"]) &&
+					validUsage &&
+					isSafePersistedText(record.reason);
+			}
+			break;
+		}
+	}
+	return valid ? (structuredClone(value) as PersistedAdvisorTranscriptRecordV2) : undefined;
+}
+
+export function parsePersistedAdvisorTranscriptRecord(
+	value: unknown,
+	expectedSessionId: string,
+): PersistedAdvisorTranscriptRecord | undefined {
+	let serialized: unknown;
+	try {
+		serialized = JSON.stringify(value);
+	} catch {
+		return undefined;
+	}
+	if (
+		typeof serialized !== "string" ||
+		Buffer.byteLength(serialized, "utf8") > MAX_PERSISTED_TRANSCRIPT_RECORD_BYTES ||
+		typeof value !== "object" ||
+		value === null
+	) {
+		return undefined;
+	}
+	const record = value as Record<string, unknown>;
+	if (!hasValidTranscriptBase(record, expectedSessionId)) return undefined;
+	if (record.version === ADVISOR_TRANSCRIPT_LEGACY_RECORD_VERSION) {
+		return parseLegacyTranscriptRecord(value, record);
+	}
+	if (record.version === ADVISOR_TRANSCRIPT_RECORD_VERSION) {
+		return parseActivityTranscriptRecord(value, record);
+	}
+	return undefined;
 }
 
 export function deferredAdviceIdentity(pending: PersistedDeferredAdvice): string {

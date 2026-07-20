@@ -8,6 +8,7 @@ import {
 	ADVISOR_TRANSCRIPT_ENTRY_TYPE,
 	createPiAdvisorExtension,
 	DEFAULT_ADVISOR_CONFIG,
+	MAX_INSPECTED_TRANSCRIPT_RECORDS,
 	MAX_PERSISTED_TRANSCRIPT_RECORD_BYTES,
 	parsePersistedAdvisorTranscriptRecord,
 	type AdvisorConfig,
@@ -20,11 +21,11 @@ import {
 	type ScriptedProvider,
 } from "../fixtures/scripted-provider.js";
 
-function configFor(provider: ScriptedProvider, transcript: boolean): AdvisorConfig {
+function configFor(provider: ScriptedProvider, transcript?: boolean): AdvisorConfig {
 	const config = structuredClone(DEFAULT_ADVISOR_CONFIG);
 	config.defaultEnabled = true;
 	config.model = `${provider.model.provider}/${provider.model.id}`;
-	config.persistence.transcript = transcript;
+	if (transcript !== undefined) config.persistence.transcript = transcript;
 	return config;
 }
 
@@ -70,8 +71,8 @@ function scriptedAssistant(text: string) {
 	};
 }
 
-describe.sequential("Slice 4B optional transcript persistence", () => {
-	it("does not append transcript records with the default-disabled policy", async () => {
+describe.sequential("local redacted activity records", () => {
+	it("does not append activity records with an explicit opt-out", async () => {
 		const primary = createPrimaryProvider([
 			{ content: [{ type: "text", text: "ordinary answer" }] },
 		]);
@@ -85,7 +86,7 @@ describe.sequential("Slice 4B optional transcript persistence", () => {
 			mode: "rpc",
 		});
 		try {
-			await harness.session.prompt("default persistence check");
+			await harness.session.prompt("explicit activity recording opt-out");
 			await waitFor(() => runtime?.getStatus().reviewsCompleted === 1);
 			expect(
 				harness.sessionManager
@@ -105,7 +106,42 @@ describe.sequential("Slice 4B optional transcript persistence", () => {
 		}
 	});
 
-	it("persists a bounded handled governor outcome when transcript persistence is enabled", async () => {
+	it("enables metadata-only activity records by default", async () => {
+		const primary = createPrimaryProvider([{ content: [{ type: "text", text: "answer" }] }]);
+		const advisor = createAdvisorProvider([{ content: [] }]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("default activity recording check");
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 1);
+			const records = harness.sessionManager
+				.getBranch()
+				.filter(
+					(entry) => entry.type === "custom" && entry.customType === ADVISOR_TRANSCRIPT_ENTRY_TYPE,
+				);
+			expect(records).toHaveLength(2);
+			expect(
+				records.flatMap((entry) =>
+					entry.type === "custom" ? [(entry.data as { kind: string }).kind] : [],
+				),
+			).toEqual(["review-start", "review-outcome"]);
+			expect(runtime?.getStatus()).toMatchObject({
+				transcriptPersistenceEnabled: true,
+				transcriptRecordsPersisted: 2,
+				transcriptPersistenceFailures: 0,
+			});
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("persists a bounded handled governor outcome when activity recording is enabled", async () => {
 		const primary = createPrimaryProvider([{ content: [{ type: "text", text: "answer" }] }]);
 		const advisor = createAdvisorProvider([
 			{
@@ -134,30 +170,146 @@ describe.sequential("Slice 4B optional transcript persistence", () => {
 			await harness.session.prompt("persist handled governor exhaustion");
 			await waitFor(() => runtime?.getStatus().governorSkippedReviews === 1);
 			const sessionId = harness.sessionManager.getSessionId();
-			const outcomeEntries = harness.sessionManager
+			const records = harness.sessionManager
 				.getBranch()
 				.filter(
-					(entry) =>
-						entry.type === "custom" &&
-						entry.customType === ADVISOR_TRANSCRIPT_ENTRY_TYPE &&
-						typeof entry.data === "object" &&
-						entry.data !== null &&
-						Reflect.get(entry.data, "kind") === "governor-exhaustion",
+					(entry) => entry.type === "custom" && entry.customType === ADVISOR_TRANSCRIPT_ENTRY_TYPE,
+				)
+				.map((entry) =>
+					entry.type === "custom"
+						? parsePersistedAdvisorTranscriptRecord(entry.data, sessionId)
+						: undefined,
 				);
-			expect(outcomeEntries).toHaveLength(1);
-			const entry = outcomeEntries[0];
-			if (entry?.type !== "custom") throw new Error("Expected governor transcript entry");
-			expect(parsePersistedAdvisorTranscriptRecord(entry.data, sessionId)).toMatchObject({
-				kind: "governor-exhaustion",
-				outcome: "Advisor tool-call limit reached",
+			const start = records.find(
+				(record) => record?.version === 2 && record.kind === "review-start",
+			);
+			const attempt = records.find(
+				(record) => record?.version === 2 && record.kind === "tool-attempt",
+			);
+			const outcome = records.find(
+				(record) => record?.version === 2 && record.kind === "review-outcome",
+			);
+			expect(start).toBeDefined();
+			expect(attempt).toMatchObject({
+				ordinal: 1,
+				toolName: "read",
+				path: "README.md",
+				completed: true,
+			});
+			expect(outcome).toMatchObject({
+				outcome: "governor-skipped",
+				reason: "Advisor tool-call limit reached",
 				stopReason: "tool-call-limit",
 			});
+			expect(
+				new Set(records.flatMap((record) => (record?.version === 2 ? [record.reviewId] : []))),
+			).toEqual(new Set([start?.version === 2 ? start.reviewId : "missing"]));
 			expect(runtime?.getStatus()).toMatchObject({
 				failedReviews: 0,
 				consecutiveFailures: 0,
 				governorSkippedReviews: 1,
 				lastGovernorOutcome: "Advisor tool-call limit reached",
 			});
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("records failed read-only tool metadata without its result body", async () => {
+		const primary = createPrimaryProvider([{ content: [{ type: "text", text: "answer" }] }]);
+		const advisor = createAdvisorProvider([
+			{
+				content: [
+					{
+						type: "toolCall",
+						id: "missing-read",
+						name: "read",
+						arguments: { path: "missing-activity-file.txt" },
+					},
+				],
+				stopReason: "toolUse",
+			},
+			{ content: [] },
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("inspect a missing file");
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 1);
+			const attempt = harness.sessionManager
+				.getBranch()
+				.flatMap((entry) =>
+					entry.type === "custom" &&
+					entry.customType === ADVISOR_TRANSCRIPT_ENTRY_TYPE &&
+					typeof entry.data === "object" &&
+					entry.data !== null &&
+					Reflect.get(entry.data, "kind") === "tool-attempt"
+						? [entry.data as Record<string, unknown>]
+						: [],
+				)[0];
+			expect(attempt).toMatchObject({
+				toolName: "read",
+				path: "missing-activity-file.txt",
+				completed: true,
+				isError: true,
+			});
+			expect(attempt?.outputBytes).toBeGreaterThan(0);
+			expect(JSON.stringify(attempt)).not.toContain("ENOENT");
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("keeps one review identifier and aggregate usage across a terminal retry failure", async () => {
+		const primary = createPrimaryProvider([{ content: [{ type: "text", text: "answer" }] }]);
+		const advisor = createAdvisorProvider([
+			{ errorMessage: "first provider failure", usage: { input: 5, output: 1, costUsd: 0.01 } },
+			{ errorMessage: "second provider failure", usage: { input: 7, output: 2, costUsd: 0.02 } },
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("record a retried failure");
+			await waitFor(
+				() =>
+					runtime?.getStatus().failedReviews === 2 &&
+					runtime.getStatus().retryAttempts === 1 &&
+					advisor.activeRequests === 0,
+			);
+			const records = harness.sessionManager
+				.getBranch()
+				.filter(
+					(entry) => entry.type === "custom" && entry.customType === ADVISOR_TRANSCRIPT_ENTRY_TYPE,
+				)
+				.flatMap((entry) =>
+					entry.type === "custom" && typeof entry.data === "object" && entry.data !== null
+						? [entry.data as Record<string, unknown>]
+						: [],
+				);
+			expect(records.map((record) => record.kind)).toEqual(["review-start", "review-outcome"]);
+			expect(new Set(records.map((record) => record.reviewId)).size).toBe(1);
+			expect(records[1]).toMatchObject({
+				outcome: "failed",
+				reason: "second provider failure",
+				input: 12,
+				output: 3,
+				total: 15,
+				costUsd: 0.03,
+				stopReason: "error",
+			});
+			expect(runtime?.getStatus()).toMatchObject({ reviewRequests: 2, retryAttempts: 1 });
 		} finally {
 			await harness.dispose();
 		}
@@ -219,9 +371,8 @@ describe.sequential("Slice 4B optional transcript persistence", () => {
 					}
 					return (entry.data as Record<string, unknown>).kind;
 				});
-			expect(activeRecordKinds).not.toContain("advisor-tool-call");
-			expect(activeRecordKinds).not.toContain("advisor-tool-result");
-			expect(activeRecordKinds).not.toContain("usage");
+			expect(activeRecordKinds).not.toContain("tool-attempt");
+			expect(activeRecordKinds).not.toContain("review-outcome");
 			expect(runtime?.getStatus()).toMatchObject({
 				reviewRequests: 1,
 				reviewsCompleted: 0,
@@ -229,6 +380,46 @@ describe.sequential("Slice 4B optional transcript persistence", () => {
 			});
 		} finally {
 			advisorBarrier.release();
+			await harness.dispose();
+		}
+	});
+
+	it("bounds restored activity inspection to the newest records", async () => {
+		const primary = createPrimaryProvider([]);
+		const advisor = createAdvisorProvider([]);
+		const manager = SessionManager.inMemory();
+		const sessionId = manager.getSessionId();
+		for (let index = 0; index < MAX_INSPECTED_TRANSCRIPT_RECORDS + 20; index++) {
+			manager.appendCustomEntry(ADVISOR_TRANSCRIPT_ENTRY_TYPE, {
+				version: 2,
+				sessionId,
+				savedAt: index + 1,
+				reviewId: `review-${String(index)}`,
+				kind: "review-start",
+				entryCount: 1,
+				truncated: false,
+			});
+		}
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			sessionManager: manager,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			expect(runtime?.getStatus().transcriptRecordsPersisted).toBe(
+				MAX_INSPECTED_TRANSCRIPT_RECORDS + 20,
+			);
+			const dump = runtime?.formatDiagnosticsDump() ?? "";
+			expect(dump).toContain(`"availableRecordCount": ${String(MAX_INSPECTED_TRANSCRIPT_RECORDS)}`);
+			expect(dump).toContain(
+				`"reviewId": "review-${String(MAX_INSPECTED_TRANSCRIPT_RECORDS + 19)}"`,
+			);
+			expect(dump).not.toContain('"reviewId": "review-0"');
+		} finally {
 			await harness.dispose();
 		}
 	});
@@ -255,6 +446,18 @@ describe.sequential("Slice 4B optional transcript persistence", () => {
 						id: "persistence-read",
 						name: "read",
 						arguments: { path: "large-persisted-result.txt" },
+					},
+					{
+						type: "toolCall",
+						id: "persistence-read-repeat",
+						name: "read",
+						arguments: { path: "large-persisted-result.txt" },
+					},
+					{
+						type: "toolCall",
+						id: "persistence-find",
+						name: "find",
+						arguments: { path: ".", pattern: "API_KEY=persisted-target-secret-value" },
 					},
 				],
 				stopReason: "toolUse",
@@ -305,28 +508,76 @@ describe.sequential("Slice 4B optional transcript persistence", () => {
 				if (entry.type !== "custom") throw new Error("Expected transcript custom entry");
 				return parsePersistedAdvisorTranscriptRecord(entry.data, sessionId);
 			});
-			expect(records.every((record) => record !== undefined)).toBe(true);
-			const serialized = JSON.stringify(records);
-			const persistedToolResult = records.find((record) => record?.kind === "advisor-tool-result");
-			expect(persistedToolResult?.kind).toBe("advisor-tool-result");
-			if (persistedToolResult?.kind !== "advisor-tool-result") {
-				throw new Error("Expected persisted Advisor tool result");
+			expect(records.every((record) => record?.version === 2)).toBe(true);
+			const activities = records.flatMap((record) => (record?.version === 2 ? [record] : []));
+			const serialized = JSON.stringify(activities);
+			const starts = activities.filter((record) => record.kind === "review-start");
+			const attempts = activities.filter((record) => record.kind === "tool-attempt");
+			const outcomes = activities.filter((record) => record.kind === "review-outcome");
+			expect(starts).toHaveLength(1);
+			expect(attempts.map((attempt) => attempt.ordinal)).toEqual([1, 2, 3, 4]);
+			expect(attempts.slice(0, 2).map((attempt) => attempt.path)).toEqual([
+				"large-persisted-result.txt",
+				"large-persisted-result.txt",
+			]);
+			expect(attempts[0]).toMatchObject({
+				toolName: "read",
+				internal: false,
+				completed: true,
+				isError: false,
+			});
+			expect(attempts[0]?.outputBytes).toBeGreaterThan(0);
+			expect(attempts[0]?.outputLines).toBeGreaterThan(0);
+			expect(attempts[2]).toMatchObject({
+				toolName: "find",
+				path: ".",
+				pattern: "API_KEY=[REDACTED]",
+			});
+			expect(attempts[3]).toMatchObject({
+				toolName: "advise",
+				internal: true,
+				completed: true,
+				isError: false,
+			});
+			expect(attempts[3]).not.toHaveProperty("path");
+			expect(attempts[3]).not.toHaveProperty("pattern");
+			expect(outcomes).toHaveLength(1);
+			expect(outcomes[0]).toMatchObject({
+				outcome: "accepted",
+				delivery: "deferred",
+				stale: false,
+				input: 30,
+				output: 5,
+				cacheRead: 3,
+				cacheWrite: 4,
+				total: 42,
+				costUsd: 0.03,
+				stopReason: "toolUse",
+			});
+			expect(new Set(activities.map((record) => record.reviewId)).size).toBe(1);
+			for (const record of activities) {
+				expect(Buffer.byteLength(JSON.stringify(record), "utf8")).toBeLessThanOrEqual(
+					MAX_PERSISTED_TRANSCRIPT_RECORD_BYTES,
+				);
 			}
-			expect(persistedToolResult.text).toContain("[REDACTED]");
-			expect(persistedToolResult.text).not.toContain("persisted-tool-secret-value");
-			expect(Buffer.byteLength(JSON.stringify(persistedToolResult), "utf8")).toBeLessThanOrEqual(
-				MAX_PERSISTED_TRANSCRIPT_RECORD_BYTES,
-			);
-			expect(serialized).toContain('"kind":"update"');
-			expect(serialized).toContain('"kind":"advisor-tool-call"');
-			expect(serialized).toContain('"kind":"advisor-tool-result"');
-			expect(serialized).toContain('"kind":"usage"');
-			expect(serialized).toContain('"kind":"accepted-advice"');
+			expect(serialized).toContain('"kind":"review-start"');
+			expect(serialized).toContain('"kind":"tool-attempt"');
+			expect(serialized).toContain('"kind":"review-outcome"');
 			expect(serialized).toContain("[REDACTED]");
-			expect(serialized).not.toContain("persistence-secret-value");
-			expect(serialized).not.toContain("EXECUTOR-PRIVATE-REASONING-SENTINEL");
-			expect(serialized).not.toContain("ADVISOR-PRIVATE-REASONING-SENTINEL");
-			expect(serialized).not.toContain('"toolName":"advise"');
+			for (const prohibited of [
+				"persistence-secret-value",
+				"persisted-tool-secret-value",
+				"persisted-target-secret-value",
+				"large tool result line",
+				"Verify the missing file before completion",
+				"EXECUTOR-PRIVATE-REASONING-SENTINEL",
+				"ADVISOR-PRIVATE-REASONING-SENTINEL",
+				'"arguments"',
+				'"advice"',
+				'"text"',
+			]) {
+				expect(serialized).not.toContain(prohibited);
+			}
 			expect(runtime?.getStatus()).toMatchObject({
 				transcriptPersistenceEnabled: true,
 				transcriptRecordsPersisted: entries.length,
@@ -343,8 +594,12 @@ describe.sequential("Slice 4B optional transcript persistence", () => {
 				},
 			});
 			const dump = runtime?.formatDiagnosticsDump() ?? "";
-			expect(dump).toContain("Verify the missing file before completion");
+			expect(dump).toContain("activity-v2-metadata-only");
+			expect(dump).toContain('"recordSchema": "activity-v2"');
+			expect(dump).toContain('"newActivityRecordsMetadataOnly": true');
 			expect(dump).toContain('"reasoningIncluded": false');
+			expect(dump).toContain('"fileContentBodiesIncluded": false');
+			expect(dump).not.toContain("Verify the missing file before completion");
 			expect(dump).not.toContain("EXECUTOR-PRIVATE-REASONING-SENTINEL");
 			expect(dump).not.toContain("ADVISOR-PRIVATE-REASONING-SENTINEL");
 			await runtime?.disable();

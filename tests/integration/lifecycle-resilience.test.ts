@@ -199,6 +199,9 @@ describe.sequential("Slice 3A branch, compaction, and persistence lifecycle", ()
 			if (userEntry === undefined) throw new Error("Expected original user entry");
 			manager.branch(userEntry.id);
 			manager.appendMessage(scriptedAssistant("equal-length alternate branch answer"));
+			while (manager.getBranch().length < originalBranch.length) {
+				manager.appendCustomEntry("equal-length-alternate-padding", {});
+			}
 			expect(manager.getBranch()).toHaveLength(originalBranch.length);
 
 			barrier.release();
