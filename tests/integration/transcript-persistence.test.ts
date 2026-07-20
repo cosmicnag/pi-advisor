@@ -299,7 +299,7 @@ describe.sequential("local redacted activity records", () => {
 						: [],
 				);
 			expect(records.map((record) => record.kind)).toEqual(["review-start", "review-outcome"]);
-			expect(new Set(records.map((record) => record.reviewId))).toHaveLength(1);
+			expect(new Set(records.map((record) => record.reviewId)).size).toBe(1);
 			expect(records[1]).toMatchObject({
 				outcome: "failed",
 				reason: "second provider failure",
@@ -554,7 +554,7 @@ describe.sequential("local redacted activity records", () => {
 				costUsd: 0.03,
 				stopReason: "toolUse",
 			});
-			expect(new Set(activities.map((record) => record.reviewId))).toHaveLength(1);
+			expect(new Set(activities.map((record) => record.reviewId)).size).toBe(1);
 			for (const record of activities) {
 				expect(Buffer.byteLength(JSON.stringify(record), "utf8")).toBeLessThanOrEqual(
 					MAX_PERSISTED_TRANSCRIPT_RECORD_BYTES,
