@@ -133,6 +133,8 @@ Delete affected Pi sessions through Pi or remove their session JSONL files while
 
 Advisor reviews meaningful completed Executor turns in a separate in-memory Pi session.
 It prioritizes current implementation evidence such as code, UX, cancellation, atomicity, tests, safety, correctness, and scope.
+Advisor normally keeps verification lean, using only a few read-only checks before advising or remaining silent.
+It investigates more deeply only when current evidence identifies a concrete critical risk.
 Recalled memories, handoffs, summaries, and historical process text are subordinate supporting evidence rather than independent sources of active obligations.
 The latest explicit user request controls the active workflow unless it invokes a historical process, and an equivalent current workflow does not need to use a remembered process or skill name.
 Workflow or gate advice is checked against recent Executor actions, tool results, and review results before delivery, and repeated findings can be suppressed by semantic identity.
