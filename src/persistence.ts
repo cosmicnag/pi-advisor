@@ -44,6 +44,16 @@ export type PersistedAdvisorTranscriptRecord = PersistedAdvisorTranscriptRecordB
 				stale: boolean;
 		  }
 		| { kind: "failure"; reason: string; stopReason: string }
+		| {
+				kind: "governor-exhaustion";
+				outcome: "Advisor tool-call limit reached";
+				stopReason: "tool-call-limit";
+		  }
+		| {
+				kind: "governor-exhaustion";
+				outcome: "Advisor turn limit reached";
+				stopReason: "turn-limit";
+		  }
 	);
 
 export interface PersistedDeferredAdvice {
@@ -409,6 +419,13 @@ export function parsePersistedAdvisorTranscriptRecord(
 				hasOnlyKeys(record, ["version", "sessionId", "savedAt", "kind", "reason", "stopReason"]) &&
 				isSafePersistedText(record.reason) &&
 				isSafePersistedText(record.stopReason);
+			break;
+		case "governor-exhaustion":
+			valid =
+				hasOnlyKeys(record, ["version", "sessionId", "savedAt", "kind", "outcome", "stopReason"]) &&
+				((record.outcome === "Advisor tool-call limit reached" &&
+					record.stopReason === "tool-call-limit") ||
+					(record.outcome === "Advisor turn limit reached" && record.stopReason === "turn-limit"));
 			break;
 	}
 	return valid ? (structuredClone(value) as PersistedAdvisorTranscriptRecord) : undefined;

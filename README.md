@@ -174,7 +174,10 @@ Provider usage or pricing can be missing or incomplete, so explicitly enabled to
 Advisor estimates its private context before each bounded update and asks Pi's public nested `AgentSession.compact()` API to compact when needed.
 If compaction fails or remains unsafe, Advisor clears only its private nested history and retries the same current bounded update once without replaying the full Executor branch.
 If that update still cannot fit fresh context, Advisor drops only that update, warns, and remains active for later updates.
-Three consecutive updates that each exhaust their retry path pause Advisor with one warning that includes the final bounded, secret-redacted failure reason; failed attempts within one update do not advance that streak more than once.
+Reaching the hard per-update tool-call or turn limit skips only that review without retrying it, and automatic review continues with later eligible Executor updates.
+Accepted review advice retains its existing bounded delivery behavior, while provisional Memory suggestions from the rolled-back attempt remain discarded.
+`/advisor status` reports the cumulative governor-skipped review count and latest bounded outcome.
+Three consecutive ordinary updates that each exhaust their retry path pause Advisor with one warning that includes the final bounded, secret-redacted failure reason; handled per-update governor exhaustion clears rather than advances that streak.
 Branch, session, and confirmed configuration resynchronization may use one bounded branch snapshot, but an unsafe lifecycle snapshot degrades to the current bounded update instead of pausing Advisor.
 
 Pi Advisor writes bounded lifecycle state as Pi custom entries outside model context when required for correct compatible resume and delivery.

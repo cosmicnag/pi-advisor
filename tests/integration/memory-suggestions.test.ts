@@ -487,8 +487,12 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 			};
 			currentRun.governorFailure = "Advisor tool-call limit reached";
 			advisorBarrier.release();
-			await waitFor(() => runtime?.getStatus().failedReviews === 1);
+			await waitFor(() => runtime?.getStatus().governorSkippedReviews === 1);
 			expect(runtime.getStatus()).toMatchObject({
+				failedReviews: 0,
+				consecutiveFailures: 0,
+				lastGovernorOutcome: "Advisor tool-call limit reached",
+				notesDelivered: 0,
 				memorySuggestionsDelivered: 0,
 				memorySuggestionsRemaining: 5,
 				activeNotesPending: 0,

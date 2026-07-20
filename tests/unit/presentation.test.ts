@@ -89,6 +89,7 @@ function runtimeStatus(): AdvisorRuntimeStatus {
 		reviewsCompleted: 1,
 		silentReviews: 0,
 		failedReviews: 0,
+		governorSkippedReviews: 0,
 		deliveryFailures: 0,
 		notesDelivered: 1,
 		activeNotesPending: 0,
@@ -360,6 +361,8 @@ describe("Advisor presentation and diagnostics through Slice 5", () => {
 		const status = runtimeStatus();
 		status.lastFailure =
 			"Bearer dump-secret-token-value private review instruction private/project/path";
+		status.governorSkippedReviews = 4;
+		status.lastGovernorOutcome = "Advisor tool-call limit reached";
 		status.lastDeliveryFailure =
 			"TOKEN=dump-delivery-secret-value private review instruction private/project/path";
 		const config = structuredClone(DEFAULT_ADVISOR_CONFIG);
@@ -378,6 +381,8 @@ describe("Advisor presentation and diagnostics through Slice 5", () => {
 		expect(dump).toContain('"executorTranscriptIncluded": false');
 		expect(dump).toContain('"noteContentIncluded": false');
 		expect(dump).toContain('"hasLastFailure": true');
+		expect(dump).toContain('"governorSkippedReviews": 4');
+		expect(dump).toContain('"lastGovernorOutcome": "Advisor tool-call limit reached"');
 		expect(dump).toContain('"hasLastDeliveryFailure": true');
 		expect(() => {
 			JSON.parse(dump.slice(dump.indexOf("\n") + 1));

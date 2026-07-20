@@ -95,6 +95,7 @@ function runtimeStatus(): AdvisorRuntimeStatus {
 		reviewsCompleted: 0,
 		silentReviews: 0,
 		failedReviews: 0,
+		governorSkippedReviews: 0,
 		deliveryFailures: 0,
 		notesDelivered: 0,
 		activeNotesPending: 0,
@@ -197,6 +198,8 @@ describe("Slice 1 configuration and emission policy", () => {
 		status.reviewRequests = 4;
 		status.reviewsCompleted = 3;
 		status.failedReviews = 1;
+		status.governorSkippedReviews = 2;
+		status.lastGovernorOutcome = "Advisor turn limit reached";
 		status.contextReprimesCompleted = 2;
 		status.contextReprimeFailures = 1;
 		status.compactionUsageUnavailable = 2;
@@ -221,6 +224,7 @@ describe("Slice 1 configuration and emission policy", () => {
 		expect(output).toContain("Session tokens: 155 total");
 		expect(output).toContain("cap off");
 		expect(output).toContain("Reviews: 4 requests, 3 completed");
+		expect(output).toContain("Governor skips: 2, latest Advisor turn limit reached");
 		expect(output).toContain("7 suppressed");
 		expect(output).toContain("Transcript persistence: enabled, 9 records persisted, 1");
 	});
@@ -432,6 +436,36 @@ describe("Usage estimation and bounded transcript serialization through Slice 4B
 		expect(parsePersistedAdvisorTranscriptRecord(compatibleRecord, "session-1")).toEqual(
 			compatibleRecord,
 		);
+
+		const governorRecord = {
+			version: ADVISOR_TRANSCRIPT_RECORD_VERSION,
+			sessionId: "session-1",
+			savedAt: 1,
+			kind: "governor-exhaustion" as const,
+			outcome: "Advisor tool-call limit reached",
+			stopReason: "tool-call-limit",
+		};
+		expect(parsePersistedAdvisorTranscriptRecord(governorRecord, "session-1")).toEqual(
+			governorRecord,
+		);
+		const turnGovernorRecord = {
+			...governorRecord,
+			outcome: "Advisor turn limit reached",
+			stopReason: "turn-limit",
+		};
+		expect(parsePersistedAdvisorTranscriptRecord(turnGovernorRecord, "session-1")).toEqual(
+			turnGovernorRecord,
+		);
+		for (const invalidGovernorRecord of [
+			{ ...governorRecord, outcome: "unrecognized governor" },
+			{ ...governorRecord, stopReason: "turn-limit" },
+			{ ...governorRecord, unexpected: true },
+			Object.fromEntries(Object.entries(governorRecord).filter(([key]) => key !== "stopReason")),
+		]) {
+			expect(
+				parsePersistedAdvisorTranscriptRecord(invalidGovernorRecord, "session-1"),
+			).toBeUndefined();
+		}
 	});
 
 	it("collects only a bounded redacted tail across many older large entries", () => {
