@@ -536,6 +536,12 @@ function boundInstructions(
 	);
 }
 
+function inactiveUserConfiguration(): AdvisorConfig {
+	const config = structuredClone(DEFAULT_ADVISOR_CONFIG);
+	config.persistence.transcript = false;
+	return config;
+}
+
 export async function loadAdvisorConfiguration(options: {
 	agentDir: string;
 	cwd: string;
@@ -554,7 +560,7 @@ export async function loadAdvisorConfiguration(options: {
 			const document = parseYamlDocument(text, "user", paths.userYaml, warnings);
 			userConfig =
 				document === undefined
-					? structuredClone(DEFAULT_ADVISOR_CONFIG)
+					? inactiveUserConfiguration()
 					: mergeUserConfig(DEFAULT_ADVISOR_CONFIG, document);
 		}
 	} catch {
@@ -563,7 +569,7 @@ export async function loadAdvisorConfiguration(options: {
 			path: paths.userYaml,
 			message: `${paths.userYaml} could not be read; persisted activation is inactive.`,
 		});
-		userConfig = structuredClone(DEFAULT_ADVISOR_CONFIG);
+		userConfig = inactiveUserConfiguration();
 	}
 	const persistedUserConfig = structuredClone(userConfig);
 	userConfig.instructions = boundInstructions(

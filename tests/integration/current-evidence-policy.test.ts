@@ -206,16 +206,20 @@ describe.sequential("current implementation evidence review policy", () => {
 					(entry) =>
 						entry.type === "custom" &&
 						entry.customType === ADVISOR_TRANSCRIPT_ENTRY_TYPE &&
-						(entry.data as { kind?: unknown }).kind === "accepted-advice",
+						(entry.data as { kind?: unknown; outcome?: unknown }).kind === "review-outcome" &&
+						(entry.data as { outcome?: unknown }).outcome === "accepted",
 				);
 			if (acceptedRecord?.type !== "custom") {
-				throw new Error("Expected accepted advice transcript record");
+				throw new Error("Expected accepted review activity outcome");
 			}
 			expect(acceptedRecord.data).toMatchObject({
 				version: ADVISOR_TRANSCRIPT_RECORD_VERSION,
-				kind: "accepted-advice",
-				advice: { note: concreteDefect, severity: "blocker" },
+				kind: "review-outcome",
+				outcome: "accepted",
+				delivery: "active",
+				stale: false,
 			});
+			expect(JSON.stringify(acceptedRecord.data)).not.toContain(concreteDefect);
 			expect(JSON.stringify(acceptedRecord.data)).not.toContain("findingKeyHash");
 		} finally {
 			executorBarrier.release();

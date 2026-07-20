@@ -1,5 +1,13 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -164,10 +172,10 @@ describe("packed Pi package", () => {
 				}),
 			).toBe(true);
 
-			writeFileSync(
-				join(agentDir, "WATCHDOG.yml"),
-				"version: 1\ndefaultEnabled: true\nmodel: missing/provider\neffort: low\n",
-			);
+			const userYaml = join(agentDir, "WATCHDOG.yml");
+			const defaultRecordingConfig =
+				"version: 1\ndefaultEnabled: true\nmodel: missing/provider\neffort: low\n";
+			writeFileSync(userYaml, defaultRecordingConfig);
 			const persistedRpc = runPi(
 				[
 					"--mode",
@@ -185,6 +193,8 @@ describe("packed Pi package", () => {
 			);
 			expect(persistedRpc.status, persistedRpc.stderr).toBe(0);
 			expect(persistedRpc.stdout).toContain("Effort: low");
+			expect(persistedRpc.stdout).toContain("Local redacted activity record: enabled");
+			expect(readFileSync(userYaml, "utf8")).toBe(defaultRecordingConfig);
 			expect(persistedRpc.stdout).toContain(
 				"Configured Advisor model missing/provider is unavailable. No fallback was selected.",
 			);
@@ -208,7 +218,29 @@ describe("packed Pi package", () => {
 			expect(persistedJson.status, persistedJson.stderr).toBe(0);
 			expect(persistedJson.stdout).not.toContain("No fallback was selected");
 
-			writeFileSync(join(agentDir, "WATCHDOG.yml"), "version: [malformed\n");
+			writeFileSync(
+				userYaml,
+				"version: 1\ndefaultEnabled: true\nmodel: missing/provider\npersistence:\n  transcript: false\n",
+			);
+			const optedOut = runPi(
+				[
+					"--mode",
+					"rpc",
+					"--no-session",
+					"--no-context-files",
+					"--no-skills",
+					"--no-prompt-templates",
+					"--no-themes",
+					"--no-tools",
+				],
+				root,
+				env,
+				`${JSON.stringify({ id: "opted-out-status", type: "prompt", message: "/advisor status" })}\n`,
+			);
+			expect(optedOut.status, optedOut.stderr).toBe(0);
+			expect(optedOut.stdout).toContain("Local redacted activity record: disabled");
+
+			writeFileSync(userYaml, "version: [malformed\n");
 			const malformed = runPi(
 				[
 					"--mode",
@@ -226,9 +258,10 @@ describe("packed Pi package", () => {
 			);
 			expect(malformed.status, malformed.stderr).toBe(0);
 			expect(malformed.stdout).toContain("contains malformed YAML and was ignored");
+			expect(malformed.stdout).toContain("Local redacted activity record: disabled");
 			expect(malformed.stdout).not.toContain("No fallback was selected");
 
-			rmSync(join(agentDir, "WATCHDOG.yml"));
+			rmSync(userYaml);
 			const explicit = runPi(
 				[
 					"--mode",
