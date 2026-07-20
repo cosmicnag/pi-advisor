@@ -245,6 +245,10 @@ export function estimateAdvisorContext(
 	};
 }
 
+export type AdvisorGovernorOutcome =
+	| "Advisor tool-call limit reached"
+	| "Advisor turn limit reached";
+
 export interface AdvisorRuntimeStatus {
 	enabled: boolean;
 	active: boolean;
@@ -277,6 +281,7 @@ export interface AdvisorRuntimeStatus {
 	reviewsCompleted: number;
 	silentReviews: number;
 	failedReviews: number;
+	governorSkippedReviews: number;
 	deliveryFailures: number;
 	notesDelivered: number;
 	activeNotesPending: number;
@@ -301,6 +306,7 @@ export interface AdvisorRuntimeStatus {
 	transcriptRecordsPersisted: number;
 	transcriptPersistenceFailures: number;
 	lastFailure?: string;
+	lastGovernorOutcome?: AdvisorGovernorOutcome;
 	lastDeliveryFailure?: string;
 	epoch: number;
 	nestedExtensionCount?: number;
@@ -321,7 +327,7 @@ interface CurrentRun {
 	turns: number;
 	toolCalls: number;
 	deferAdvice: boolean;
-	governorFailure?: string;
+	governorFailure?: AdvisorGovernorOutcome;
 	providerFailure?: string;
 	providerOverflow: boolean;
 	toolFailure?: string;
@@ -380,6 +386,16 @@ function hasToolCall(message: AssistantMessage): boolean {
 function boundedReason(error: unknown): string {
 	const message = error instanceof Error ? error.message : String(error);
 	return redactSecrets(message).text.slice(0, 500);
+}
+
+function governorRecordOutcome(
+	outcome: AdvisorGovernorOutcome,
+):
+	| { outcome: "Advisor tool-call limit reached"; stopReason: "tool-call-limit" }
+	| { outcome: "Advisor turn limit reached"; stopReason: "turn-limit" } {
+	return outcome === "Advisor tool-call limit reached"
+		? { outcome, stopReason: "tool-call-limit" }
+		: { outcome, stopReason: "turn-limit" };
 }
 
 function boundedPersistedValue(value: unknown, maximumBytes = 64 * 1_024): string {
@@ -492,6 +508,7 @@ export function formatAdvisorDiagnosticsDump(
 		reviewsCompleted: status.reviewsCompleted,
 		silentReviews: status.silentReviews,
 		failedReviews: status.failedReviews,
+		governorSkippedReviews: status.governorSkippedReviews,
 		deliveryFailures: status.deliveryFailures,
 		notesDelivered: status.notesDelivered,
 		activeNotesPending: status.activeNotesPending,
@@ -516,6 +533,7 @@ export function formatAdvisorDiagnosticsDump(
 		transcriptRecordsPersisted: status.transcriptRecordsPersisted,
 		transcriptPersistenceFailures: status.transcriptPersistenceFailures,
 		hasLastFailure: status.lastFailure !== undefined,
+		lastGovernorOutcome: status.lastGovernorOutcome ?? null,
 		hasLastDeliveryFailure: status.lastDeliveryFailure !== undefined,
 		epoch: status.epoch,
 		nestedExtensionCount: status.nestedExtensionCount ?? null,
@@ -567,6 +585,8 @@ export function formatAdvisorDiagnosticsDump(
 				paused: status.paused,
 				reviewsCompleted: status.reviewsCompleted,
 				failedReviews: status.failedReviews,
+				governorSkippedReviews: status.governorSkippedReviews,
+				lastGovernorOutcome: status.lastGovernorOutcome ?? null,
 				deliveryFailures: status.deliveryFailures,
 				notesDelivered: status.notesDelivered,
 			},
@@ -731,6 +751,7 @@ export class AdvisorRuntime {
 			reviewsCompleted: 0,
 			silentReviews: 0,
 			failedReviews: 0,
+			governorSkippedReviews: 0,
 			deliveryFailures: 0,
 			notesDelivered: 0,
 			activeNotesPending: 0,
@@ -1992,23 +2013,51 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				);
 				break;
 			}
-			if (run.governorFailure !== undefined && accepted?.intent === "review") {
-				try {
-					const delivered = this.deliver(accepted, ctx, stale, run.deferAdvice, update.turnNumber);
-					if (delivered) {
-						this.persistTranscriptDetails({
-							kind: "accepted-advice",
-							advice: adviceForTranscript(accepted),
-							delivery:
-								run.deferAdvice || ctx.signal?.aborted === true || ctx.isIdle()
-									? "deferred"
-									: "active",
+			if (run.governorFailure !== undefined) {
+				let deliveryFailure: string | undefined;
+				// Only accepted review advice survives a governed attempt. Memory suggestions remain
+				// provisional Executor handoffs and are intentionally discarded with the rollback.
+				if (accepted?.intent === "review") {
+					try {
+						const delivered = this.deliver(
+							accepted,
+							ctx,
 							stale,
-						});
+							run.deferAdvice,
+							update.turnNumber,
+						);
+						if (delivered) {
+							this.persistTranscriptDetails({
+								kind: "accepted-advice",
+								advice: adviceForTranscript(accepted),
+								delivery:
+									run.deferAdvice || ctx.signal?.aborted === true || ctx.isIdle()
+										? "deferred"
+										: "active",
+								stale,
+							});
+						}
+					} catch (error) {
+						deliveryFailure = boundedReason(error);
 					}
-				} catch {
-					// The delivery failure is recorded by deliver; preserve the governor failure below.
 				}
+				this.persistTranscriptDetails({
+					kind: "governor-exhaustion",
+					...governorRecordOutcome(run.governorFailure),
+				});
+				// The handled governor outcome clears the prior ordinary streak. A separate delivery
+				// failure is recorded afterward so it alone owns any new ordinary failure streak.
+				this.recordGovernorSkip(run.governorFailure);
+				if (deliveryFailure !== undefined) {
+					this.recordAttemptFailure(deliveryFailure);
+					this.persistTranscriptDetails({
+						kind: "failure",
+						reason: deliveryFailure,
+						stopReason: "delivery-failure",
+					});
+					abandonedFailure = deliveryFailure;
+				}
+				break;
 			}
 			this.persistTranscriptDetails({
 				kind: "failure",
@@ -2018,9 +2067,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			this.recordAttemptFailure(failure);
 			const retryable =
 				thrownFailure !== undefined ||
-				(run.governorFailure === undefined &&
-					run.toolFailure === undefined &&
-					run.providerFailure !== undefined);
+				(run.toolFailure === undefined && run.providerFailure !== undefined);
 			if (!retryable || attempt >= MAX_ADVISOR_RETRIES_PER_UPDATE) {
 				abandonedFailure = failure;
 				break;
@@ -2396,6 +2443,12 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		this.status.lastFailure = reason;
 	}
 
+	private recordGovernorSkip(outcome: AdvisorGovernorOutcome): void {
+		this.status.governorSkippedReviews++;
+		this.status.lastGovernorOutcome = outcome;
+		this.status.consecutiveFailures = 0;
+	}
+
 	private recordFailedUpdate(reason: string): void {
 		this.status.consecutiveFailures++;
 		this.status.lastFailure = reason;
@@ -2610,6 +2663,7 @@ export function formatAdvisorStatus(status: AdvisorRuntimeStatus): string {
 		`Session tokens: ${String(status.usage.total)} total (${String(status.usage.input)} input, ${String(status.usage.output)} output, ${String(status.usage.cacheRead)} cache read, ${String(status.usage.cacheWrite)} cache write), cap ${String(status.sessionTokenSoftCap)}`,
 		`Session cost: $${status.usage.costUsd.toFixed(4)}, cap ${String(status.sessionCostSoftCapUsd)}`,
 		`Reviews: ${String(status.reviewRequests)} requests, ${String(status.reviewsCompleted)} completed, ${String(status.silentReviews)} silent, ${String(status.failedReviews)} failed`,
+		`Governor skips: ${String(status.governorSkippedReviews)}, latest ${status.lastGovernorOutcome ?? "none"}`,
 		`Failures: ${String(status.consecutiveFailures)} consecutive failed updates, ${String(status.retryAttempts)} retry attempts`,
 		`Delivery failures: ${String(status.deliveryFailures)}`,
 		`Lifecycle: ${String(status.branchResets)} resets, ${String(status.staleQueuedMessagesDiscarded)} stale queued messages discarded`,

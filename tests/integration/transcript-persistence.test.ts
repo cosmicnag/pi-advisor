@@ -105,6 +105,64 @@ describe.sequential("Slice 4B optional transcript persistence", () => {
 		}
 	});
 
+	it("persists a bounded handled governor outcome when transcript persistence is enabled", async () => {
+		const primary = createPrimaryProvider([{ content: [{ type: "text", text: "answer" }] }]);
+		const advisor = createAdvisorProvider([
+			{
+				content: [
+					{
+						type: "toolCall",
+						id: "persisted-governor-read",
+						name: "read",
+						arguments: { path: "README.md" },
+					},
+				],
+				stopReason: "toolUse",
+			},
+		]);
+		const config = configFor(advisor, true);
+		config.limits.maxToolCallsPerUpdate = 0;
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(config, (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("persist handled governor exhaustion");
+			await waitFor(() => runtime?.getStatus().governorSkippedReviews === 1);
+			const sessionId = harness.sessionManager.getSessionId();
+			const outcomeEntries = harness.sessionManager
+				.getBranch()
+				.filter(
+					(entry) =>
+						entry.type === "custom" &&
+						entry.customType === ADVISOR_TRANSCRIPT_ENTRY_TYPE &&
+						typeof entry.data === "object" &&
+						entry.data !== null &&
+						Reflect.get(entry.data, "kind") === "governor-exhaustion",
+				);
+			expect(outcomeEntries).toHaveLength(1);
+			const entry = outcomeEntries[0];
+			if (entry?.type !== "custom") throw new Error("Expected governor transcript entry");
+			expect(parsePersistedAdvisorTranscriptRecord(entry.data, sessionId)).toMatchObject({
+				kind: "governor-exhaustion",
+				outcome: "Advisor tool-call limit reached",
+				stopReason: "tool-call-limit",
+			});
+			expect(runtime?.getStatus()).toMatchObject({
+				failedReviews: 0,
+				consecutiveFailures: 0,
+				governorSkippedReviews: 1,
+				lastGovernorOutcome: "Advisor tool-call limit reached",
+			});
+		} finally {
+			await harness.dispose();
+		}
+	});
+
 	it("keeps invalidated attempt records off the replacement branch", async () => {
 		const advisorBarrier = createBarrier();
 		const primary = createPrimaryProvider([

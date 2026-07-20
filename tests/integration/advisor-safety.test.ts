@@ -147,17 +147,33 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 	it.each([
 		{
 			label: "ordinary review",
-			governorFailure: false,
-			expectedFailure: "scripted active delivery failure",
+			governorOutcome: undefined,
+			expectedFailedReviews: 1,
+			expectedConsecutiveFailures: 1,
+			expectedGovernorSkips: 0,
 		},
 		{
-			label: "governor-failed review",
-			governorFailure: true,
-			expectedFailure: "Advisor tool-call limit reached",
+			label: "tool-governed review",
+			governorOutcome: "Advisor tool-call limit reached" as const,
+			expectedFailedReviews: 1,
+			expectedConsecutiveFailures: 1,
+			expectedGovernorSkips: 1,
+		},
+		{
+			label: "turn-governed review",
+			governorOutcome: "Advisor turn limit reached" as const,
+			expectedFailedReviews: 1,
+			expectedConsecutiveFailures: 1,
+			expectedGovernorSkips: 1,
 		},
 	])(
 		"processes the pending update in order after a thrown active delivery for a $label",
-		async ({ governorFailure, expectedFailure }) => {
+		async ({
+			governorOutcome,
+			expectedFailedReviews,
+			expectedConsecutiveFailures,
+			expectedGovernorSkips,
+		}) => {
 			const executorBarrier = createBarrier();
 			const advisorBarrier = createBarrier();
 			const pendingAdvisorBarrier = createBarrier();
@@ -213,24 +229,29 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 				try {
 					await waitFor(() => advisor.activeRequests === 1);
 					await waitFor(() => activeRuntime.getStatus().backlog);
-					if (governorFailure) {
+					if (governorOutcome !== undefined) {
 						const currentRun = Reflect.get(activeRuntime, "currentRun") as {
 							governorFailure?: string;
 						};
-						currentRun.governorFailure = "Advisor tool-call limit reached";
+						currentRun.governorFailure = governorOutcome;
 					}
 					advisorBarrier.release();
 					await waitFor(() => advisor.requests.length === 2);
-					expect(activeRuntime.getStatus()).toMatchObject({
+					const failedDeliveryStatus = activeRuntime.getStatus();
+					expect(failedDeliveryStatus).toMatchObject({
 						reviewsCompleted: 0,
-						failedReviews: 1,
+						failedReviews: expectedFailedReviews,
+						governorSkippedReviews: expectedGovernorSkips,
 						deliveryFailures: 1,
-						consecutiveFailures: 1,
+						consecutiveFailures: expectedConsecutiveFailures,
 						silentReviews: 0,
 						activeNotesPending: 0,
-						lastFailure: expectedFailure,
 						lastDeliveryFailure: "scripted active delivery failure",
 					});
+					expect(failedDeliveryStatus.lastFailure).toBe("scripted active delivery failure");
+					if (governorOutcome !== undefined) {
+						expect(failedDeliveryStatus.lastGovernorOutcome).toBe(governorOutcome);
+					}
 					expect(sendMessage).toHaveBeenCalledTimes(1);
 					expect(JSON.stringify(advisor.requests[0]?.context)).not.toContain(
 						"SECOND-PENDING-EXECUTOR-UPDATE",
@@ -242,7 +263,8 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 					pendingAdvisorBarrier.release();
 					await waitFor(() => activeRuntime.getStatus().reviewsCompleted === 1);
 					expect(activeRuntime.getStatus()).toMatchObject({
-						failedReviews: 1,
+						failedReviews: expectedFailedReviews,
+						governorSkippedReviews: expectedGovernorSkips,
 						consecutiveFailures: 0,
 						backlog: false,
 					});
@@ -1275,14 +1297,149 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 		}
 	});
 
-	it("enforces the per-update tool governor", async () => {
-		const primary = createPrimaryProvider([{ content: [{ type: "text", text: "answer" }] }]);
+	it("skips repeated tool-governed reviews without pausing or retrying later updates", async () => {
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "first answer" }] },
+			{ content: [{ type: "text", text: "second answer" }] },
+			{ content: [{ type: "text", text: "third answer" }] },
+			{ content: [{ type: "text", text: "later answer" }] },
+		]);
+		const governedRead = (id: string) => ({
+			content: [{ type: "toolCall" as const, id, name: "read", arguments: { path: "README.md" } }],
+			stopReason: "toolUse" as const,
+		});
+		const advisor = createAdvisorProvider(
+			Array.from({ length: 12 }, (_, index) => governedRead(`read-over-limit-${String(index)}`)),
+		);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [
+				extensionFor(
+					configFor(advisor, (config) => {
+						config.limits.maxToolCallsPerUpdate = 0;
+					}),
+					(value) => (runtime = value),
+				),
+			],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			for (const [index, prompt] of [
+				"first governed review",
+				"second governed review",
+				"third governed review",
+			].entries()) {
+				const requestsBeforeUpdate = advisor.requests.length;
+				await harness.session.prompt(prompt);
+				await waitFor(() => (runtime?.getStatus().governorSkippedReviews ?? 0) >= index + 1);
+				expect(advisor.requests.length - requestsBeforeUpdate).toBeLessThanOrEqual(2);
+			}
+
+			expect(runtime?.getStatus()).toMatchObject({
+				active: true,
+				paused: false,
+				failedReviews: 0,
+				consecutiveFailures: 0,
+				governorSkippedReviews: 3,
+				lastGovernorOutcome: "Advisor tool-call limit reached",
+				retryAttempts: 0,
+			});
+			const requestsBeforeLaterUpdate = advisor.requests.length;
+			await harness.session.prompt("review after repeated tool exhaustion");
+			await waitFor(() => runtime?.getStatus().governorSkippedReviews === 4);
+			expect(advisor.requests.length).toBeGreaterThan(requestsBeforeLaterUpdate);
+			expect(advisor.requests.length - requestsBeforeLaterUpdate).toBeLessThanOrEqual(2);
+			expect(runtime?.getStatus()).toMatchObject({
+				active: true,
+				paused: false,
+				failedReviews: 0,
+				consecutiveFailures: 0,
+				retryAttempts: 0,
+			});
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it.each([
+		{
+			label: "tool-call",
+			outcome: "Advisor tool-call limit reached" as const,
+		},
+		{
+			label: "turn",
+			outcome: "Advisor turn limit reached" as const,
+		},
+	])(
+		"delivers accepted review advice once before handled $label governor exhaustion",
+		async ({ label, outcome }) => {
+			const note = `Verify accepted guidance survives the bounded ${label} governor.`;
+			const advisorBarrier = createBarrier();
+			const primary = createPrimaryProvider([
+				{ content: [{ type: "text", text: "first answer" }] },
+				{ content: [{ type: "text", text: "later answer" }] },
+			]);
+			const advisor = createAdvisorProvider([
+				{
+					...acceptedAdvice(note, `accepted-before-${label}-governor`),
+					waitFor: advisorBarrier.promise,
+				},
+				{ content: [] },
+			]);
+			let runtime: AdvisorRuntime | undefined;
+			const harness = await createSessionHarness({
+				provider: primary,
+				advisorProvider: advisor,
+				extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+				tools: [],
+				mode: "rpc",
+			});
+			try {
+				await harness.session.prompt("accept advice before exhaustion");
+				await waitFor(() => advisor.activeRequests === 1);
+				if (runtime === undefined) throw new Error("Expected Advisor runtime");
+				const activeRuntime = runtime;
+				const currentRun = Reflect.get(activeRuntime, "currentRun") as {
+					governorFailure?: string;
+				};
+				currentRun.governorFailure = outcome;
+				advisorBarrier.release();
+				await waitFor(() => activeRuntime.getStatus().governorSkippedReviews === 1);
+				expect(activeRuntime.getStatus()).toMatchObject({
+					failedReviews: 0,
+					consecutiveFailures: 0,
+					deferredNotesPending: 1,
+					lastGovernorOutcome: outcome,
+				});
+				expect(primary.requests).toHaveLength(1);
+				await harness.session.prompt("materialize accepted advice");
+				await waitFor(() => activeRuntime.getStatus().notesDelivered === 1);
+				const deliveredContext = JSON.stringify(primary.requests[1]?.context);
+				expect(deliveredContext).toContain(note);
+				expect(deliveredContext.split(note)).toHaveLength(2);
+			} finally {
+				advisorBarrier.release();
+				await harness.dispose();
+			}
+		},
+	);
+
+	it("clears an ordinary failure streak after handled tool governor exhaustion", async () => {
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "first answer" }] },
+			{ content: [{ type: "text", text: "second answer" }] },
+		]);
 		const advisor = createAdvisorProvider([
+			{ errorMessage: "ordinary provider failure one" },
+			{ errorMessage: "ordinary provider failure two" },
 			{
 				content: [
 					{
 						type: "toolCall",
-						id: "read-over-limit",
+						id: "governed-streak-clear",
 						name: "read",
 						arguments: { path: "README.md" },
 					},
@@ -1306,9 +1463,18 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			mode: "rpc",
 		});
 		try {
-			await harness.session.prompt("start governed review");
-			await waitFor(() => (runtime?.getStatus().failedReviews ?? 0) >= 1);
-			expect(runtime?.getStatus().lastFailure).toBe("Advisor tool-call limit reached");
+			await harness.session.prompt("establish ordinary failure streak");
+			await waitFor(() => runtime?.getStatus().failedReviews === 2);
+			await waitFor(() => runtime?.getStatus().consecutiveFailures === 1);
+			await harness.session.prompt("handle governor exhaustion");
+			await waitFor(() => runtime?.getStatus().governorSkippedReviews === 1);
+			expect(runtime?.getStatus()).toMatchObject({
+				active: true,
+				paused: false,
+				failedReviews: 2,
+				consecutiveFailures: 0,
+				retryAttempts: 1,
+			});
 		} finally {
 			await harness.dispose();
 		}
@@ -1415,15 +1581,22 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 		}
 	});
 
-	it("enforces the per-update turn governor", async () => {
-		const primary = createPrimaryProvider([{ content: [{ type: "text", text: "answer" }] }]);
+	it("skips repeated turn-governed reviews without pausing or retrying later updates", async () => {
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "first answer" }] },
+			{ content: [{ type: "text", text: "second answer" }] },
+			{ content: [{ type: "text", text: "third answer" }] },
+			{ content: [{ type: "text", text: "later answer" }] },
+		]);
+		const governedList = (id: string) => ({
+			content: [{ type: "toolCall" as const, id, name: "ls", arguments: { path: "." } }],
+			stopReason: "toolUse" as const,
+		});
 		const advisor = createAdvisorProvider([
-			{
-				content: [
-					{ type: "toolCall", id: "ls-at-turn-limit", name: "ls", arguments: { path: "." } },
-				],
-				stopReason: "toolUse",
-			},
+			governedList("ls-at-turn-limit-1"),
+			governedList("ls-at-turn-limit-2"),
+			governedList("ls-at-turn-limit-3"),
+			{ content: [] },
 		]);
 		let runtime: AdvisorRuntime | undefined;
 		const harness = await createSessionHarness({
@@ -1441,10 +1614,26 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			mode: "rpc",
 		});
 		try {
-			await harness.session.prompt("start turn-governed review");
-			await waitFor(() => runtime?.getStatus().failedReviews === 1);
-			expect(runtime?.getStatus().lastFailure).toBe("Advisor turn limit reached");
-			expect(advisor.requests).toHaveLength(1);
+			for (const [index, prompt] of [
+				"first turn-governed review",
+				"second turn-governed review",
+				"third turn-governed review",
+			].entries()) {
+				await harness.session.prompt(prompt);
+				await waitFor(() => (runtime?.getStatus().governorSkippedReviews ?? 0) >= index + 1);
+			}
+
+			expect(runtime?.getStatus()).toMatchObject({
+				active: true,
+				paused: false,
+				failedReviews: 0,
+				consecutiveFailures: 0,
+				governorSkippedReviews: 3,
+				lastGovernorOutcome: "Advisor turn limit reached",
+			});
+			await harness.session.prompt("review after repeated turn exhaustion");
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 1);
+			expect(advisor.requests).toHaveLength(4);
 		} finally {
 			await harness.dispose();
 		}
