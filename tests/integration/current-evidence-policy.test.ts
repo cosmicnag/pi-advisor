@@ -107,10 +107,165 @@ describe.sequential("current implementation evidence review policy", () => {
 			expect(systemPrompt).toContain(
 				"Review each bounded update for one material correctness, safety, scope, or verification issue",
 			);
+			expect(systemPrompt).toContain(
+				"Treat finding creation time and user-visible Advisory note delivery time as distinct events",
+			);
+			expect(systemPrompt).toContain(
+				"infer chronology from the observed actions and results rather than note visibility",
+			);
 			expect(systemPrompt.indexOf("Keep ordinary verification lean")).toBeLessThan(
 				systemPrompt.indexOf("User review instructions:"),
 			);
 		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("reviews a failed resume before a replacement worker launch and completion", async () => {
+		const resumeBarrier = createBarrier();
+		const replacementBarrier = createBarrier();
+		const completionBarrier = createBarrier();
+		const advisorNote =
+			"The prepared worker may need recovery before replacement behavior is evaluated.";
+		const executions: string[] = [];
+		const prepareWorker = defineTool({
+			name: "prepare_worker",
+			label: "prepare_worker",
+			description: "Prepare deterministic worker recovery evidence.",
+			parameters: Type.Object({}),
+			execute: () => {
+				executions.push("prepare");
+				return Promise.resolve({
+					content: [{ type: "text" as const, text: "Worker worker-1 is ready for recovery." }],
+					details: {},
+				});
+			},
+		});
+		const resumeWorker = defineTool({
+			name: "resume_worker",
+			label: "resume_worker",
+			description: "Attempt deterministic worker recovery.",
+			parameters: Type.Object({ workerId: Type.String() }),
+			execute: () => {
+				executions.push("failed-resume");
+				return Promise.reject(new Error("Invalid async recovery descriptor"));
+			},
+		});
+		const launchWorker = defineTool({
+			name: "launch_worker",
+			label: "launch_worker",
+			description: "Launch a deterministic replacement worker.",
+			parameters: Type.Object({ replaces: Type.String() }),
+			execute: () => {
+				executions.push("replacement-launch");
+				return Promise.resolve({
+					content: [
+						{
+							type: "text" as const,
+							text: "Replacement worker worker-2 launched successfully.",
+						},
+					],
+					details: {},
+				});
+			},
+		});
+		const primary = createPrimaryProvider([
+			{
+				content: [{ type: "toolCall", id: "prepare", name: "prepare_worker", arguments: {} }],
+				stopReason: "toolUse",
+			},
+			{
+				waitFor: resumeBarrier.promise,
+				content: [
+					{
+						type: "toolCall",
+						id: "failed-resume",
+						name: "resume_worker",
+						arguments: { workerId: "worker-1" },
+					},
+				],
+				stopReason: "toolUse",
+			},
+			{
+				waitFor: replacementBarrier.promise,
+				content: [
+					{
+						type: "toolCall",
+						id: "replacement-launch",
+						name: "launch_worker",
+						arguments: { replaces: "worker-1" },
+					},
+				],
+				stopReason: "toolUse",
+			},
+			{
+				waitFor: completionBarrier.promise,
+				content: [
+					{
+						type: "text",
+						text: "Replacement worker worker-2 completed the assigned implementation.",
+					},
+				],
+			},
+		]);
+		const advisor = createAdvisorProvider([
+			advice(advisorNote, "prepared worker recovery uncertainty", "recovery-note"),
+			{ content: [] },
+			{ content: [] },
+			{ content: [] },
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			customTools: [prepareWorker, resumeWorker, launchWorker],
+			tools: ["prepare_worker", "resume_worker", "launch_worker"],
+			mode: "rpc",
+		});
+		try {
+			const prompt = harness.session.prompt(
+				"Recover worker-1 if possible, otherwise launch a replacement and report completion.",
+			);
+			await waitFor(
+				() => primary.requests.length === 2 && runtime?.getStatus().activeNotesPending === 1,
+			);
+
+			resumeBarrier.release();
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 2);
+			const failedResumeUpdate = JSON.stringify(
+				advisor.requests[1]?.context.messages.at(-1)?.content,
+			);
+			expect(executions).toEqual(["prepare", "failed-resume"]);
+			expect(failedResumeUpdate).toContain("[tool call resume_worker]");
+			expect(failedResumeUpdate).toContain("[Executor tool result resume_worker error]");
+			expect(failedResumeUpdate).toContain("Invalid async recovery descriptor");
+			expect(failedResumeUpdate).not.toContain(advisorNote);
+			expect(failedResumeUpdate).not.toContain("launch_worker");
+
+			replacementBarrier.release();
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 3);
+			const replacementUpdate = JSON.stringify(
+				advisor.requests[2]?.context.messages.at(-1)?.content,
+			);
+			expect(executions).toEqual(["prepare", "failed-resume", "replacement-launch"]);
+			expect(replacementUpdate).toContain("[tool call launch_worker]");
+			expect(replacementUpdate).toContain("Replacement worker worker-2 launched successfully.");
+			expect(replacementUpdate).not.toContain("Invalid async recovery descriptor");
+
+			completionBarrier.release();
+			await prompt;
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 4);
+			const completionUpdate = JSON.stringify(
+				advisor.requests[3]?.context.messages.at(-1)?.content,
+			);
+			expect(completionUpdate).toContain(
+				"Replacement worker worker-2 completed the assigned implementation.",
+			);
+		} finally {
+			resumeBarrier.release();
+			replacementBarrier.release();
+			completionBarrier.release();
 			await harness.dispose();
 		}
 	});
