@@ -132,6 +132,7 @@ function persistedState(
 		sessionId: manager.getSessionId(),
 		savedAt: Date.now(),
 		cursor: cursorAtTail(manager.getBranch()),
+		activeDeliveries: [],
 		deferredAdvice: [],
 		dedupeHashes: [],
 		memorySuggestions: {
@@ -192,6 +193,17 @@ describe.sequential("Slice 3A branch, compaction, and persistence lifecycle", ()
 		try {
 			await harness.session.prompt("create the original branch");
 			await waitFor(() => advisor.activeRequests === 1);
+			const claimed = [...manager.getBranch()]
+				.reverse()
+				.find(
+					(entry) =>
+						entry.type === "custom" && entry.customType === ADVISOR_RUNTIME_STATE_ENTRY_TYPE,
+				);
+			expect(
+				claimed?.type === "custom"
+					? (claimed.data as PersistedAdvisorRuntimeState).activeReview?.reviewId
+					: undefined,
+			).toBeTypeOf("string");
 			const originalBranch = manager.getBranch();
 			const userEntry = originalBranch.find(
 				(entry) => entry.type === "message" && entry.message.role === "user",
@@ -487,6 +499,617 @@ describe.sequential("Slice 3A branch, compaction, and persistence lifecycle", ()
 		}
 	});
 
+	it("reviews cadence-throttled Executor evidence after reopening the same session", async () => {
+		const manager = SessionManager.inMemory();
+		const firstPrimary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "first completed answer" }] },
+			{ content: [{ type: "text", text: "DURABLE-QUEUED-EVIDENCE" }] },
+		]);
+		const firstAdvisor = createAdvisorProvider([{ content: [] }]);
+		let firstRuntime: AdvisorRuntime | undefined;
+		let firstHarness: Awaited<ReturnType<typeof createSessionHarness>> | undefined;
+		let resumedHarness: Awaited<ReturnType<typeof createSessionHarness>> | undefined;
+		try {
+			const cadenceConfig = configFor(firstAdvisor, (config) => {
+				config.limits.minTurnsBetweenReviews = 0;
+				config.limits.minIntervalMs = 250;
+			});
+			firstHarness = await createSessionHarness({
+				provider: firstPrimary,
+				advisorProvider: firstAdvisor,
+				sessionManager: manager,
+				extensions: [extensionFor(cadenceConfig, (value) => (firstRuntime = value))],
+				tools: [],
+				mode: "rpc",
+			});
+			await firstHarness.session.prompt("establish the cadence anchor");
+			await waitFor(() => firstAdvisor.requests.length === 1);
+			await firstHarness.session.prompt("retain this evidence across restart");
+			await waitFor(() => {
+				const latest = [...manager.getBranch()]
+					.reverse()
+					.find(
+						(entry) =>
+							entry.type === "custom" && entry.customType === ADVISOR_RUNTIME_STATE_ENTRY_TYPE,
+					);
+				return (
+					latest?.type === "custom" &&
+					(latest.data as PersistedAdvisorRuntimeState).queuedReview?.text.includes(
+						"DURABLE-QUEUED-EVIDENCE",
+					) === true
+				);
+			});
+			if (firstRuntime === undefined) throw new Error("Expected first restart runtime");
+			await firstRuntime.shutdown();
+			await firstHarness.dispose();
+			firstHarness = undefined;
+
+			const resumedPrimary = createPrimaryProvider([]);
+			const resumedAdvisor = createAdvisorProvider([{ content: [] }]);
+			let resumedRuntime: AdvisorRuntime | undefined;
+			resumedHarness = await createSessionHarness({
+				provider: resumedPrimary,
+				advisorProvider: resumedAdvisor,
+				sessionManager: manager,
+				extensions: [
+					extensionFor(
+						configFor(resumedAdvisor, (config) => {
+							config.limits.minTurnsBetweenReviews = 0;
+							config.limits.minIntervalMs = 250;
+						}),
+						(value) => (resumedRuntime = value),
+					),
+				],
+				tools: [],
+				mode: "rpc",
+			});
+			expect(resumedRuntime?.getStatus().restoredQueuedReviewPending).toBe(true);
+			await waitFor(() => resumedAdvisor.requests.length === 1);
+			expect(JSON.stringify(resumedAdvisor.requests[0]?.context)).toContain(
+				"DURABLE-QUEUED-EVIDENCE",
+			);
+			await waitFor(() => resumedRuntime?.getStatus().reviewsCompleted === 1);
+			expect(resumedRuntime?.getStatus().restoredQueuedReviewPending).toBe(false);
+		} finally {
+			await firstHarness?.dispose();
+			await resumedHarness?.dispose();
+		}
+	});
+
+	it("restores later pending evidence that arrived while an active review was in flight", async () => {
+		const barrier = createBarrier();
+		const manager = SessionManager.inMemory();
+		const firstPrimary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "ACTIVE-BEFORE-RESTART-EVIDENCE" }] },
+			{ content: [{ type: "text", text: "PENDING-AFTER-ACTIVE-EVIDENCE" }] },
+		]);
+		const firstAdvisor = createAdvisorProvider([{ content: [], waitFor: barrier.promise }]);
+		let firstRuntime: AdvisorRuntime | undefined;
+		let firstHarness: Awaited<ReturnType<typeof createSessionHarness>> | undefined;
+		let resumedHarness: Awaited<ReturnType<typeof createSessionHarness>> | undefined;
+		try {
+			firstHarness = await createSessionHarness({
+				provider: firstPrimary,
+				advisorProvider: firstAdvisor,
+				sessionManager: manager,
+				extensions: [
+					extensionFor(
+						configFor(firstAdvisor, (config) => {
+							config.limits.minTurnsBetweenReviews = 0;
+							config.limits.minIntervalMs = 0;
+						}),
+						(value) => (firstRuntime = value),
+					),
+				],
+				tools: [],
+				mode: "rpc",
+			});
+			await firstHarness.session.prompt("start active review before restart");
+			await waitFor(() => firstAdvisor.activeRequests === 1);
+			await firstHarness.session.prompt("queue later evidence while active");
+			await waitFor(() => {
+				const latest = [...manager.getBranch()]
+					.reverse()
+					.find(
+						(entry) =>
+							entry.type === "custom" && entry.customType === ADVISOR_RUNTIME_STATE_ENTRY_TYPE,
+					);
+				if (latest?.type !== "custom") return false;
+				const state = latest.data as PersistedAdvisorRuntimeState;
+				return state.activeReview !== undefined && state.queuedReview !== undefined;
+			});
+			if (firstRuntime === undefined) throw new Error("Expected pending restart runtime");
+			const shuttingDown = firstRuntime.shutdown();
+			barrier.release();
+			await shuttingDown;
+			await firstHarness.dispose();
+			firstHarness = undefined;
+
+			const resumedPrimary = createPrimaryProvider([]);
+			const resumedAdvisor = createAdvisorProvider([{ content: [] }, { content: [] }]);
+			resumedHarness = await createSessionHarness({
+				provider: resumedPrimary,
+				advisorProvider: resumedAdvisor,
+				sessionManager: manager,
+				extensions: [
+					extensionFor(
+						configFor(resumedAdvisor, (config) => {
+							config.limits.minTurnsBetweenReviews = 0;
+							config.limits.minIntervalMs = 0;
+						}),
+						() => undefined,
+					),
+				],
+				tools: [],
+				mode: "rpc",
+			});
+			await waitFor(() => resumedAdvisor.requests.length === 2);
+			expect(JSON.stringify(resumedAdvisor.requests[0]?.context)).toContain(
+				"ACTIVE-BEFORE-RESTART-EVIDENCE",
+			);
+			expect(JSON.stringify(resumedAdvisor.requests[1]?.context)).toContain(
+				"PENDING-AFTER-ACTIVE-EVIDENCE",
+			);
+		} finally {
+			barrier.release();
+			await firstHarness?.dispose();
+			await resumedHarness?.dispose();
+		}
+	});
+
+	it("preserves restored meaningful-turn cadence until enough new evidence arrives", async () => {
+		const manager = SessionManager.inMemory();
+		manager.appendMessage({ role: "user", content: "cadence root", timestamp: Date.now() });
+		manager.appendMessage(scriptedAssistant("RESTORED-TURN-CADENCE-EVIDENCE"));
+		const window = cursorAtTail(manager.getBranch());
+		appendState(
+			manager,
+			persistedState(manager, {
+				cursor: window,
+				queuedReview: {
+					text: "[Executor assistant]\nRESTORED-TURN-CADENCE-EVIDENCE",
+					entryCount: 1,
+					truncated: false,
+					window,
+					turnNumber: 2,
+					successfulMemoryTexts: [],
+				},
+				lastReviewSubmittedTurn: 1,
+				lastReviewSubmittedAt: 0,
+				memorySuggestions: {
+					meaningfulTurnCount: 2,
+					admittedCount: 0,
+					deliveredCount: 0,
+					sessionCapReached: false,
+				},
+			}),
+		);
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "NEW-TURN-CADENCE-EVIDENCE" }] },
+		]);
+		const advisor = createAdvisorProvider([{ content: [] }]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			sessionManager: manager,
+			extensions: [
+				extensionFor(
+					configFor(advisor, (config) => {
+						config.limits.minTurnsBetweenReviews = 2;
+						config.limits.minIntervalMs = 0;
+					}),
+					(value) => (runtime = value),
+				),
+			],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			expect(advisor.requests).toHaveLength(0);
+			expect(runtime?.getStatus().restoredQueuedReviewPending).toBe(true);
+			await harness.session.prompt("advance restored turn cadence");
+			await waitFor(() => advisor.requests.length === 1);
+			const context = JSON.stringify(advisor.requests[0]?.context);
+			expect(context).toContain("RESTORED-TURN-CADENCE-EVIDENCE");
+			expect(context).toContain("NEW-TURN-CADENCE-EVIDENCE");
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("preserves restored elapsed-time cadence until its timer becomes eligible", async () => {
+		const manager = SessionManager.inMemory();
+		manager.appendMessage({ role: "user", content: "elapsed cadence root", timestamp: Date.now() });
+		manager.appendMessage(scriptedAssistant("RESTORED-ELAPSED-CADENCE-EVIDENCE"));
+		const window = cursorAtTail(manager.getBranch());
+		appendState(
+			manager,
+			persistedState(manager, {
+				cursor: window,
+				queuedReview: {
+					text: "[Executor assistant]\nRESTORED-ELAPSED-CADENCE-EVIDENCE",
+					entryCount: 1,
+					truncated: false,
+					window,
+					turnNumber: 2,
+					successfulMemoryTexts: [],
+				},
+				lastReviewSubmittedTurn: 1,
+				lastReviewSubmittedAt: Date.now(),
+				memorySuggestions: {
+					meaningfulTurnCount: 2,
+					admittedCount: 0,
+					deliveredCount: 0,
+					sessionCapReached: false,
+				},
+			}),
+		);
+		const primary = createPrimaryProvider([]);
+		const advisor = createAdvisorProvider([{ content: [] }]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			sessionManager: manager,
+			extensions: [
+				extensionFor(
+					configFor(advisor, (config) => {
+						config.limits.minTurnsBetweenReviews = 0;
+						config.limits.minIntervalMs = 500;
+					}),
+					(value) => (runtime = value),
+				),
+			],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			expect(advisor.requests).toHaveLength(0);
+			expect(runtime?.getStatus().restoredQueuedReviewPending).toBe(true);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			expect(advisor.requests).toHaveLength(0);
+			await waitFor(() => advisor.requests.length === 1);
+			expect(JSON.stringify(advisor.requests[0]?.context)).toContain(
+				"RESTORED-ELAPSED-CADENCE-EVIDENCE",
+			);
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 1);
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("replays an interrupted active review once and persists its terminal completion", async () => {
+		const manager = SessionManager.inMemory();
+		manager.appendMessage({ role: "user", content: "active replay root", timestamp: Date.now() });
+		manager.appendMessage(scriptedAssistant("DURABLE-ACTIVE-REVIEW-EVIDENCE"));
+		const window = cursorAtTail(manager.getBranch());
+		appendState(
+			manager,
+			persistedState(manager, {
+				cursor: window,
+				memorySuggestions: {
+					meaningfulTurnCount: 1,
+					admittedCount: 0,
+					deliveredCount: 0,
+					sessionCapReached: false,
+				},
+				activeReview: {
+					text: "[Executor assistant]\nDURABLE-ACTIVE-REVIEW-EVIDENCE",
+					entryCount: 1,
+					truncated: false,
+					window,
+					turnNumber: 1,
+					successfulMemoryTexts: [],
+					reviewId: "stable-restored-review",
+					restoredReplayCount: 0,
+				},
+				lastReviewSubmittedTurn: 1,
+				lastReviewSubmittedAt: Date.now(),
+			}),
+		);
+		const primary = createPrimaryProvider([]);
+		const advisor = createAdvisorProvider([{ content: [] }]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			sessionManager: manager,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await waitFor(() => advisor.requests.length === 1);
+			expect(JSON.stringify(advisor.requests[0]?.context)).toContain(
+				"DURABLE-ACTIVE-REVIEW-EVIDENCE",
+			);
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 1);
+			expect(runtime?.getStatus()).toMatchObject({
+				restoredActiveReviewPending: false,
+				restoredReplayCount: 1,
+			});
+			const latest = [...manager.getBranch()]
+				.reverse()
+				.find(
+					(entry) =>
+						entry.type === "custom" && entry.customType === ADVISOR_RUNTIME_STATE_ENTRY_TYPE,
+				);
+			expect(
+				latest?.type === "custom"
+					? (latest.data as PersistedAdvisorRuntimeState).activeReview
+					: "missing",
+			).toBeUndefined();
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("does not replay an active review already owned by restored deferred advice", async () => {
+		const manager = SessionManager.inMemory();
+		manager.appendMessage({
+			role: "user",
+			content: "deferred ownership root",
+			timestamp: Date.now(),
+		});
+		manager.appendMessage(scriptedAssistant("DEFERRED-OWNED-ACTIVE-REVIEW-EVIDENCE"));
+		const window = cursorAtTail(manager.getBranch());
+		const reviewId = "deferred-owned-restored-review";
+		const deferred = reviewAdvice("Deliver this accepted deferred note exactly once.");
+		appendState(
+			manager,
+			persistedState(manager, {
+				cursor: window,
+				activeReview: {
+					text: "[Executor assistant]\nDEFERRED-OWNED-ACTIVE-REVIEW-EVIDENCE",
+					entryCount: 1,
+					truncated: false,
+					window,
+					turnNumber: 1,
+					successfulMemoryTexts: [],
+					reviewId,
+					restoredReplayCount: 0,
+				},
+				deferredAdvice: [
+					{
+						advice: deferred,
+						stale: false,
+						branchWindow: window,
+						displayedInEntry: false,
+						reviewId,
+					},
+				],
+				memorySuggestions: {
+					meaningfulTurnCount: 1,
+					admittedCount: 0,
+					deliveredCount: 0,
+					sessionCapReached: false,
+				},
+			}),
+		);
+		const primary = createPrimaryProvider([]);
+		const advisor = createAdvisorProvider([{ content: [] }]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			sessionManager: manager,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			expect(advisor.requests).toHaveLength(0);
+			expect(runtime?.getStatus()).toMatchObject({
+				restoredActiveReviewPending: false,
+				deferredNotesPending: 1,
+			});
+			const latest = [...manager.getBranch()]
+				.reverse()
+				.find(
+					(entry) =>
+						entry.type === "custom" && entry.customType === ADVISOR_RUNTIME_STATE_ENTRY_TYPE,
+				);
+			expect(
+				latest?.type === "custom"
+					? (latest.data as PersistedAdvisorRuntimeState).activeReview
+					: "missing",
+			).toBeUndefined();
+			expect(
+				latest?.type === "custom"
+					? (latest.data as PersistedAdvisorRuntimeState).deferredAdvice[0]?.reviewId
+					: undefined,
+			).toBe(reviewId);
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("restores an unacknowledged active delivery as stale deferred advice when absent", async () => {
+		const manager = SessionManager.inMemory();
+		const advice = reviewAdvice("Recover this accepted but unacknowledged Advisor note.");
+		const identity = adviceDedupeKey(advice);
+		const window = cursorAtTail(manager.getBranch());
+		appendState(
+			manager,
+			persistedState(manager, {
+				cursor: window,
+				memorySuggestions: {
+					meaningfulTurnCount: 1,
+					admittedCount: 0,
+					deliveredCount: 0,
+					sessionCapReached: false,
+				},
+				activeDeliveries: [
+					{
+						advice,
+						stale: false,
+						branchWindow: window,
+						displayedInEntry: false,
+						identity,
+						deliveryId: "restored-delivery-absent",
+						reviewId: "restored-review-absent",
+						turnNumber: 1,
+					},
+				],
+			}),
+		);
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "continued after restored delivery" }] },
+		]);
+		const advisor = createAdvisorProvider([{ content: [] }]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			sessionManager: manager,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			expect(runtime?.getStatus()).toMatchObject({
+				activeNotesPending: 0,
+				deferredNotesPending: 1,
+				restoredDeferredNotesPending: 1,
+				restoredActiveDeliveriesPending: 0,
+			});
+			await harness.session.prompt("materialize recovered active delivery");
+			expect(JSON.stringify(primary.requests[0]?.context)).toContain(advice.note);
+			expect(runtime?.getStatus().notesDelivered).toBe(1);
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("acknowledges a restored active delivery already present in branch without redisplay", async () => {
+		const manager = SessionManager.inMemory();
+		const advice = reviewAdvice("Acknowledge this already visible restored Advisor note.");
+		const identity = adviceDedupeKey(advice);
+		const window = cursorAtTail(manager.getBranch());
+		manager.appendCustomMessageEntry("pi-advisor-note", advice.note, true, {
+			...advice,
+			delivery: "active",
+			deliveryId: "restored-delivery-present",
+			reviewId: "restored-review-present",
+		});
+		appendState(
+			manager,
+			persistedState(manager, {
+				cursor: cursorAtTail(manager.getBranch()),
+				memorySuggestions: {
+					meaningfulTurnCount: 1,
+					admittedCount: 0,
+					deliveredCount: 0,
+					sessionCapReached: false,
+				},
+				activeDeliveries: [
+					{
+						advice,
+						stale: false,
+						branchWindow: window,
+						displayedInEntry: false,
+						identity,
+						deliveryId: "restored-delivery-present",
+						reviewId: "restored-review-present",
+						turnNumber: 1,
+					},
+				],
+			}),
+		);
+		const primary = createPrimaryProvider([]);
+		const advisor = createAdvisorProvider([]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			sessionManager: manager,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			expect(runtime?.getStatus()).toMatchObject({
+				activeNotesPending: 0,
+				deferredNotesPending: 0,
+				notesDelivered: 1,
+			});
+			expect(
+				manager
+					.getBranch()
+					.filter(
+						(entry) => entry.type === "custom_message" && entry.customType === "pi-advisor-note",
+					),
+			).toHaveLength(1);
+			expect(advisor.requests).toHaveLength(0);
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("drops a twice-interrupted restored review and continues its queued successor", async () => {
+		const manager = SessionManager.inMemory();
+		manager.appendMessage({ role: "user", content: "poison replay root", timestamp: Date.now() });
+		manager.appendMessage(scriptedAssistant("POISON-OLD-EVIDENCE and QUEUED-LATER-EVIDENCE"));
+		const window = cursorAtTail(manager.getBranch());
+		appendState(
+			manager,
+			persistedState(manager, {
+				cursor: window,
+				memorySuggestions: {
+					meaningfulTurnCount: 2,
+					admittedCount: 0,
+					deliveredCount: 0,
+					sessionCapReached: false,
+				},
+				activeReview: {
+					text: "[Executor assistant]\nPOISON-OLD-EVIDENCE",
+					entryCount: 1,
+					truncated: false,
+					window,
+					turnNumber: 1,
+					successfulMemoryTexts: [],
+					reviewId: "poison-restored-review",
+					restoredReplayCount: 2,
+				},
+				queuedReview: {
+					text: "[Executor assistant]\nQUEUED-LATER-EVIDENCE",
+					entryCount: 1,
+					truncated: false,
+					window,
+					turnNumber: 2,
+					successfulMemoryTexts: [],
+				},
+				lastReviewSubmittedTurn: 1,
+				lastReviewSubmittedAt: 0,
+			}),
+		);
+		const primary = createPrimaryProvider([]);
+		const advisor = createAdvisorProvider([{ content: [] }]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			sessionManager: manager,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await waitFor(() => advisor.requests.length === 1);
+			const submitted = JSON.stringify(advisor.requests[0]?.context);
+			expect(submitted).toContain("QUEUED-LATER-EVIDENCE");
+			expect(submitted).not.toContain("POISON-OLD-EVIDENCE");
+			expect(runtime?.getStatus()).toMatchObject({
+				poisonReviewDrops: 1,
+				restoredActiveReviewPending: false,
+			});
+		} finally {
+			await harness.dispose();
+		}
+	});
+
 	it("preserves valid Memory accounting when oversized deferred snapshots trim their tail before resume", async () => {
 		const manager = SessionManager.inMemory();
 		const firstPrimary = createPrimaryProvider([]);
@@ -621,6 +1244,217 @@ describe.sequential("Slice 3A branch, compaction, and persistence lifecycle", ()
 		} finally {
 			await firstHarness?.dispose();
 			await resumedHarness?.dispose();
+		}
+	});
+
+	it("compacts escape-heavy queued review content by serialized bytes and preserves its tail", async () => {
+		const manager = SessionManager.inMemory();
+		const primary = createPrimaryProvider([]);
+		const advisor = createAdvisorProvider([]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			sessionManager: manager,
+			extensions: [
+				extensionFor(
+					configFor(advisor, (config) => {
+						config.limits.maxPendingTranscriptBytes = 1_000_000;
+					}),
+					(value) => (runtime = value),
+				),
+			],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			if (runtime === undefined) throw new Error("Expected serialized compaction runtime");
+			const activeRuntime = runtime;
+			const escapeHeavy = `${`"\\\n\u0000`.repeat(190_000)}NEWEST-ESCAPED-EVIDENCE`;
+			expect(Buffer.byteLength(escapeHeavy, "utf8")).toBeLessThanOrEqual(1_000_000);
+			Reflect.set(activeRuntime, "throttledUpdate", {
+				text: escapeHeavy,
+				entryCount: 1,
+				truncated: false,
+				window: cursorAtTail(manager.getBranch()),
+				turnNumber: 1,
+				successfulMemoryTexts: new Set<string>(),
+			});
+			const persistState = Reflect.get(activeRuntime, "persistState") as () => void;
+			persistState.call(activeRuntime);
+			const latest = [...manager.getBranch()]
+				.reverse()
+				.find(
+					(entry) =>
+						entry.type === "custom" && entry.customType === ADVISOR_RUNTIME_STATE_ENTRY_TYPE,
+				);
+			if (latest?.type !== "custom") throw new Error("Expected compacted runtime state");
+			const queued = (latest.data as PersistedAdvisorRuntimeState).queuedReview;
+			expect(queued).toBeDefined();
+			expect(Buffer.byteLength(JSON.stringify(queued), "utf8")).toBeLessThanOrEqual(1_000_000);
+			expect(queued?.text).toContain("NEWEST-ESCAPED-EVIDENCE");
+			expect(queued?.truncated).toBe(true);
+			expect(activeRuntime.getStatus().serializedPersistenceTruncations).toBeGreaterThan(0);
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("retains active review, active delivery, queued review, and dedupe before oldest deferred advice", async () => {
+		const manager = SessionManager.inMemory();
+		const primary = createPrimaryProvider([]);
+		const advisor = createAdvisorProvider([]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			sessionManager: manager,
+			extensions: [
+				extensionFor(
+					configFor(advisor, (config) => {
+						config.limits.maxPendingTranscriptBytes = 1_000_000;
+					}),
+					(value) => (runtime = value),
+				),
+			],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			if (runtime === undefined) throw new Error("Expected retention-priority runtime");
+			const activeRuntime = runtime;
+			const window = cursorAtTail(manager.getBranch());
+			Reflect.set(activeRuntime, "meaningfulTurnCount", 1);
+			Reflect.set(activeRuntime, "activeReview", {
+				text: `${"\u0000".repeat(700_000)}ACTIVE-REVIEW-TAIL`,
+				entryCount: 1,
+				truncated: false,
+				window,
+				turnNumber: 1,
+				successfulMemoryTexts: [],
+				reviewId: "priority-active-review",
+				restoredReplayCount: 0,
+			});
+			Reflect.set(activeRuntime, "pendingUpdate", {
+				text: `${"\u0000".repeat(700_000)}QUEUED-REVIEW-TAIL`,
+				entryCount: 1,
+				truncated: false,
+				window,
+				turnNumber: 1,
+				successfulMemoryTexts: new Set<string>(),
+			});
+			const activeDeliveryAdvice = reviewAdvice("Retain accepted active delivery first.");
+			const activeIdentity = adviceDedupeKey(activeDeliveryAdvice);
+			const activeAdvice = Reflect.get(activeRuntime, "activeAdvice") as {
+				enqueue(key: string, value: unknown, bytes: number): string;
+			};
+			expect(
+				activeAdvice.enqueue(
+					activeIdentity,
+					{
+						advice: activeDeliveryAdvice,
+						stale: false,
+						branchWindow: window,
+						displayedInEntry: false,
+						identity: activeIdentity,
+						deliveryId: "priority-active-delivery",
+						reviewId: "priority-delivery-review",
+						turnNumber: 1,
+						epoch: activeRuntime.getStatus().epoch,
+					},
+					Buffer.byteLength(activeDeliveryAdvice.note, "utf8"),
+				),
+			).toBe("accepted");
+			const pendingAdvice = Reflect.get(activeRuntime, "pendingAdvice") as {
+				enqueue(key: string, value: unknown, bytes: number): string;
+			};
+			for (let index = 0; index < 500; index++) {
+				const note = `DEFERRED-${String(index).padStart(3, "0")}-${"\u0000".repeat(1_880)}`;
+				const deferred = reviewAdvice(note);
+				const identity = adviceDedupeKey(deferred);
+				expect(
+					pendingAdvice.enqueue(
+						identity,
+						{
+							advice: deferred,
+							stale: false,
+							branchWindow: window,
+							displayedInEntry: false,
+						},
+						Buffer.byteLength(note, "utf8"),
+					),
+				).toBe("accepted");
+			}
+			const dedupe = Reflect.get(activeRuntime, "adviceDedupe") as BoundedAdviceDedupe;
+			for (let index = 0; index < MAX_PERSISTED_DEDUPE_HASHES; index++) {
+				dedupe.add(reviewAdvice(`Persist priority dedupe ${String(index)}.`));
+			}
+			const persistState = Reflect.get(activeRuntime, "persistState") as () => void;
+			persistState.call(activeRuntime);
+			const latest = [...manager.getBranch()]
+				.reverse()
+				.find(
+					(entry) =>
+						entry.type === "custom" && entry.customType === ADVISOR_RUNTIME_STATE_ENTRY_TYPE,
+				);
+			if (latest?.type !== "custom") throw new Error("Expected priority runtime state");
+			const state = latest.data as PersistedAdvisorRuntimeState;
+			expect(Buffer.byteLength(JSON.stringify(state), "utf8")).toBeLessThanOrEqual(
+				4 * 1_024 * 1_024,
+			);
+			expect(state.activeReview?.text).toContain("ACTIVE-REVIEW-TAIL");
+			expect(state.activeReview?.truncated).toBe(true);
+			expect(state.activeDeliveries).toHaveLength(1);
+			expect(state.queuedReview?.text).toContain("QUEUED-REVIEW-TAIL");
+			expect(state.queuedReview?.truncated).toBe(true);
+			expect(state.dedupeHashes).toHaveLength(MAX_PERSISTED_DEDUPE_HASHES);
+			expect(state.deferredAdvice.length).toBeLessThan(500);
+			expect(state.deferredAdvice.at(-1)?.advice.note).toContain("DEFERRED-499");
+			expect(state.deferredAdvice[0]?.advice.note).not.toContain("DEFERRED-000");
+		} finally {
+			if (runtime !== undefined) {
+				Reflect.deleteProperty(runtime, "activeReview");
+				Reflect.deleteProperty(runtime, "pendingUpdate");
+				const activeQueue = Reflect.get(runtime, "activeAdvice") as { clear(): void } | undefined;
+				activeQueue?.clear();
+			}
+			await harness.dispose();
+		}
+	});
+
+	it("asserts that pending and throttled work cannot form a third durable review slot", async () => {
+		const manager = SessionManager.inMemory();
+		const primary = createPrimaryProvider([]);
+		const advisor = createAdvisorProvider([]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			sessionManager: manager,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			if (runtime === undefined) throw new Error("Expected invariant runtime");
+			const update = {
+				text: "durable invariant evidence",
+				entryCount: 1,
+				truncated: false,
+				window: cursorAtTail(manager.getBranch()),
+				turnNumber: 1,
+				successfulMemoryTexts: new Set<string>(),
+			};
+			Reflect.set(runtime, "pendingUpdate", update);
+			Reflect.set(runtime, "throttledUpdate", structuredClone(update));
+			const persistState = Reflect.get(runtime, "persistState") as () => void;
+			expect(() => persistState.call(runtime)).toThrow(
+				"Advisor invariant violated: pending and throttled updates coexist",
+			);
+			Reflect.deleteProperty(runtime, "pendingUpdate");
+			Reflect.deleteProperty(runtime, "throttledUpdate");
+		} finally {
+			await harness.dispose();
 		}
 	});
 

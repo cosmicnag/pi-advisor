@@ -31,6 +31,7 @@ function stateFor(manager: SessionManager): PersistedAdvisorRuntimeState {
 		sessionId: manager.getSessionId(),
 		savedAt: Date.now(),
 		cursor: cursorAtTail(manager.getBranch()),
+		activeDeliveries: [],
 		deferredAdvice: [],
 		dedupeHashes: [],
 		memorySuggestions: {
@@ -64,7 +65,7 @@ describe("Slice 3A lifecycle state primitives", () => {
 		const valid = stateFor(manager);
 		expect(parsePersistedAdvisorRuntimeState(valid, manager.getSessionId(), branch)).toEqual(valid);
 		expect(
-			parsePersistedAdvisorRuntimeState({ ...valid, version: 3 }, manager.getSessionId(), branch),
+			parsePersistedAdvisorRuntimeState({ ...valid, version: 4 }, manager.getSessionId(), branch),
 		).toBeUndefined();
 		expect(parsePersistedAdvisorRuntimeState(valid, "another-session", branch)).toBeUndefined();
 		expect(
@@ -129,8 +130,10 @@ describe("Slice 3A lifecycle state primitives", () => {
 		manager.appendMessage({ role: "user", content: "root", timestamp: 1 });
 		const branch = manager.getBranch();
 		const legacyAdvice = advice("Verify the legacy cancellation defect.");
+		const legacyBase = structuredClone(stateFor(manager));
+		Reflect.deleteProperty(legacyBase, "activeDeliveries");
 		const legacy = {
-			...stateFor(manager),
+			...legacyBase,
 			version: 1,
 			deferredAdvice: [
 				{
@@ -154,6 +157,7 @@ describe("Slice 3A lifecycle state primitives", () => {
 		expect(parsePersistedAdvisorRuntimeState(legacy, manager.getSessionId(), branch)).toEqual({
 			...legacy,
 			version: ADVISOR_RUNTIME_STATE_VERSION,
+			activeDeliveries: [],
 			dedupeHashes: [],
 		});
 
@@ -188,6 +192,118 @@ describe("Slice 3A lifecycle state primitives", () => {
 		const mislabeledLegacy = { ...structuredClone(current), version: 1 };
 		expect(
 			parsePersistedAdvisorRuntimeState(mislabeledLegacy, manager.getSessionId(), branch),
+		).toBeUndefined();
+	});
+
+	it("migrates strict version 2 state without inventing a review backlog", () => {
+		const manager = SessionManager.inMemory();
+		manager.appendMessage({ role: "user", content: "root", timestamp: 1 });
+		const legacyBase = structuredClone(stateFor(manager));
+		Reflect.deleteProperty(legacyBase, "activeDeliveries");
+		const version2 = { ...legacyBase, version: 2 };
+		expect(
+			parsePersistedAdvisorRuntimeState(version2, manager.getSessionId(), manager.getBranch()),
+		).toEqual({
+			...version2,
+			version: ADVISOR_RUNTIME_STATE_VERSION,
+			activeDeliveries: [],
+		});
+	});
+
+	it("rejects unredacted content in persisted review slots and active deliveries", () => {
+		const manager = SessionManager.inMemory();
+		manager.appendMessage({ role: "user", content: "root", timestamp: 1 });
+		const valid = stateFor(manager);
+		const window = cursorAtTail(manager.getBranch());
+		const unredactedReview = {
+			...valid,
+			queuedReview: {
+				text: "[Executor assistant]\nAPI_KEY=raw-review-secret",
+				entryCount: 1,
+				truncated: false,
+				window,
+				turnNumber: 1,
+				successfulMemoryTexts: [],
+			},
+		};
+		expect(
+			parsePersistedAdvisorRuntimeState(
+				unredactedReview,
+				manager.getSessionId(),
+				manager.getBranch(),
+			),
+		).toBeUndefined();
+
+		const unsafeAdvice = advice("API_KEY=raw-delivery-secret");
+		const unredactedDelivery = {
+			advice: unsafeAdvice,
+			stale: false,
+			branchWindow: window,
+			displayedInEntry: false,
+			identity: adviceDedupeKey(unsafeAdvice),
+			deliveryId: "unredacted-delivery",
+			reviewId: "unredacted-review",
+			turnNumber: 1,
+		};
+		expect(
+			parsePersistedAdvisorRuntimeState(
+				{ ...valid, activeDeliveries: [unredactedDelivery] },
+				manager.getSessionId(),
+				manager.getBranch(),
+			),
+		).toBeUndefined();
+	});
+
+	it("rejects escape-expanded review slots and active-delivery fields by serialized bytes", () => {
+		const manager = SessionManager.inMemory();
+		manager.appendMessage({ role: "user", content: "root", timestamp: 1 });
+		const valid = stateFor(manager);
+		const window = cursorAtTail(manager.getBranch());
+		const escapeHeavy = `NEWEST-${`"\\\n\u0000`.repeat(260_000)}`;
+		const oversizedReview = {
+			...valid,
+			queuedReview: {
+				text: escapeHeavy,
+				entryCount: 1,
+				truncated: false,
+				window,
+				turnNumber: 1,
+				successfulMemoryTexts: [],
+			},
+		};
+		expect(Buffer.byteLength(JSON.stringify(oversizedReview.queuedReview), "utf8")).toBeGreaterThan(
+			1_000_000,
+		);
+		expect(
+			parsePersistedAdvisorRuntimeState(
+				oversizedReview,
+				manager.getSessionId(),
+				manager.getBranch(),
+			),
+		).toBeUndefined();
+
+		const deliveries = Array.from({ length: 300 }, (_, index) => {
+			const note = `${String(index)}-${"\u0000".repeat(1_990)}`;
+			const itemAdvice = advice(note);
+			const identity = adviceDedupeKey(itemAdvice);
+			return {
+				advice: itemAdvice,
+				stale: false,
+				branchWindow: window,
+				displayedInEntry: false,
+				identity,
+				deliveryId: `delivery-${String(index)}`,
+				reviewId: `review-${String(index)}`,
+				turnNumber: 1,
+			};
+		});
+		expect(Buffer.byteLength(JSON.stringify(deliveries), "utf8")).toBeGreaterThan(1_000_000);
+		expect(
+			parsePersistedAdvisorRuntimeState(
+				{ ...valid, activeDeliveries: deliveries },
+				manager.getSessionId(),
+				manager.getBranch(),
+			),
 		).toBeUndefined();
 	});
 

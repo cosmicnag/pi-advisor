@@ -3,11 +3,13 @@ import { describe, expect, it } from "vitest";
 
 import {
 	ADVISOR_RETRY_DELAY_MS,
+	ADVISOR_RUNTIME_STATE_ENTRY_TYPE,
 	createPiAdvisorExtension,
 	DEFAULT_ADVISOR_CONFIG,
 	formatAdvisorStatus,
 	type AdvisorConfig,
 	type AdvisorRuntime,
+	type PersistedAdvisorRuntimeState,
 } from "../../src/index.js";
 import { createSessionHarness } from "../fixtures/session-harness.js";
 import {
@@ -266,6 +268,177 @@ describe.sequential("Slice 3B retry lifecycle resilience", () => {
 			await harness.session.prompt("turn after pause");
 			expect(advisor.requests).toHaveLength(6);
 		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("retains a queued update when the active review pauses after terminal failure", async () => {
+		const finalFailure = createBarrier();
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "first answer" }] },
+			{ content: [{ type: "text", text: "second answer" }] },
+			{ content: [{ type: "text", text: "third active answer" }] },
+			{ content: [{ type: "text", text: "QUEUED-WHILE-FAILING" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			{ errorMessage: "failure one" },
+			{ errorMessage: "failure two" },
+			{ errorMessage: "failure three" },
+			{ errorMessage: "failure four" },
+			{ errorMessage: "failure five" },
+			{ errorMessage: "failure six", waitFor: finalFailure.promise },
+			{ content: [] },
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("first repeatedly failing update");
+			await waitFor(() => runtime?.getStatus().consecutiveFailures === 1);
+			await harness.session.prompt("second repeatedly failing update");
+			await waitFor(() => runtime?.getStatus().consecutiveFailures === 2);
+			await harness.session.prompt("third active update reaches final failure");
+			await waitFor(() => advisor.requests.length === 6);
+			await harness.session.prompt("queue evidence while the active review is failing");
+			await waitFor(
+				() =>
+					(
+						Reflect.get(runtime as object, "pendingUpdate") as { text: string } | undefined
+					)?.text.includes("QUEUED-WHILE-FAILING") === true,
+			);
+			finalFailure.release();
+			await waitFor(
+				() =>
+					runtime?.getStatus().paused === true &&
+					Reflect.get(runtime as object, "draining") === false,
+			);
+			if (runtime === undefined) throw new Error("Expected Advisor runtime");
+			const activeRuntime = runtime;
+			expect(Reflect.get(activeRuntime, "pendingUpdate")).toBeUndefined();
+			expect(Reflect.get(activeRuntime, "throttledUpdate")).toBeDefined();
+
+			const latest = harness.sessionManager
+				.getBranch()
+				.slice()
+				.reverse()
+				.find(
+					(entry) =>
+						entry.type === "custom" && entry.customType === ADVISOR_RUNTIME_STATE_ENTRY_TYPE,
+				);
+			if (latest?.type !== "custom") throw new Error("Expected persisted runtime state");
+			const state = latest.data as PersistedAdvisorRuntimeState;
+			expect(state.queuedReview?.text).toContain("QUEUED-WHILE-FAILING");
+			expect(state.queuedReview?.turnNumber).toBe(4);
+			expect(state.lastReviewSubmittedTurn).toBe(3);
+			expect(Reflect.get(activeRuntime, "lastReviewSubmittedTurn")).toBe(3);
+
+			await harness.session.prompt("/advisor on");
+			await waitFor(() => advisor.requests.length === 7);
+			expect(JSON.stringify(advisor.requests[6]?.context.messages)).toContain(
+				"QUEUED-WHILE-FAILING",
+			);
+			await waitFor(() => activeRuntime.getStatus().reviewsCompleted === 1);
+			expect(activeRuntime.getStatus()).toMatchObject({ paused: false, backlog: false });
+		} finally {
+			finalFailure.release();
+			await harness.dispose();
+		}
+	});
+
+	it("resumes a soft-cap-stranded active claim before newer evidence", async () => {
+		const resumedReview = createBarrier();
+		const newerReview = createBarrier();
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "STRANDED-ACTIVE-EVIDENCE" }] },
+			{ content: [{ type: "text", text: "NEWER-EVIDENCE-AFTER-UNPAUSE" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			{
+				errorMessage: "retryable failure crossing the soft cap",
+				usage: { input: 5 },
+			},
+			{ content: [], waitFor: resumedReview.promise },
+			{ content: [], waitFor: newerReview.promise },
+		]);
+		const config = configFor(advisor);
+		config.limits.sessionTokenSoftCap = 5;
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(config, (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("create evidence whose review crosses the soft cap");
+			await waitFor(
+				() =>
+					runtime?.getStatus().paused === true &&
+					Reflect.get(runtime as object, "draining") === false,
+			);
+			if (runtime === undefined) throw new Error("Expected Advisor runtime");
+			const activeRuntime = runtime;
+			const stranded = Reflect.get(activeRuntime, "activeReview") as
+				| { reviewId: string; restoredReplayCount: number; text: string }
+				| undefined;
+			if (stranded === undefined) throw new Error("Expected a stranded active review");
+			expect(stranded.text).toContain("STRANDED-ACTIVE-EVIDENCE");
+			expect(stranded.restoredReplayCount).toBe(0);
+
+			await harness.session.prompt("/advisor on");
+			await waitFor(() => advisor.requests.length === 2);
+			expect(JSON.stringify(advisor.requests[1]?.context.messages)).toContain(
+				"STRANDED-ACTIVE-EVIDENCE",
+			);
+			expect((Reflect.get(activeRuntime, "activeReview") as { reviewId: string }).reviewId).toBe(
+				stranded.reviewId,
+			);
+
+			await harness.session.prompt("queue newer evidence while the claimed review resumes");
+			await waitFor(
+				() =>
+					(
+						Reflect.get(activeRuntime, "pendingUpdate") as { text: string } | undefined
+					)?.text.includes("NEWER-EVIDENCE-AFTER-UNPAUSE") === true,
+			);
+			expect((Reflect.get(activeRuntime, "activeReview") as { reviewId: string }).reviewId).toBe(
+				stranded.reviewId,
+			);
+			const whileQueued = harness.sessionManager
+				.getBranch()
+				.slice()
+				.reverse()
+				.find(
+					(entry) =>
+						entry.type === "custom" && entry.customType === ADVISOR_RUNTIME_STATE_ENTRY_TYPE,
+				);
+			if (whileQueued?.type !== "custom") throw new Error("Expected persisted runtime state");
+			const queuedState = whileQueued.data as PersistedAdvisorRuntimeState;
+			expect(queuedState.activeReview?.reviewId).toBe(stranded.reviewId);
+			expect(queuedState.queuedReview?.text).toContain("NEWER-EVIDENCE-AFTER-UNPAUSE");
+
+			resumedReview.release();
+			await waitFor(() => advisor.requests.length === 3);
+			expect(JSON.stringify(advisor.requests[2]?.context.messages)).toContain(
+				"NEWER-EVIDENCE-AFTER-UNPAUSE",
+			);
+			const newerClaim = Reflect.get(activeRuntime, "activeReview") as
+				| { reviewId: string }
+				| undefined;
+			expect(newerClaim?.reviewId).not.toBe(stranded.reviewId);
+			newerReview.release();
+			await waitFor(() => activeRuntime.getStatus().reviewsCompleted === 2);
+			expect(activeRuntime.getStatus()).toMatchObject({ paused: false, backlog: false });
+			expect(Reflect.get(activeRuntime, "activeReview")).toBeUndefined();
+		} finally {
+			resumedReview.release();
+			newerReview.release();
 			await harness.dispose();
 		}
 	});
