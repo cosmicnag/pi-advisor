@@ -8,12 +8,14 @@ import { redactSecrets } from "./redaction.js";
 import { cursorMatches, type AdvisorCursor } from "./transcript.js";
 
 export const ADVISOR_RUNTIME_STATE_ENTRY_TYPE = "pi-advisor-runtime-state";
-export const ADVISOR_RUNTIME_STATE_VERSION = 2 as const;
+export const ADVISOR_RUNTIME_STATE_VERSION = 3 as const;
 export const ADVISOR_TRANSCRIPT_ENTRY_TYPE = "pi-advisor-transcript-record";
 export const ADVISOR_TRANSCRIPT_LEGACY_RECORD_VERSION = 1 as const;
 export const ADVISOR_TRANSCRIPT_RECORD_VERSION = 2 as const;
 export const MAX_PERSISTED_DEDUPE_HASHES = 128;
 export const MAX_PERSISTED_RUNTIME_STATE_BYTES = 4 * 1_024 * 1_024;
+export const MAX_PERSISTED_REVIEW_SLOT_BYTES = 1_000_000;
+export const MAX_PERSISTED_ACTIVE_DELIVERIES_BYTES = 1_000_000;
 export const MAX_PERSISTED_TRANSCRIPT_RECORD_BYTES = 256 * 1_024;
 export const MAX_INSPECTED_TRANSCRIPT_RECORDS = 256;
 export const MAX_PERSISTED_ACTIVITY_TARGET_BYTES = 4 * 1_024;
@@ -119,6 +121,29 @@ export interface PersistedDeferredAdvice {
 	branchWindow: AdvisorCursor;
 	displayedInEntry: boolean;
 	restoredAfterResume?: boolean;
+	reviewId?: string;
+}
+
+export interface PersistedAdvisorReviewUpdate {
+	text: string;
+	entryCount: number;
+	truncated: boolean;
+	window: AdvisorCursor;
+	turnNumber: number;
+	/** Newest first. */
+	successfulMemoryTexts: string[];
+}
+
+export interface PersistedAdvisorActiveReview extends PersistedAdvisorReviewUpdate {
+	reviewId: string;
+	restoredReplayCount: number;
+}
+
+export interface PersistedAdvisorActiveDelivery extends PersistedDeferredAdvice {
+	identity: string;
+	deliveryId: string;
+	reviewId: string;
+	turnNumber: number;
 }
 
 export interface PersistedMemorySuggestionState {
@@ -135,6 +160,11 @@ export interface PersistedAdvisorRuntimeState {
 	sessionId: string;
 	savedAt: number;
 	cursor: AdvisorCursor;
+	activeReview?: PersistedAdvisorActiveReview;
+	queuedReview?: PersistedAdvisorReviewUpdate;
+	lastReviewSubmittedTurn?: number;
+	lastReviewSubmittedAt?: number;
+	activeDeliveries: PersistedAdvisorActiveDelivery[];
 	deferredAdvice: PersistedDeferredAdvice[];
 	dedupeHashes: string[];
 	memorySuggestions: PersistedMemorySuggestionState;
@@ -250,9 +280,23 @@ function isAcceptedAdvice(value: unknown, allowFindingKeyHash: boolean): value i
 	);
 }
 
+function isBoundedId(value: unknown): value is string {
+	return typeof value === "string" && value.length > 0 && value.length <= 128;
+}
+
+function serializedBytes(value: unknown): number | undefined {
+	try {
+		const serialized = JSON.stringify(value);
+		return typeof serialized === "string" ? Buffer.byteLength(serialized, "utf8") : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 function isPersistedDeferredAdvice(
 	value: unknown,
 	allowFindingKeyHash: boolean,
+	allowReviewId = false,
 ): value is PersistedDeferredAdvice {
 	if (typeof value !== "object" || value === null) return false;
 	const pending = value as Record<string, unknown>;
@@ -263,12 +307,97 @@ function isPersistedDeferredAdvice(
 			"branchWindow",
 			"displayedInEntry",
 			"restoredAfterResume",
+			...(allowReviewId ? ["reviewId"] : []),
 		]) &&
 		isAcceptedAdvice(pending.advice, allowFindingKeyHash) &&
 		typeof pending.stale === "boolean" &&
 		isCursor(pending.branchWindow) &&
 		typeof pending.displayedInEntry === "boolean" &&
-		(pending.restoredAfterResume === undefined || pending.restoredAfterResume === true)
+		(pending.restoredAfterResume === undefined || pending.restoredAfterResume === true) &&
+		(!allowReviewId || pending.reviewId === undefined || isBoundedId(pending.reviewId))
+	);
+}
+
+function isPersistedReviewUpdate(
+	value: unknown,
+	branch: SessionEntry[],
+	active: boolean,
+): value is PersistedAdvisorReviewUpdate {
+	if (typeof value !== "object" || value === null) return false;
+	const update = value as Record<string, unknown>;
+	const allowed = [
+		"text",
+		"entryCount",
+		"truncated",
+		"window",
+		"turnNumber",
+		"successfulMemoryTexts",
+		...(active ? ["reviewId", "restoredReplayCount"] : []),
+	];
+	const bytes = serializedBytes(value);
+	return (
+		hasOnlyKeys(update, allowed) &&
+		bytes !== undefined &&
+		bytes <= MAX_PERSISTED_REVIEW_SLOT_BYTES &&
+		typeof update.text === "string" &&
+		redactSecrets(update.text).text === update.text &&
+		isFiniteInteger(update.entryCount) &&
+		typeof update.truncated === "boolean" &&
+		isCursor(update.window) &&
+		cursorMatches(branch, update.window) &&
+		isFiniteInteger(update.turnNumber, 1) &&
+		Array.isArray(update.successfulMemoryTexts) &&
+		update.successfulMemoryTexts.length <= MAX_PENDING_ADVICE_ITEMS &&
+		update.successfulMemoryTexts.every(
+			(text) =>
+				typeof text === "string" &&
+				redactSecrets(text).text === text &&
+				Buffer.byteLength(text, "utf8") <= HARD_LIMITS.maxPendingTranscriptBytes,
+		) &&
+		new Set(update.successfulMemoryTexts).size === update.successfulMemoryTexts.length &&
+		(!active ||
+			(isBoundedId(update.reviewId) &&
+				isFiniteInteger(update.restoredReplayCount, 0) &&
+				update.restoredReplayCount <= 2))
+	);
+}
+
+function persistedReviewTurn(value: unknown): number | undefined {
+	if (typeof value !== "object" || value === null) return undefined;
+	const turnNumber = (value as Record<string, unknown>).turnNumber;
+	return typeof turnNumber === "number" ? turnNumber : undefined;
+}
+
+function isPersistedActiveDelivery(
+	value: unknown,
+	branch: SessionEntry[],
+): value is PersistedAdvisorActiveDelivery {
+	if (typeof value !== "object" || value === null) return false;
+	const delivery = value as Record<string, unknown>;
+	return (
+		hasOnlyKeys(delivery, [
+			"advice",
+			"stale",
+			"branchWindow",
+			"displayedInEntry",
+			"restoredAfterResume",
+			"reviewId",
+			"identity",
+			"deliveryId",
+			"turnNumber",
+		]) &&
+		isAcceptedAdvice(delivery.advice, true) &&
+		typeof delivery.stale === "boolean" &&
+		isCursor(delivery.branchWindow) &&
+		cursorMatches(branch, delivery.branchWindow) &&
+		typeof delivery.displayedInEntry === "boolean" &&
+		(delivery.restoredAfterResume === undefined || delivery.restoredAfterResume === true) &&
+		isBoundedId(delivery.reviewId) &&
+		typeof delivery.identity === "string" &&
+		/^[a-f0-9]{64}$/u.test(delivery.identity) &&
+		delivery.identity === adviceDedupeKey(delivery.advice) &&
+		isBoundedId(delivery.deliveryId) &&
+		isFiniteInteger(delivery.turnNumber, 1)
 	);
 }
 
@@ -323,18 +452,36 @@ export function parsePersistedAdvisorRuntimeState(
 	}
 	const state = value as Record<string, unknown>;
 	const version = state.version;
+	if (version !== 1 && version !== 2 && version !== ADVISOR_RUNTIME_STATE_VERSION) return undefined;
+	const legacy = version === 1 || version === 2;
+	const allowedKeys = legacy
+		? [
+				"version",
+				"sessionId",
+				"savedAt",
+				"cursor",
+				"deferredAdvice",
+				"dedupeHashes",
+				"memorySuggestions",
+				"notesDelivered",
+			]
+		: [
+				"version",
+				"sessionId",
+				"savedAt",
+				"cursor",
+				"activeReview",
+				"queuedReview",
+				"lastReviewSubmittedTurn",
+				"lastReviewSubmittedAt",
+				"activeDeliveries",
+				"deferredAdvice",
+				"dedupeHashes",
+				"memorySuggestions",
+				"notesDelivered",
+			];
 	if (
-		!hasOnlyKeys(state, [
-			"version",
-			"sessionId",
-			"savedAt",
-			"cursor",
-			"deferredAdvice",
-			"dedupeHashes",
-			"memorySuggestions",
-			"notesDelivered",
-		]) ||
-		(version !== 1 && version !== ADVISOR_RUNTIME_STATE_VERSION) ||
+		!hasOnlyKeys(state, allowedKeys) ||
 		state.sessionId !== expectedSessionId ||
 		typeof state.sessionId !== "string" ||
 		state.sessionId.length === 0 ||
@@ -345,7 +492,7 @@ export function parsePersistedAdvisorRuntimeState(
 		!Array.isArray(state.deferredAdvice) ||
 		state.deferredAdvice.length > MAX_PENDING_ADVICE_ITEMS ||
 		!state.deferredAdvice.every((pending) =>
-			isPersistedDeferredAdvice(pending, version === ADVISOR_RUNTIME_STATE_VERSION),
+			isPersistedDeferredAdvice(pending, version !== 1, version === ADVISOR_RUNTIME_STATE_VERSION),
 		) ||
 		!Array.isArray(state.dedupeHashes) ||
 		state.dedupeHashes.length > MAX_PERSISTED_DEDUPE_HASHES ||
@@ -356,12 +503,54 @@ export function parsePersistedAdvisorRuntimeState(
 	) {
 		return undefined;
 	}
-	const migrated = structuredClone(value) as Omit<PersistedAdvisorRuntimeState, "version"> & {
-		version: 1 | typeof ADVISOR_RUNTIME_STATE_VERSION;
-	};
+	if (!legacy) {
+		const activeReviewValid =
+			state.activeReview === undefined || isPersistedReviewUpdate(state.activeReview, branch, true);
+		const queuedReviewValid =
+			state.queuedReview === undefined ||
+			isPersistedReviewUpdate(state.queuedReview, branch, false);
+		const deliveriesBytes = serializedBytes(state.activeDeliveries);
+		if (
+			!activeReviewValid ||
+			!queuedReviewValid ||
+			(state.lastReviewSubmittedTurn !== undefined &&
+				!isFiniteInteger(state.lastReviewSubmittedTurn, 1)) ||
+			(state.lastReviewSubmittedAt !== undefined && !isTimestamp(state.lastReviewSubmittedAt)) ||
+			!Array.isArray(state.activeDeliveries) ||
+			state.activeDeliveries.length > MAX_PENDING_ADVICE_ITEMS ||
+			deliveriesBytes === undefined ||
+			deliveriesBytes > MAX_PERSISTED_ACTIVE_DELIVERIES_BYTES ||
+			!state.activeDeliveries.every((delivery) => isPersistedActiveDelivery(delivery, branch))
+		) {
+			return undefined;
+		}
+		const deliveries = state.activeDeliveries;
+		const activeReviewTurn = persistedReviewTurn(state.activeReview);
+		const queuedReviewTurn = persistedReviewTurn(state.queuedReview);
+		const meaningfulTurnCount = state.memorySuggestions.meaningfulTurnCount;
+		if (
+			new Set(deliveries.map((delivery) => delivery.identity)).size !== deliveries.length ||
+			new Set(deliveries.map((delivery) => delivery.deliveryId)).size !== deliveries.length ||
+			(state.lastReviewSubmittedTurn === undefined) !==
+				(state.lastReviewSubmittedAt === undefined) ||
+			(typeof state.lastReviewSubmittedTurn === "number" &&
+				state.lastReviewSubmittedTurn > meaningfulTurnCount) ||
+			(activeReviewTurn !== undefined && activeReviewTurn > meaningfulTurnCount) ||
+			(queuedReviewTurn !== undefined && queuedReviewTurn > meaningfulTurnCount) ||
+			(activeReviewTurn !== undefined &&
+				queuedReviewTurn !== undefined &&
+				queuedReviewTurn < activeReviewTurn) ||
+			deliveries.some((delivery) => delivery.turnNumber > meaningfulTurnCount)
+		) {
+			return undefined;
+		}
+		return structuredClone(value) as PersistedAdvisorRuntimeState;
+	}
+	const migrated = structuredClone(value) as Record<string, unknown>;
 	return {
-		...migrated,
+		...(migrated as unknown as Omit<PersistedAdvisorRuntimeState, "version" | "activeDeliveries">),
 		version: ADVISOR_RUNTIME_STATE_VERSION,
+		activeDeliveries: [],
 		...(version === 1 ? { dedupeHashes: [] } : {}),
 	};
 }

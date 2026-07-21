@@ -119,6 +119,13 @@ function runtimeStatus(): AdvisorRuntimeStatus {
 		transcriptPersistenceEnabled: false,
 		transcriptRecordsPersisted: 0,
 		transcriptPersistenceFailures: 0,
+		restoredActiveReviewPending: false,
+		restoredQueuedReviewPending: false,
+		restoredActiveDeliveriesPending: 0,
+		restoredReplayCount: 0,
+		poisonReviewDrops: 0,
+		runtimeStatePersistenceFailures: 0,
+		serializedPersistenceTruncations: 0,
 		epoch: 0,
 		nestedActiveTools: [],
 	};

@@ -29,6 +29,7 @@ interface AdvicePresentationBase {
 	originalEstimatedTokens: number;
 	createdAt: number;
 	deliveryId?: string;
+	reviewId?: string;
 	displayedInEntry?: boolean;
 	restoredAfterResume?: boolean;
 }
@@ -142,6 +143,9 @@ function parsePresentationBase(note: Record<string, unknown>): AdvicePresentatio
 		createdAt: note.createdAt,
 		...(typeof note.deliveryId === "string" && note.deliveryId.length <= 512
 			? { deliveryId: note.deliveryId }
+			: {}),
+		...(typeof note.reviewId === "string" && note.reviewId.length <= 128
+			? { reviewId: note.reviewId }
 			: {}),
 		...(note.displayedInEntry === true ? { displayedInEntry: true } : {}),
 		...(note.restoredAfterResume === true ? { restoredAfterResume: true } : {}),

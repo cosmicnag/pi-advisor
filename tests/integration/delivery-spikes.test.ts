@@ -1,7 +1,11 @@
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 
-import { defineTool, type InlineExtension } from "@earendil-works/pi-coding-agent";
+import { defineTool, SessionManager, type InlineExtension } from "@earendil-works/pi-coding-agent";
 
 import { createSessionHarness } from "../fixtures/session-harness.js";
 import { createPrimaryProvider } from "../fixtures/scripted-provider.js";
@@ -11,6 +15,76 @@ function contextText(value: unknown): string {
 }
 
 describe.sequential("Pi 0.80.7 delivery spikes", () => {
+	it("confirms a queued but undelivered steer has no restart-durable session entry", async () => {
+		const root = await mkdtemp(join(tmpdir(), "pi-advisor-steer-capability-"));
+		const project = join(root, "project");
+		const sessions = join(root, "sessions");
+		await mkdir(project, { recursive: true });
+		await mkdir(sessions, { recursive: true });
+		let releaseHold: () => void = () => undefined;
+		const hold = new Promise<void>((resolve) => {
+			releaseHold = resolve;
+		});
+		let markQueued: () => void = () => undefined;
+		const queued = new Promise<void>((resolve) => {
+			markQueued = resolve;
+		});
+		const marker = "QUEUED-STEER-IS-NOT-A-DURABLE-SESSION-ENTRY";
+		const provider = createPrimaryProvider([
+			{
+				content: [{ type: "toolCall", id: "restart-hold", name: "hold", arguments: {} }],
+				stopReason: "toolUse",
+			},
+		]);
+		const extension: InlineExtension = {
+			name: "queued-steer-restart-capability",
+			factory: (pi) => {
+				pi.on("tool_execution_start", () => {
+					pi.sendMessage(
+						{ customType: "pi-advisor-spike", content: marker, display: true },
+						{ deliverAs: "steer" },
+					);
+					markQueued();
+				});
+			},
+		};
+		const holdTool = defineTool({
+			name: "hold",
+			label: "Hold",
+			description: "Hold a tool boundary while inspecting session durability.",
+			parameters: Type.Object({}),
+			execute: async () => {
+				await hold;
+				return { content: [{ type: "text" as const, text: "released" }], details: {} };
+			},
+		});
+		const manager = SessionManager.create(project, sessions);
+		const harness = await createSessionHarness({
+			provider,
+			sessionManager: manager,
+			extensions: [extension],
+			customTools: [holdTool],
+			tools: ["hold"],
+		});
+		try {
+			const active = harness.session.prompt("measure queued steer restart durability");
+			await queued;
+			expect(JSON.stringify(manager.getEntries())).not.toContain(marker);
+			const sessionFile = manager.getSessionFile();
+			if (sessionFile === undefined) throw new Error("Expected file-backed session");
+			expect(await readFile(sessionFile, "utf8")).not.toContain(marker);
+			harness.session.clearQueue();
+			const aborting = harness.session.abort();
+			releaseHold();
+			await aborting;
+			await active;
+		} finally {
+			releaseHold();
+			await harness.dispose();
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
 	it("delivers steer after the active assistant tool boundary and before the next model call", async () => {
 		const timeline: string[] = [];
 		const provider = createPrimaryProvider([
