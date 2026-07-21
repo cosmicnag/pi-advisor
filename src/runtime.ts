@@ -2397,7 +2397,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				{ outcome: "failed", reason: maintenance.freshContextFailure },
 				"fresh-context-overflow",
 			);
-			if (this.activeReview.reviewId === reviewId) delete this.activeReview;
+			if (this.activeReviewMatches(reviewId)) delete this.activeReview;
 			this.status.restoredActiveReviewPending = false;
 			this.persistState();
 			this.publishStatus();
