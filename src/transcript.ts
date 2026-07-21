@@ -235,16 +235,41 @@ function renderBoundedEntries(
 	};
 }
 
+function hasMaterialExecutorActivity(entry: SessionEntry): boolean {
+	if (entry.type === "custom") return false;
+	if (entry.type === "custom_message") return entry.customType !== ADVISOR_CUSTOM_TYPE;
+	if (entry.type === "compaction" || entry.type === "branch_summary") return true;
+	if (!isMessageEntry(entry)) return false;
+	const message = entry.message;
+	if (message.role === "assistant") {
+		return message.content.some((content) => content.type === "toolCall");
+	}
+	if (message.role === "custom") return message.customType !== ADVISOR_CUSTOM_TYPE;
+	if (message.role === "bashExecution") return !message.excludeFromContext;
+	return true;
+}
+
 export function isMeaningfulExecutorTurn(event: TurnEndEvent, entries: SessionEntry[]): boolean {
 	if (event.message.role !== "assistant") return false;
 	if (event.message.stopReason === "aborted") return false;
-	const hasAdvisorNote = entries.some(
-		(entry) => entry.type === "custom_message" && entry.customType === ADVISOR_CUSTOM_TYPE,
-	);
+	let latestAdvisorNoteIndex = -1;
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if (entry?.type === "custom_message" && entry.customType === ADVISOR_CUSTOM_TYPE) {
+			latestAdvisorNoteIndex = index;
+			break;
+		}
+	}
 	const hasExecutorUserMessage = entries.some(
 		(entry) => entry.type === "message" && entry.message.role === "user",
 	);
-	if (hasAdvisorNote && !hasExecutorUserMessage) return false;
+	if (
+		latestAdvisorNoteIndex >= 0 &&
+		!hasExecutorUserMessage &&
+		!entries.slice(latestAdvisorNoteIndex + 1).some(hasMaterialExecutorActivity)
+	) {
+		return false;
+	}
 	const assistantContent = contentText(event.message.content, true).trim();
 	return assistantContent.length > 0 || event.toolResults.length > 0;
 }

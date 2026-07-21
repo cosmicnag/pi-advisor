@@ -847,6 +847,50 @@ describe("Slice 1 transcript filtering and redaction", () => {
 		}
 	});
 
+	it("reviews failed Executor tool evidence appended after an Advisor note", () => {
+		const manager = SessionManager.inMemory();
+		manager.appendCustomMessageEntry(
+			ADVISOR_CUSTOM_TYPE,
+			"Advisor note that prompted the recovery attempt.",
+			true,
+		);
+		const resumeAttempt = assistant(
+			[
+				{
+					type: "toolCall",
+					id: "resume-worker",
+					name: "resume_worker",
+					arguments: { workerId: "worker-1" },
+				},
+			],
+			"toolUse",
+		);
+		manager.appendMessage(resumeAttempt);
+		const failedResult = {
+			role: "toolResult" as const,
+			toolCallId: "resume-worker",
+			toolName: "resume_worker",
+			content: [{ type: "text" as const, text: "Invalid async recovery descriptor" }],
+			isError: true,
+			timestamp: Date.now(),
+		};
+		manager.appendMessage(failedResult);
+		const entries = manager.getBranch();
+		const event: TurnEndEvent = {
+			type: "turn_end",
+			turnIndex: 0,
+			message: resumeAttempt,
+			toolResults: [failedResult],
+		};
+
+		expect(isMeaningfulExecutorTurn(event, entries)).toBe(true);
+		const rendered = renderAdvisorDelta(entries, 1_024);
+		expect(rendered.text).toContain('[tool call resume_worker] {"workerId":"worker-1"}');
+		expect(rendered.text).toContain("[Executor tool result resume_worker error]");
+		expect(rendered.text).toContain("Invalid async recovery descriptor");
+		expect(rendered.text).not.toContain("Advisor note that prompted the recovery attempt.");
+	});
+
 	it("skips aborted, empty, and Advisor-generated turns", () => {
 		const aborted: TurnEndEvent = {
 			type: "turn_end",
@@ -863,6 +907,12 @@ describe("Slice 1 transcript filtering and redaction", () => {
 			message: assistant([{ type: "text", text: "weighed advisory" }]),
 		};
 		const manager = SessionManager.inMemory();
+		manager.appendMessage(
+			assistant(
+				[{ type: "toolCall", id: "older-call", name: "inspect", arguments: {} }],
+				"toolUse",
+			),
+		);
 		manager.appendCustomMessageEntry("pi-advisor-note", "peer note", true);
 		expect(isMeaningfulExecutorTurn(aborted, [])).toBe(false);
 		expect(isMeaningfulExecutorTurn(empty, [])).toBe(false);
