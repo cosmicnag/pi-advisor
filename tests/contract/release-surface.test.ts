@@ -20,10 +20,10 @@ const publicDocs = [
 ].map((path) => ({ path, content: readFileSync(path, "utf8") }));
 
 describe("public release surface", () => {
-	it("declares discoverable publishable 0.1.2 metadata", () => {
+	it("declares discoverable publishable 0.1.3 metadata", () => {
 		expect(manifest).toMatchObject({
 			name: "@ribbons-digital/pi-advisor",
-			version: "0.1.2",
+			version: "0.1.3",
 			publishConfig: { access: "public", provenance: true },
 			pi: { extensions: ["./src/index.ts"] },
 		});
