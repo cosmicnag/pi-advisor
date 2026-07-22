@@ -35,6 +35,10 @@ import {
 	detectMemorySuggestCapability,
 	type MemorySuggestCapability,
 } from "./compatibility/capabilities.js";
+import {
+	resolveAdvisorModelRuntime,
+	type ResolvedAdvisorModelRuntime,
+} from "./compatibility/model-runtime.js";
 import { isMemorySuggestionBasis, isMemorySuggestionCategory } from "./memory-suggestions.js";
 import { normalizeAdvisorConfig, type AdvisorConfig } from "./config.js";
 import {
@@ -1698,7 +1702,12 @@ export class AdvisorRuntime {
 				this.publishStatus();
 				return;
 			}
-			await this.createNestedSession(ctx, model);
+			const resolved = await resolveAdvisorModelRuntime({
+				modelRegistry: ctx.modelRegistry,
+				model,
+			});
+			if (!this.activationStillCurrent(ctx, activationEpoch)) return;
+			await this.createNestedSession(ctx, resolved.model, resolved.modelRuntime);
 			if (!this.activationStillCurrent(ctx, activationEpoch)) {
 				await this.disposeNestedSession();
 				return;
@@ -1719,7 +1728,11 @@ export class AdvisorRuntime {
 		this.publishStatus();
 	}
 
-	private async createNestedSession(ctx: ExtensionContext, model: Model<Api>): Promise<void> {
+	private async createNestedSession(
+		ctx: ExtensionContext,
+		model: Model<Api>,
+		modelRuntime: ResolvedAdvisorModelRuntime["modelRuntime"],
+	): Promise<void> {
 		await this.disposeNestedSession();
 		const contextLimitTokens = advisorContextLimit(model, this.config);
 		const compactionReserveTokens = Math.max(
@@ -1771,7 +1784,7 @@ export class AdvisorRuntime {
 			agentDir: getAgentDir(),
 			model,
 			thinkingLevel: this.config.effort,
-			modelRegistry: ctx.modelRegistry,
+			modelRuntime,
 			settingsManager,
 			resourceLoader,
 			sessionManager: SessionManager.inMemory(ctx.cwd),

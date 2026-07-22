@@ -20,10 +20,10 @@ const publicDocs = [
 ].map((path) => ({ path, content: readFileSync(path, "utf8") }));
 
 describe("public release surface", () => {
-	it("declares discoverable publishable 0.1.3 metadata", () => {
+	it("declares discoverable publishable 0.2.0 metadata", () => {
 		expect(manifest).toMatchObject({
 			name: "@ribbons-digital/pi-advisor",
-			version: "0.1.3",
+			version: "0.2.0",
 			publishConfig: { access: "public", provenance: true },
 			pi: { extensions: ["./src/index.ts"] },
 		});
@@ -41,7 +41,14 @@ describe("public release surface", () => {
 		]);
 	});
 
-	it("documents official unpinned install, update, and uninstall commands", () => {
+	it("documents official compatibility, install, update, and uninstall guidance", () => {
+		expect(readme).toContain("Pi Advisor 0.2.0 requires Pi");
+		expect(readme).toContain("Declared compatibility range: >=0.81.1 <0.82.0");
+		expect(readme).toContain("Tested Pi release: 0.81.1");
+		expect(readme).toContain("Pi Advisor 0.1.3 is the legacy release for Pi 0.80.7");
+		expect(readme).toContain(
+			"unverifiable provider parity leave Advisor inactive without fallback",
+		);
 		expect(readme).toContain("pi install npm:@ribbons-digital/pi-advisor");
 		expect(readme).toContain("pi update --extensions");
 		expect(readme).toContain("pi update npm:@ribbons-digital/pi-advisor");

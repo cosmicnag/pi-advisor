@@ -55,7 +55,7 @@ for (const name of [
 	"@earendil-works/pi-coding-agent",
 	"@earendil-works/pi-tui",
 ] as const) {
-	if (manifest.peerDependencies?.[name] !== ">=0.80.7 <0.81.0") {
+	if (manifest.peerDependencies?.[name] !== ">=0.81.1 <0.82.0") {
 		throw new Error(`Unsupported or missing Pi peer range for ${name}`);
 	}
 }

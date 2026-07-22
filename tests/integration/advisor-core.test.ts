@@ -140,6 +140,39 @@ describe.sequential("Slice 1 automatic Advisor core", () => {
 		}
 	});
 
+	it("fails inactive without a nested request when provider parity cannot be proven", async () => {
+		const primary = createPrimaryProvider([]);
+		const advisor = createAdvisorProvider([]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [advisorExtension(configFor(advisor), (value) => (runtime = value))],
+			beforeBind: (modelRuntime) => {
+				const original = modelRuntime.getProviderAuthStatus.bind(modelRuntime);
+				modelRuntime.getProviderAuthStatus = (providerId) => {
+					const status = original(providerId);
+					return providerId === advisor.model.provider
+						? { ...status, configured: true, source: "stored" }
+						: status;
+				};
+			},
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			expect(runtime?.getStatus()).toMatchObject({ enabled: true, active: false });
+			expect(runtime?.getStatus().inactiveReason).toContain(
+				"ModelRuntime parity mismatch: authentication source",
+			);
+			expect(runtime?.getStatus().inactiveReason).toContain("No fallback was selected");
+			expect(runtime?.getStatus().nestedExtensionCount).toBeUndefined();
+			expect(advisor.requests).toHaveLength(0);
+		} finally {
+			await harness.dispose();
+		}
+	});
+
 	it("disables recursive resources and exposes only read-only tools plus advise", async () => {
 		const primary = createPrimaryProvider([]);
 		const advisor = createAdvisorProvider([]);

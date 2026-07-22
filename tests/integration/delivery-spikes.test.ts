@@ -14,7 +14,7 @@ function contextText(value: unknown): string {
 	return JSON.stringify(value);
 }
 
-describe.sequential("Pi 0.80.7 delivery spikes", () => {
+describe.sequential("Pi 0.81.1 delivery spikes", () => {
 	it("confirms a queued but undelivered steer has no restart-durable session entry", async () => {
 		const root = await mkdtemp(join(tmpdir(), "pi-advisor-steer-capability-"));
 		const project = join(root, "project");

@@ -1,4 +1,5 @@
 import { estimateContextTokens } from "@earendil-works/pi-agent-core";
+import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -8,6 +9,7 @@ import {
 	DefaultResourceLoader,
 	estimateTokens,
 	ModelRegistry,
+	ModelRuntime,
 	SessionManager,
 	type ExtensionAPI,
 	type ExtensionContext,
@@ -74,13 +76,20 @@ function expectMethod(target: object, name: string): void {
 	expect(typeof (target as Record<string, unknown>)[name]).toBe("function");
 }
 
-describe("pinned Pi 0.80.7 public API contract", () => {
+describe("pinned Pi 0.81.1 public API contract", () => {
 	it("exports the required SDK constructors and methods", () => {
 		expect(createAgentSession).toBeTypeOf("function");
 		expect(calculateContextTokens).toBeTypeOf("function");
 		expect(estimateContextTokens).toBeTypeOf("function");
 		expect(estimateTokens).toBeTypeOf("function");
 		expect(DefaultResourceLoader).toBeTypeOf("function");
+		expect(InMemoryCredentialStore).toBeTypeOf("function");
+		expectMethod(ModelRuntime, "create");
+		expectMethod(ModelRuntime.prototype, "setRuntimeApiKey");
+		expectMethod(ModelRuntime.prototype, "registerProvider");
+		expectMethod(ModelRuntime.prototype, "registerNativeProvider");
+		expectMethod(ModelRuntime.prototype, "getProvider");
+		expectMethod(ModelRuntime.prototype, "getAuth");
 		expectMethod(SessionManager, "inMemory");
 		expectMethod(SessionManager.prototype, "getBranch");
 		expectMethod(SessionManager.prototype, "getEntries");
@@ -93,6 +102,11 @@ describe("pinned Pi 0.80.7 public API contract", () => {
 		expectMethod(AgentSession.prototype, "dispose");
 		expectMethod(ModelRegistry.prototype, "find");
 		expectMethod(ModelRegistry.prototype, "getAvailable");
+		expectMethod(ModelRegistry.prototype, "getRegisteredProviderIds");
+		expectMethod(ModelRegistry.prototype, "getRegisteredProviderConfig");
+		expectMethod(ModelRegistry.prototype, "getRegisteredNativeProvider");
+		expectMethod(ModelRegistry.prototype, "getProviderAuthStatus");
+		expectMethod(ModelRegistry.prototype, "getApiKeyForProvider");
 		expectMethod(ModelRegistry.prototype, "getApiKeyAndHeaders");
 	});
 
