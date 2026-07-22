@@ -1,9 +1,8 @@
 import { createHash } from "node:crypto";
 
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum, validateToolArguments } from "@earendil-works/pi-ai";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
-import { Guard } from "typebox/guard";
 
 import { HARD_LIMITS, type AdvisorConfig } from "./config.js";
 import {
@@ -106,6 +105,12 @@ export const ADVISE_WIRE_SCHEMA = Type.Object({
 
 export type AdviseWireInput = Static<typeof ADVISE_WIRE_SCHEMA>;
 
+const ADVISE_WIRE_VALIDATION_TOOL = {
+	name: "advise",
+	description: "Validate internal Advisor wire input.",
+	parameters: ADVISE_WIRE_SCHEMA,
+};
+
 export interface ParsedReviewAdviceInput {
 	note: string;
 	intent: "review";
@@ -131,25 +136,35 @@ export function isAdviseWireInput(input: unknown): input is AdviseWireInput {
 	const { note, intent, severity, findingKey, memory } = wire;
 	if (
 		typeof note !== "string" ||
-		!Guard.IsMinLength(note, 1) ||
 		!isOptionalEnum(intent, ["review", "memory-suggestion"]) ||
 		!isOptionalEnum(severity, ["nit", "concern", "blocker"]) ||
-		(findingKey !== undefined &&
-			(typeof findingKey !== "string" ||
-				!Guard.IsMinLength(findingKey, 1) ||
-				!Guard.IsMaxLength(findingKey, MAX_FINDING_KEY_CHARACTERS))) ||
+		(findingKey !== undefined && typeof findingKey !== "string") ||
 		(memory !== undefined &&
 			(typeof memory !== "object" || memory === null || Array.isArray(memory)))
 	) {
 		return false;
 	}
-	if (memory === undefined) return true;
-	const nested = memory as Readonly<Record<string, unknown>>;
-	return (
-		(nested.text === undefined || typeof nested.text === "string") &&
-		isOptionalEnum(nested.category, MEMORY_SUGGESTION_CATEGORIES) &&
-		isOptionalEnum(nested.basis, MEMORY_SUGGESTION_BASES)
-	);
+	if (memory !== undefined) {
+		const nested = memory as Readonly<Record<string, unknown>>;
+		if (
+			(nested.text !== undefined && typeof nested.text !== "string") ||
+			!isOptionalEnum(nested.category, MEMORY_SUGGESTION_CATEGORIES) ||
+			!isOptionalEnum(nested.basis, MEMORY_SUGGESTION_BASES)
+		) {
+			return false;
+		}
+	}
+	try {
+		validateToolArguments(ADVISE_WIRE_VALIDATION_TOOL, {
+			type: "toolCall",
+			id: "advise-wire-validation",
+			name: "advise",
+			arguments: wire,
+		});
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 export function parseAdviseWireInput(input: AdviseWireInput): ParsedAdviceInput | undefined {
