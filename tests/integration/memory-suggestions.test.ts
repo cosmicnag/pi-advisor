@@ -117,6 +117,23 @@ function compatibleMemoryTool(execute = vi.fn()): ToolDefinition {
 	});
 }
 
+function failingMemoryTool(execute = vi.fn()): ToolDefinition {
+	return defineTool({
+		name: "memory_suggest",
+		label: "memory_suggest",
+		description: "Queue a pending memory suggestion.",
+		parameters: Type.Object({
+			text: Type.String(),
+			category: Type.Optional(StringEnum(["preference", "project"] as const)),
+			status: Type.Optional(StringEnum(["pending"] as const)),
+		}),
+		execute: (_id, params) => {
+			execute(params);
+			return Promise.reject(new Error("Pending suggestion queue failed"));
+		},
+	});
+}
+
 async function waitFor(predicate: () => boolean): Promise<void> {
 	await expect.poll(predicate, { timeout: 5_000, interval: 10 }).toBe(true);
 }
@@ -330,7 +347,10 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 	});
 
 	it("accepts complete Memory input while discarding unknown and review-only fields", async () => {
-		const primary = createPrimaryProvider([{ content: [{ type: "text", text: "answer" }] }]);
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "answer" }] },
+			{ content: [{ type: "text", text: "verified the automatic suggestion" }] },
+		]);
 		const advisor = createAdvisorProvider([
 			memorySuggestion(proposed, "portable-complete-memory", {
 				severity: "blocker",
@@ -355,7 +375,9 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 		});
 		try {
 			await harness.session.prompt("admit portable complete payload");
-			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			await waitFor(
+				() => primary.requests.length === 2 && runtime?.getStatus().notesDelivered === 1,
+			);
 			const entries = JSON.stringify(harness.sessionManager.getEntries());
 			expect(entries).toContain(proposed);
 			expect(entries).not.toContain("ROOT-PRIVATE-SENTINEL");
@@ -364,7 +386,7 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 			expect(runtime?.getStatus()).toMatchObject({
 				failedReviews: 0,
 				consecutiveFailures: 0,
-				memorySuggestionsDelivered: 0,
+				memorySuggestionsDelivered: 1,
 			});
 		} finally {
 			await harness.dispose();
@@ -432,28 +454,23 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 		});
 		try {
 			await harness.session.prompt("identify durable project guidance");
-			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			await waitFor(
+				() => primary.requests.length === 2 && runtime?.getStatus().notesDelivered === 1,
+			);
 			expect(runtime?.getStatus()).toMatchObject({
 				memorySuggestionCapability: { state: "available" },
 				memorySuggestionsEnabled: true,
-				memorySuggestionsDelivered: 0,
+				memorySuggestionsDelivered: 1,
 				memorySuggestionsRemaining: 4,
 			});
 			expect(JSON.stringify(advisor.requests[0]?.context)).toContain("memory-suggestion-policy");
-			if (runtime === undefined) throw new Error("Expected Advisor runtime");
-			const deferredQueue = Reflect.get(runtime, "pendingAdvice") as BoundedKeyedByteFifo<{
-				advice: AcceptedAdvice;
-			}>;
-			expect(deferredQueue.totalBytes).toBe(
-				Buffer.byteLength(memoryRationale, "utf8") + Buffer.byteLength(proposed, "utf8"),
-			);
 
-			await harness.session.prompt("handle the Memory suggestion");
 			const context = JSON.stringify(primary.requests[1]?.context);
 			expect(context).toContain('intent=\\"memory-suggestion\\"');
 			expect(context).toContain("<proposed-memory>");
 			expect(context).toContain(proposed);
 			expect(context).toContain('status \\"pending\\"');
+			expect(context).not.toContain("memory_save");
 			expect(context).toContain("without asking for another confirmation");
 			const entry = harness.sessionManager
 				.getEntries()
@@ -464,9 +481,10 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 			if (entry?.type !== "custom_message") throw new Error("Expected Memory suggestion entry");
 			expect(entry.details).toMatchObject({
 				intent: "memory-suggestion",
+				delivery: "active",
 				memory: { text: proposed, category: "project", basis: "project-constraint" },
 			});
-			expect(runtime.getStatus().memorySuggestionsDelivered).toBe(1);
+			expect(runtime?.getStatus().memorySuggestionsDelivered).toBe(1);
 		} finally {
 			await harness.dispose();
 		}
@@ -664,13 +682,16 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 		});
 		try {
 			await harness.session.prompt("prepare a Memory suggestion");
-			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
-			await harness.session.prompt("act on it");
+			await waitFor(
+				() => submit.mock.calls.length === 1 && runtime?.getStatus().reviewsCompleted === 3,
+			);
 			expect(submit).toHaveBeenCalledWith({
 				text: revised,
 				category: "project",
 				status: "pending",
 			});
+			expect(primary.requests).toHaveLength(3);
+			expect(runtime?.getStatus().memorySuggestionsDelivered).toBe(1);
 		} finally {
 			await harness.dispose();
 		}
@@ -701,13 +722,60 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 		});
 		try {
 			await harness.session.prompt("prepare a proposal to decline");
-			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
-			await harness.session.prompt("evaluate it");
+			await waitFor(() => primary.requests.length === 2 && runtime?.getStatus().backlog === false);
 			expect(submit).not.toHaveBeenCalled();
+			expect(advisor.requests).toHaveLength(1);
 			expect(JSON.stringify(primary.requests[1]?.context)).toContain(
 				"briefly explain why to the user",
 			);
 			expect(harness.session.messages.at(-1)).toMatchObject({ role: "assistant" });
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("surfaces a failed pending submission without an automatic retry", async () => {
+		const submit = vi.fn();
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "terminal answer" }] },
+			{
+				content: [
+					{
+						type: "toolCall",
+						id: "failed-memory-submission",
+						name: "memory_suggest",
+						arguments: { text: proposed, category: "project", status: "pending" },
+					},
+				],
+				stopReason: "toolUse",
+			},
+			{ content: [{ type: "text", text: "The pending suggestion could not be queued." }] },
+		]);
+		const advisor = createAdvisorProvider([
+			memorySuggestion(proposed),
+			{ content: [] },
+			{ content: [] },
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			customTools: [failingMemoryTool(submit)],
+			tools: ["memory_suggest"],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("prepare a proposal whose queue call fails");
+			await waitFor(
+				() => primary.requests.length === 3 && runtime?.getStatus().reviewsCompleted === 3,
+			);
+			expect(submit).toHaveBeenCalledTimes(1);
+			expect(primary.requests).toHaveLength(3);
+			expect(harness.session.messages.at(-1)).toMatchObject({
+				role: "assistant",
+				content: [{ type: "text", text: "The pending suggestion could not be queued." }],
+			});
 		} finally {
 			await harness.dispose();
 		}
@@ -801,6 +869,7 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 	it("floors a fractional per-session cap before admission", async () => {
 		const primary = createPrimaryProvider([
 			{ content: [{ type: "text", text: "answer one" }] },
+			{ content: [{ type: "text", text: "evaluated first suggestion" }] },
 			{ content: [{ type: "text", text: "answer two" }] },
 		]);
 		const advisor = createAdvisorProvider([
@@ -825,7 +894,7 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 		});
 		try {
 			await harness.session.prompt("first fractional-cap suggestion");
-			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			await waitFor(() => runtime?.getStatus().memorySuggestionsDelivered === 1);
 			await harness.session.prompt("second fractional-cap suggestion");
 			await waitFor(() => runtime?.getStatus().reviewsCompleted === 2);
 			expect(runtime?.getStatus()).toMatchObject({
@@ -867,7 +936,7 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 		});
 		try {
 			await harness.session.prompt("first suggestion");
-			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			await waitFor(() => runtime?.getStatus().memorySuggestionsDelivered === 1);
 			await harness.session.prompt("second suggestion");
 			await waitFor(() => runtime?.getStatus().reviewsCompleted === 2);
 			expect(runtime?.getStatus()).toMatchObject({
@@ -883,6 +952,7 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 	it("enforces turn cadence before admitting another distinct suggestion", async () => {
 		const primary = createPrimaryProvider([
 			{ content: [{ type: "text", text: "answer one" }] },
+			{ content: [{ type: "text", text: "evaluated first suggestion" }] },
 			{ content: [{ type: "text", text: "answer two" }] },
 		]);
 		const advisor = createAdvisorProvider([
@@ -907,7 +977,7 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 		});
 		try {
 			await harness.session.prompt("first cadence turn");
-			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			await waitFor(() => runtime?.getStatus().memorySuggestionsDelivered === 1);
 			await harness.session.prompt("too-soon cadence turn");
 			await waitFor(() => runtime?.getStatus().reviewsCompleted === 2);
 			expect(runtime?.getStatus()).toMatchObject({
@@ -922,6 +992,7 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 	it("enforces elapsed-time cadence before admitting another distinct suggestion", async () => {
 		const primary = createPrimaryProvider([
 			{ content: [{ type: "text", text: "answer one" }] },
+			{ content: [{ type: "text", text: "evaluated first suggestion" }] },
 			{ content: [{ type: "text", text: "answer two" }] },
 		]);
 		const advisor = createAdvisorProvider([
@@ -946,7 +1017,7 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 		});
 		try {
 			await harness.session.prompt("first interval suggestion");
-			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			await waitFor(() => runtime?.getStatus().memorySuggestionsDelivered === 1);
 			await harness.session.prompt("too-soon interval suggestion");
 			await waitFor(() => runtime?.getStatus().reviewsCompleted === 2);
 			expect(runtime?.getStatus()).toMatchObject({
@@ -962,6 +1033,7 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 	it("deduplicates repeated proposed memory independently of rationale wording", async () => {
 		const primary = createPrimaryProvider([
 			{ content: [{ type: "text", text: "answer one" }] },
+			{ content: [{ type: "text", text: "evaluated first suggestion" }] },
 			{ content: [{ type: "text", text: "answer two" }] },
 		]);
 		const second = memorySuggestion(`  ${proposed.toLocaleUpperCase("en-US")}  `, "dedupe-two");
@@ -980,7 +1052,7 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 		});
 		try {
 			await harness.session.prompt("first duplicate turn");
-			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			await waitFor(() => runtime?.getStatus().memorySuggestionsDelivered === 1);
 			await harness.session.prompt("second duplicate turn");
 			await waitFor(() => runtime?.getStatus().reviewsCompleted === 2);
 			expect(runtime?.getStatus()).toMatchObject({
@@ -992,12 +1064,102 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 		}
 	});
 
-	it("rechecks capability at deferred delivery and emits could-not-queue guidance", async () => {
+	it("orders near-idle user input before one late Memory suggestion delivery", async () => {
+		const advisorBarrier = createBarrier();
+		const executorBarrier = createBarrier();
+		const submit = vi.fn();
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "initial terminal answer" }] },
+			{
+				waitFor: executorBarrier.promise,
+				content: [{ type: "text", text: "answered the near-idle user input" }],
+			},
+			{
+				content: [
+					{
+						type: "toolCall",
+						id: "near-idle-memory-submission",
+						name: "memory_suggest",
+						arguments: { text: proposed, category: "project", status: "pending" },
+					},
+				],
+				stopReason: "toolUse",
+			},
+			{ content: [{ type: "text", text: "queued after the nearby user prompt" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			{ ...memorySuggestion(proposed), waitFor: advisorBarrier.promise },
+			{ content: [] },
+			{ content: [] },
+			{ content: [] },
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			customTools: [compatibleMemoryTool(submit)],
+			tools: ["memory_suggest"],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("produce a late Memory suggestion");
+			await waitFor(() => advisor.activeRequests === 1);
+
+			const nearbyTurn = harness.session.prompt("near-idle user input");
+			await waitFor(() => primary.requests.length === 2 && primary.activeRequests === 1);
+			advisorBarrier.release();
+			await waitFor(() => runtime?.getStatus().activeNotesPending === 1);
+			executorBarrier.release();
+			await nearbyTurn;
+			await waitFor(() => submit.mock.calls.length === 1 && primary.requests.length === 4);
+
+			const branch = harness.sessionManager.getBranch();
+			const indexContaining = (text: string): number =>
+				branch.findIndex((entry) => JSON.stringify(entry).includes(text));
+			const nearbyUserIndex = indexContaining("near-idle user input");
+			const nearbyAnswerIndex = indexContaining("answered the near-idle user input");
+			const suggestionIndex = branch.findIndex(
+				(entry) => entry.type === "custom_message" && entry.customType === "pi-advisor-note",
+			);
+			const submissionIndex = indexContaining("near-idle-memory-submission");
+			expect(nearbyUserIndex).toBeGreaterThan(-1);
+			expect(nearbyAnswerIndex).toBeGreaterThan(nearbyUserIndex);
+			expect(suggestionIndex).toBeGreaterThan(nearbyAnswerIndex);
+			expect(submissionIndex).toBeGreaterThan(suggestionIndex);
+			expect(
+				branch.filter(
+					(entry) => entry.type === "custom_message" && entry.customType === "pi-advisor-note",
+				),
+			).toHaveLength(1);
+			expect(submit).toHaveBeenCalledTimes(1);
+			expect(submit).toHaveBeenCalledWith({
+				text: proposed,
+				category: "project",
+				status: "pending",
+			});
+			expect(runtime?.getStatus()).toMatchObject({
+				memorySuggestionsDelivered: 1,
+				activeNotesPending: 0,
+				deferredNotesPending: 0,
+			});
+		} finally {
+			advisorBarrier.release();
+			executorBarrier.release();
+			await harness.dispose();
+		}
+	});
+
+	it("rechecks capability before idle dispatch and emits could-not-queue guidance", async () => {
+		const advisorBarrier = createBarrier();
 		const primary = createPrimaryProvider([
 			{ content: [{ type: "text", text: "terminal answer" }] },
 			{ content: [{ type: "text", text: "reported unavailable capability" }] },
 		]);
-		const advisor = createAdvisorProvider([memorySuggestion(proposed), { content: [] }]);
+		const advisor = createAdvisorProvider([
+			{ ...memorySuggestion(proposed), waitFor: advisorBarrier.promise },
+			{ content: [] },
+		]);
 		let runtime: AdvisorRuntime | undefined;
 		const harness = await createSessionHarness({
 			provider: primary,
@@ -1009,10 +1171,13 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 		});
 		try {
 			await harness.session.prompt("queue before capability loss");
-			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			await waitFor(() => advisor.activeRequests === 1);
 			if (runtime === undefined) throw new Error("Expected Advisor runtime");
 			const extensionApi = Reflect.get(runtime, "pi") as ExtensionAPI;
 			extensionApi.setActiveTools([]);
+			advisorBarrier.release();
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			expect(primary.requests).toHaveLength(1);
 			await harness.session.prompt("deliver after capability loss");
 			const context = JSON.stringify(primary.requests[1]?.context);
 			expect(context).toContain('queue-state=\\"could-not-queue\\"');
@@ -1020,6 +1185,7 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 			expect(context).not.toContain("then call memory_suggest with the chosen text");
 			expect(runtime.getStatus().memorySuggestionCapability.state).toBe("inactive");
 		} finally {
+			advisorBarrier.release();
 			await harness.dispose();
 		}
 	});

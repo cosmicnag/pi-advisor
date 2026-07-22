@@ -154,7 +154,11 @@ Only an accepted Advisory note enters the Executor context.
 Private Advisor reasoning, rejected notes, duplicate notes, content-free responses, and ordinary silent reviews remain outside the Executor context.
 
 Advice created during an active run reaches Pi's next steering boundary and does not abort a running tool.
-Late or interruption-time advice waits for the next user-driven turn without triggering another completion.
+Ordinary late or interruption-time advice waits for the next user-driven turn without triggering another completion.
+A current eligible Memory suggestion that arrives while the Executor is idle starts one automatic Executor follow-up so the Executor can verify or revise it and call the compatible `memory_suggest` tool with explicit `status: "pending"`.
+This can add one primary-model completion per accepted Memory suggestion, bounded by the configured cadence and session cap.
+The memory remains pending until the user approves or rejects it through the memory system's normal review flow.
+If compatible capability is absent, no Memory suggestion is produced and ordinary review is unchanged; if capability is lost before idle dispatch, no follow-up starts and the accepted suggestion is marked `could-not-queue` for bounded later presentation.
 Advice is marked potentially stale when the Executor has advanced beyond the reviewed window, and restored advice requires fresh verification.
 Every Advisor card has a severity-colored left border so it remains visually distinct from native tool-call cards; Memory suggestion cards use the Advisor accent color.
 

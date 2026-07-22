@@ -294,6 +294,19 @@ describe("Advisor presentation and diagnostics through Slice 5", () => {
 		).render(60);
 		const rendered = lines.join("\n");
 		expect(rendered).toContain("MEMORY SUGGESTION - COULD NOT QUEUE");
+		const activeMemoryNote = structuredClone(memoryNote);
+		activeMemoryNote.delivery = "active";
+		delete activeMemoryNote.queueState;
+		const activeRendered = renderAdviceCards(
+			[activeMemoryNote],
+			false,
+			fixtureTheme(false),
+			1_700_000_000_000,
+		)
+			.render(60)
+			.join("\n");
+		expect(activeRendered).toContain("active guidance");
+		expect(activeRendered).not.toContain("next-turn guidance");
 		expect(rendered).toContain("Proposed memory");
 		expect(rendered).toContain("sfw-prefixed pnpm");
 		expect(rendered).toContain("project-procedure");

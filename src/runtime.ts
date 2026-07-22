@@ -46,6 +46,7 @@ import {
 	MAX_DEFERRED_DELIVERY_BYTES,
 	MAX_PENDING_ADVICE_BYTES,
 	MAX_PENDING_ADVICE_ITEMS,
+	selectAdviceDispatch,
 	takeRenderedPrefix,
 } from "./delivery.js";
 import {
@@ -2513,11 +2514,12 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				if (session.messages.slice(messagesBeforeAttempt.length).some(validAssistantUsage)) {
 					this.usageAnchorInvalidated = false;
 				}
-				let delivered: boolean;
+				let delivery: AdviceDelivery | undefined;
 				try {
-					delivered =
-						accepted !== undefined &&
-						this.deliver(accepted, ctx, stale, run.deferAdvice, update.turnNumber, reviewId);
+					delivery =
+						accepted === undefined
+							? undefined
+							: this.deliver(accepted, ctx, stale, run.deferAdvice, update.turnNumber, reviewId);
 				} catch (error) {
 					this.rollbackNestedAttempt(session, messagesBeforeAttempt);
 					const reason = boundedReason(error);
@@ -2531,14 +2533,11 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				this.status.notesSuppressed += this.collector.suppressedCalls;
 				this.status.memorySuggestionsPolicySuppressed += this.collector.memoryPolicySuppressedCalls;
 				this.status.memorySuggestionsLimitSuppressed += this.collector.memoryLimitSuppressedCalls;
-				if (delivered && accepted !== undefined) {
+				if (delivery !== undefined && accepted !== undefined) {
 					persistOutcome(
 						{
 							outcome: "accepted",
-							delivery:
-								run.deferAdvice || ctx.signal?.aborted === true || ctx.isIdle()
-									? "deferred"
-									: "active",
+							delivery,
 							stale,
 						},
 						run.stopReason,
@@ -2706,7 +2705,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		forceDeferred: boolean,
 		turnNumber: number,
 		reviewId: string,
-	): boolean {
+	): AdviceDelivery | undefined {
 		const identity = adviceDedupeKey(advice);
 		if (
 			this.pendingAdvice.has(identity) ||
@@ -2714,10 +2713,19 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			this.adviceDedupe.has(advice)
 		) {
 			this.status.notesSuppressed++;
-			return false;
+			return undefined;
 		}
-		const deferred = forceDeferred || ctx.signal?.aborted === true || ctx.isIdle();
-		if (deferred) {
+		const dispatch = selectAdviceDispatch({
+			forceDeferred,
+			aborted: ctx.signal?.aborted === true,
+			idle: ctx.isIdle(),
+			stale,
+			memorySuggestion: advice.intent === "memory-suggestion",
+			memoryCapabilityAvailable:
+				advice.intent === "memory-suggestion" &&
+				this.refreshMemorySuggestionCapability().state === "available",
+		});
+		if (dispatch === "deferred") {
 			const pending: PendingAdvice = {
 				advice,
 				stale,
@@ -2734,7 +2742,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 						"Deferred Advisor queue reached its fixed item or byte bound; newer advice was suppressed.",
 					);
 				}
-				return false;
+				return undefined;
 			}
 			this.adviceDedupe.add(advice);
 			this.recordMemorySuggestionAdmission(advice, turnNumber);
@@ -2773,7 +2781,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 						"Active Advisor delivery queue reached its fixed item or serialized-byte bound; newer advice was suppressed.",
 					);
 				}
-				return false;
+				return undefined;
 			}
 			const admission = this.activeAdvice.enqueue(identity, outstanding, adviceQueueBytes(advice));
 			if (admission !== "accepted") {
@@ -2784,7 +2792,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 						"Active Advisor delivery queue reached its fixed item or byte bound; newer advice was suppressed.",
 					);
 				}
-				return false;
+				return undefined;
 			}
 			this.status.activeNotesPending = this.activeAdvice.length;
 			const previousAdmissions = this.memorySuggestionAdmissions;
@@ -2794,6 +2802,17 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			this.recordMemorySuggestionAdmission(advice, turnNumber);
 			this.persistState();
 			const queueState = this.memoryQueueState(advice);
+			if (dispatch === "followUp" && queueState === "could-not-queue") {
+				this.activeAdvice.remove(identity);
+				this.adviceDedupe.delete(advice);
+				this.memorySuggestionAdmissions = previousAdmissions;
+				if (previousTurn === undefined) delete this.lastMemorySuggestionTurn;
+				else this.lastMemorySuggestionTurn = previousTurn;
+				if (previousAt === undefined) delete this.lastMemorySuggestionAt;
+				else this.lastMemorySuggestionAt = previousAt;
+				this.status.activeNotesPending = this.activeAdvice.length;
+				return this.deliver(advice, ctx, stale, true, turnNumber, reviewId);
+			}
 			const details = this.adviceDetails(
 				advice,
 				"active",
@@ -2812,7 +2831,9 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 						display: true,
 						details: { ...details, notes: [details] },
 					},
-					{ deliverAs: "steer" },
+					dispatch === "followUp"
+						? { deliverAs: "followUp", triggerTurn: true }
+						: { deliverAs: "steer" },
 				);
 			} catch (error) {
 				this.activeAdvice.remove(identity);
@@ -2828,7 +2849,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				throw error;
 			}
 		}
-		return true;
+		return dispatch === "deferred" ? "deferred" : "active";
 	}
 
 	takeDeferredAdvice(

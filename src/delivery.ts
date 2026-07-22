@@ -3,6 +3,25 @@ export const MAX_PENDING_ADVICE_BYTES = 1_000_000;
 export const MAX_DEFERRED_DELIVERY_BYTES = 64 * 1_024;
 
 export type QueueAdmission = "accepted" | "duplicate" | "capacity";
+export type AdviceDispatch = "deferred" | "steer" | "followUp";
+
+export interface AdviceDispatchState {
+	forceDeferred: boolean;
+	aborted: boolean;
+	idle: boolean;
+	stale: boolean;
+	memorySuggestion: boolean;
+	memoryCapabilityAvailable: boolean;
+}
+
+export function selectAdviceDispatch(state: AdviceDispatchState): AdviceDispatch {
+	if (state.forceDeferred || state.aborted) return "deferred";
+	if (!state.idle) return "steer";
+	if (state.memorySuggestion && !state.stale && state.memoryCapabilityAvailable) {
+		return "followUp";
+	}
+	return "deferred";
+}
 
 export interface RenderedQueueItem<T> {
 	key: string;
