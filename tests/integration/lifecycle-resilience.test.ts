@@ -1799,6 +1799,7 @@ describe.sequential("Slice 3A branch, compaction, and persistence lifecycle", ()
 		appendState(newManager, copiedState);
 		const newPrimary = createPrimaryProvider([
 			{ content: [{ type: "text", text: "genuinely new session answer" }] },
+			{ content: [{ type: "text", text: "evaluated the fresh Memory suggestion" }] },
 		]);
 		const newAdvisor = createAdvisorProvider([memorySuggestion(proposed, "new-session-memory")]);
 		let newRuntime: AdvisorRuntime | undefined;
@@ -1824,7 +1825,7 @@ describe.sequential("Slice 3A branch, compaction, and persistence lifecycle", ()
 				memorySuggestionsRemaining: 1,
 			});
 			await newHarness.session.prompt("new session gets a fresh Memory allowance");
-			await waitFor(() => newRuntime?.getStatus().deferredNotesPending === 1);
+			await waitFor(() => newRuntime?.getStatus().memorySuggestionsDelivered === 1);
 			expect(newRuntime?.getStatus()).toMatchObject({
 				memorySuggestionsRemaining: 0,
 				memorySuggestionsLimitSuppressed: 0,
