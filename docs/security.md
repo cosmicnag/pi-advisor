@@ -100,7 +100,7 @@ Fixed Advisor policy and code-enforced safety controls remain higher authority t
 Advisor input, output, cache-read, cache-write, total-token, and provider-reported cost accounting remains visible for the lifetime of the runtime.
 The cumulative token and reported-cost caps default to `off` so private-context maintenance does not stop normal background review merely because cache-heavy lifetime totals grow.
 Users who require a spending stop can configure a positive token cap, reported-cost cap, or both.
-Provider reporting can be missing or incomplete, and Pi 0.80.7 does not expose nested compaction usage, so these controls cannot guarantee a complete monetary bound.
+Provider reporting can be missing or incomplete, and Pi Advisor does not yet add the nested compaction usage exposed by Pi 0.81.1 to its exact governor totals, so these controls cannot guarantee a complete monetary bound.
 Clearing private Advisor context does not reset or conceal lifetime usage totals.
 
 ## Persistence
@@ -114,6 +114,14 @@ Valid legacy version 1 records may still contain bounded bodies written by earli
 Redaction and bounding reduce risk but cannot guarantee detection of every sensitive value in paths or search patterns.
 Delete the associated Pi session if you need to remove existing records.
 See the [configuration reference](configuration.md#persistence-retention-inspection-and-deletion) for exact record fields and retention behavior.
+
+## Runtime compatibility
+
+Pi Advisor 0.2.0 requires Pi `>=0.81.1 <0.82.0`.
+Pi 0.80.x is incompatible with this release, and Pi Advisor 0.1.3 remains the legacy release for Pi 0.80.7.
+Advisor mirrors public provider registration inputs into an isolated runtime and requires strict effective authentication, headers, environment, base URL, and model-request parity before activation.
+Missing credentials, missing providers, or parity that cannot be verified leaves Advisor inactive without fallback or a nested provider request.
+Runtime-only credentials are copied only in memory and are never persisted by Advisor.
 
 ## Residual risks
 

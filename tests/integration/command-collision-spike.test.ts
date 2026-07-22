@@ -11,7 +11,7 @@ function commandNames(commands: SlashCommandInfo[]): string[] {
 		.map((command) => command.name);
 }
 
-describe("Pi 0.80.7 duplicate command spike", () => {
+describe("Pi 0.81.1 duplicate command spike", () => {
 	it("assigns numeric suffixes before session_start and supports one warning per extension instance", async () => {
 		const observed: { phase: string; names: string[] }[] = [];
 		let warnings = 0;

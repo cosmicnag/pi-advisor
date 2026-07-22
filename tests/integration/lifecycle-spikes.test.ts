@@ -9,7 +9,7 @@ function textMessage(role: "user", text: string) {
 	return { role, content: text, timestamp: Date.now() } as const;
 }
 
-describe.sequential("Pi 0.80.7 branch and lifecycle spikes", () => {
+describe.sequential("Pi 0.81.1 branch and lifecycle spikes", () => {
 	it("keeps append-only entry IDs stable across equal-length branch changes and compaction context building", () => {
 		const manager = SessionManager.inMemory();
 		const firstUserId = manager.appendMessage(textMessage("user", "root"));

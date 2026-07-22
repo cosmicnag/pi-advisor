@@ -2,13 +2,12 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { registerApiProvider, unregisterApiProviders } from "@earendil-works/pi-ai/compat";
+import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import {
-	AuthStorage,
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
-	ModelRegistry,
+	ModelRuntime,
 	SessionManager,
 	SettingsManager,
 	type AgentSessionRuntime,
@@ -23,10 +22,31 @@ import {
 	type AdvisorRuntime,
 } from "../../src/index.js";
 import {
-	SCRIPTED_API,
 	createAdvisorProvider,
 	createPrimaryProvider,
+	type ScriptedProvider,
 } from "../fixtures/scripted-provider.js";
+
+function registerScriptedProvider(modelRuntime: ModelRuntime, provider: ScriptedProvider): void {
+	modelRuntime.registerProvider(provider.model.provider, {
+		baseUrl: provider.model.baseUrl,
+		api: provider.model.api,
+		streamSimple: provider.streamSimple,
+		models: [
+			{
+				id: provider.model.id,
+				name: provider.model.name,
+				api: provider.model.api,
+				baseUrl: provider.model.baseUrl,
+				reasoning: provider.model.reasoning,
+				input: provider.model.input,
+				cost: provider.model.cost,
+				contextWindow: provider.model.contextWindow,
+				maxTokens: provider.model.maxTokens,
+			},
+		],
+	});
+}
 
 async function waitFor(predicate: () => boolean): Promise<void> {
 	await expect.poll(predicate, { timeout: 5_000, interval: 10 }).toBe(true);
@@ -46,12 +66,10 @@ function acceptedAdvice(note: string) {
 	};
 }
 
-describe("Pi 0.80.7 session replacement spike", () => {
+describe("Pi 0.81.1 session replacement spike", () => {
 	it("shuts down the old extension instance before rebinding a replacement session", async () => {
 		const lifecycle: string[] = [];
-		const sourceId = "pi-advisor-session-replacement-spike";
 		let root: string | undefined;
-		let providerRegistered = false;
 		let runtime: AgentSessionRuntime | undefined;
 
 		try {
@@ -78,18 +96,15 @@ describe("Pi 0.80.7 session replacement spike", () => {
 				{ content: [{ type: "text", text: "old session" }] },
 				{ content: [{ type: "text", text: "new session" }] },
 			]);
-			const authStorage = AuthStorage.inMemory();
-			authStorage.setRuntimeApiKey(provider.model.provider, "scripted-key");
-			const modelRegistry = ModelRegistry.inMemory(authStorage);
-			registerApiProvider(
-				{
-					api: SCRIPTED_API,
-					stream: provider.streamSimple,
-					streamSimple: provider.streamSimple,
-				},
-				sourceId,
-			);
-			providerRegistered = true;
+			const modelRuntime = await ModelRuntime.create({
+				credentials: new InMemoryCredentialStore(),
+				modelsPath: null,
+				allowModelNetwork: false,
+			});
+			registerScriptedProvider(modelRuntime, provider);
+			await modelRuntime.setRuntimeApiKey(provider.model.provider, "scripted-key", {
+				allowNetwork: false,
+			});
 			const settingsManager = SettingsManager.inMemory({
 				compaction: { enabled: false },
 				retry: { enabled: false },
@@ -102,8 +117,7 @@ describe("Pi 0.80.7 session replacement spike", () => {
 				const services = await createAgentSessionServices({
 					cwd: runtimeCwd,
 					agentDir,
-					authStorage,
-					modelRegistry,
+					modelRuntime,
 					settingsManager,
 					resourceLoaderOptions: {
 						extensionFactories: [extension],
@@ -159,7 +173,6 @@ describe("Pi 0.80.7 session replacement spike", () => {
 			).toBe(false);
 		} finally {
 			if (runtime !== undefined) await runtime.dispose();
-			if (providerRegistered) unregisterApiProviders(sourceId);
 			if (root !== undefined) await rm(root, { recursive: true, force: true });
 		}
 
@@ -173,11 +186,8 @@ describe("Pi 0.80.7 session replacement spike", () => {
 
 	it("does not deliver old-session deferred advice after runtime replacement", async () => {
 		const oldNote = "Never carry this queued old-session advice into the replacement session.";
-		const sourceId = "pi-advisor-session-replacement-isolation";
 		let root: string | undefined;
-		let providerRegistered = false;
 		let runtime: AgentSessionRuntime | undefined;
-		let modelRegistry: ModelRegistry | undefined;
 		const advisorRuntimes: AdvisorRuntime[] = [];
 
 		try {
@@ -206,39 +216,19 @@ describe("Pi 0.80.7 session replacement spike", () => {
 				}),
 			};
 
-			const authStorage = AuthStorage.inMemory();
-			authStorage.setRuntimeApiKey(primary.model.provider, "scripted-key");
-			authStorage.setRuntimeApiKey(advisor.model.provider, "scripted-advisor-key");
-			const replacementModelRegistry = ModelRegistry.inMemory(authStorage);
-			modelRegistry = replacementModelRegistry;
-			replacementModelRegistry.registerProvider(advisor.model.provider, {
-				baseUrl: advisor.model.baseUrl,
-				api: advisor.model.api,
-				apiKey: "scripted-advisor-key",
-				streamSimple: advisor.streamSimple,
-				models: [
-					{
-						id: advisor.model.id,
-						name: advisor.model.name,
-						api: advisor.model.api,
-						baseUrl: advisor.model.baseUrl,
-						reasoning: advisor.model.reasoning,
-						input: advisor.model.input,
-						cost: advisor.model.cost,
-						contextWindow: advisor.model.contextWindow,
-						maxTokens: advisor.model.maxTokens,
-					},
-				],
+			const modelRuntime = await ModelRuntime.create({
+				credentials: new InMemoryCredentialStore(),
+				modelsPath: null,
+				allowModelNetwork: false,
 			});
-			registerApiProvider(
-				{
-					api: SCRIPTED_API,
-					stream: primary.streamSimple,
-					streamSimple: primary.streamSimple,
-				},
-				sourceId,
-			);
-			providerRegistered = true;
+			registerScriptedProvider(modelRuntime, primary);
+			registerScriptedProvider(modelRuntime, advisor);
+			await modelRuntime.setRuntimeApiKey(primary.model.provider, "scripted-key", {
+				allowNetwork: false,
+			});
+			await modelRuntime.setRuntimeApiKey(advisor.model.provider, "scripted-advisor-key", {
+				allowNetwork: false,
+			});
 			const settingsManager = SettingsManager.inMemory({
 				compaction: { enabled: false },
 				retry: { enabled: false },
@@ -251,8 +241,7 @@ describe("Pi 0.80.7 session replacement spike", () => {
 				const services = await createAgentSessionServices({
 					cwd: runtimeCwd,
 					agentDir,
-					authStorage,
-					modelRegistry: replacementModelRegistry,
+					modelRuntime,
 					settingsManager,
 					resourceLoaderOptions: {
 						extensionFactories: [advisorExtension],
@@ -308,10 +297,6 @@ describe("Pi 0.80.7 session replacement spike", () => {
 			expect(JSON.stringify(runtime.session.messages)).not.toContain(oldNote);
 		} finally {
 			if (runtime !== undefined) await runtime.dispose();
-			if (modelRegistry !== undefined) {
-				modelRegistry.unregisterProvider("pi-advisor-fixture-advisor");
-			}
-			if (providerRegistered) unregisterApiProviders(sourceId);
 			if (root !== undefined) await rm(root, { recursive: true, force: true });
 		}
 	});

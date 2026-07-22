@@ -44,7 +44,8 @@ Protected paths, activation, limits, Memory suggestions, persistence, and other 
 | `/advisor off`         | Disables this session   | Disables this session   | Available only where commands are processed | Available only where commands are processed | None               |
 
 Activation never chooses a model automatically.
-A missing model, unavailable model, missing credentials, or incompatible critical Pi API leaves Advisor inactive without fallback.
+Pi Advisor 0.2.0 requires Pi `>=0.81.1 <0.82.0`; Pi Advisor 0.1.3 remains the legacy release for Pi 0.80.7.
+A missing model, unavailable model, missing credentials, incompatible critical Pi API, or provider parity that cannot be verified leaves Advisor inactive without fallback.
 Project configuration can never activate Advisor.
 
 ## Ownership and merge rules
@@ -124,7 +125,7 @@ Input, output, cache-read, cache-write, total-token, and provider-reported cost 
 A trusted Project finite cap may narrow a User `off` value.
 A Project `off` value cannot disable or raise a finite User cap.
 Provider pricing or usage can be absent or incomplete, so explicitly enabled token and dollar caps remain independent safeguards.
-Compaction request usage is unavailable in Pi 0.80.7 and is counted separately rather than estimated into exact totals.
+Pi 0.81.1 exposes nested compaction usage, but Pi Advisor does not yet consume it in its exact governor totals.
 
 ### Protected paths
 
@@ -268,7 +269,7 @@ Provider requests are necessary for the explicitly selected Advisor model, while
 
 Pi Advisor performs automatic background review.
 `@juicesharp/rpiv-advisor` provides an Executor-invoked consultation tool.
-Both can be installed, and Pi 0.80.7 assigns `/advisor:1` and `/advisor:2` according to extension load order.
+Both can be installed, and Pi 0.81.1 assigns `/advisor:1` and `/advisor:2` according to extension load order.
 Pi Advisor warns once when duplicate assigned Advisor commands are detectable.
 It does not disable the other package, remove its tool, edit its configuration, or block startup.
 Use Pi's command list to identify each suffixed command.

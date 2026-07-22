@@ -2,12 +2,11 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { registerApiProvider, unregisterApiProviders } from "@earendil-works/pi-ai/compat";
+import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import {
-	AuthStorage,
 	createAgentSession,
 	DefaultResourceLoader,
-	ModelRegistry,
+	ModelRuntime,
 	SessionManager,
 	SettingsManager,
 	type AgentSession,
@@ -15,7 +14,7 @@ import {
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
-import { SCRIPTED_API, type ScriptedProvider } from "./scripted-provider.js";
+import { type ScriptedProvider } from "./scripted-provider.js";
 
 export interface SessionHarnessOptions {
 	provider: ScriptedProvider;
@@ -26,28 +25,45 @@ export interface SessionHarnessOptions {
 	tools?: string[];
 	mode?: "tui" | "rpc" | "json" | "print";
 	setup?(cwd: string, agentDir: string): Promise<void>;
+	beforeBind?(modelRuntime: ModelRuntime): Promise<void> | void;
 }
 
 export interface SessionHarness {
 	session: AgentSession;
 	sessionManager: SessionManager;
+	modelRuntime: ModelRuntime;
 	cwd: string;
 	agentDir: string;
 	dispose(): Promise<void>;
 }
 
-let harnessId = 0;
+function registerScriptedProvider(modelRuntime: ModelRuntime, provider: ScriptedProvider): void {
+	modelRuntime.registerProvider(provider.model.provider, {
+		baseUrl: provider.model.baseUrl,
+		api: provider.model.api,
+		streamSimple: provider.streamSimple,
+		models: [
+			{
+				id: provider.model.id,
+				name: provider.model.name,
+				api: provider.model.api,
+				baseUrl: provider.model.baseUrl,
+				reasoning: provider.model.reasoning,
+				input: provider.model.input,
+				cost: provider.model.cost,
+				contextWindow: provider.model.contextWindow,
+				maxTokens: provider.model.maxTokens,
+			},
+		],
+	});
+}
 
 export async function createSessionHarness(
 	options: SessionHarnessOptions,
 ): Promise<SessionHarness> {
-	const root = await mkdtemp(join(tmpdir(), "pi-advisor-slice0-"));
+	const root = await mkdtemp(join(tmpdir(), "pi-advisor-"));
 	const cwd = join(root, "project");
 	const agentDir = join(root, "agent");
-	const sourceId = `pi-advisor-scripted-${String(harnessId++)}`;
-	let providerRegistered = false;
-	let advisorRegistered = false;
-	let modelRegistry: ModelRegistry | undefined;
 	let session: AgentSession | undefined;
 
 	try {
@@ -55,42 +71,25 @@ export async function createSessionHarness(
 		await mkdir(agentDir, { recursive: true });
 		await options.setup?.(cwd, agentDir);
 
-		const authStorage = AuthStorage.inMemory();
-		authStorage.setRuntimeApiKey(options.provider.model.provider, "scripted-key");
-		modelRegistry = ModelRegistry.inMemory(authStorage);
-		registerApiProvider(
-			{
-				api: SCRIPTED_API,
-				stream: options.provider.streamSimple,
-				streamSimple: options.provider.streamSimple,
-			},
-			sourceId,
-		);
-		providerRegistered = true;
+		const modelRuntime = await ModelRuntime.create({
+			credentials: new InMemoryCredentialStore(),
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
+		registerScriptedProvider(modelRuntime, options.provider);
+		await modelRuntime.setRuntimeApiKey(options.provider.model.provider, "scripted-key", {
+			allowNetwork: false,
+		});
 		if (options.advisorProvider !== undefined) {
-			const advisor = options.advisorProvider;
-			authStorage.setRuntimeApiKey(advisor.model.provider, "scripted-advisor-key");
-			modelRegistry.registerProvider(advisor.model.provider, {
-				baseUrl: advisor.model.baseUrl,
-				api: advisor.model.api,
-				apiKey: "scripted-advisor-key",
-				streamSimple: advisor.streamSimple,
-				models: [
-					{
-						id: advisor.model.id,
-						name: advisor.model.name,
-						api: advisor.model.api,
-						baseUrl: advisor.model.baseUrl,
-						reasoning: advisor.model.reasoning,
-						input: advisor.model.input,
-						cost: advisor.model.cost,
-						contextWindow: advisor.model.contextWindow,
-						maxTokens: advisor.model.maxTokens,
-					},
-				],
-			});
-			advisorRegistered = true;
+			registerScriptedProvider(modelRuntime, options.advisorProvider);
+			await modelRuntime.setRuntimeApiKey(
+				options.advisorProvider.model.provider,
+				"scripted-advisor-key",
+				{ allowNetwork: false },
+			);
 		}
+		await options.beforeBind?.(modelRuntime);
+
 		const settingsManager = SettingsManager.inMemory({
 			compaction: { enabled: false },
 			retry: { enabled: false },
@@ -104,7 +103,7 @@ export async function createSessionHarness(
 			noPromptTemplates: true,
 			noThemes: true,
 			noContextFiles: true,
-			systemPromptOverride: () => "Scripted Pi Slice 0 test session.",
+			systemPromptOverride: () => "Scripted Pi Advisor test session.",
 			appendSystemPromptOverride: () => [],
 		});
 		await resourceLoader.reload();
@@ -113,8 +112,7 @@ export async function createSessionHarness(
 		({ session } = await createAgentSession({
 			cwd,
 			agentDir,
-			authStorage,
-			modelRegistry,
+			modelRuntime,
 			model: options.provider.model,
 			thinkingLevel: "off",
 			resourceLoader,
@@ -129,25 +127,18 @@ export async function createSessionHarness(
 		return {
 			session,
 			sessionManager,
+			modelRuntime,
 			cwd,
 			agentDir,
 			async dispose() {
 				if (disposed) return;
 				disposed = true;
 				session?.dispose();
-				if (advisorRegistered && options.advisorProvider !== undefined) {
-					modelRegistry?.unregisterProvider(options.advisorProvider.model.provider);
-				}
-				unregisterApiProviders(sourceId);
 				await rm(root, { recursive: true, force: true });
 			},
 		};
 	} catch (error) {
 		session?.dispose();
-		if (advisorRegistered && options.advisorProvider !== undefined) {
-			modelRegistry?.unregisterProvider(options.advisorProvider.model.provider);
-		}
-		if (providerRegistered) unregisterApiProviders(sourceId);
 		await rm(root, { recursive: true, force: true });
 		throw error;
 	}
