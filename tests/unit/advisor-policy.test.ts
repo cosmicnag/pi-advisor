@@ -1,9 +1,10 @@
 import { estimateContextTokens } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { validateToolArguments, type AssistantMessage } from "@earendil-works/pi-ai";
 import { SessionManager, type TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+	ADVISE_WIRE_SCHEMA,
 	adviceDedupeKey,
 	boundAdvice,
 	BoundedAdviceDedupe,
@@ -11,12 +12,14 @@ import {
 	ADVISOR_CUSTOM_TYPE,
 	ADVISOR_TRANSCRIPT_RECORD_VERSION,
 	DEFAULT_ADVISOR_CONFIG,
+	createAdviseTool,
 	estimateAdvisorContext,
 	estimateTokens,
 	formatAdviceForDelivery,
 	formatAdvisorEnableStatus,
 	formatAdvisorStatus,
 	HARD_LIMITS,
+	isAdviseWireInput,
 	isContentFreeAdvice,
 	isMeaningfulExecutorTurn,
 	MAX_ADVISOR_TOOL_RESULT_BYTES,
@@ -25,6 +28,7 @@ import {
 	measureAdvisorToolOutput,
 	normalizeAdviceForDedupe,
 	normalizeAdvisorConfig,
+	parseAdviseWireInput,
 	parsePersistedAdvisorTranscriptRecord,
 	PROPOSED_ADVISOR_CONFIG,
 	redactSecrets,
@@ -33,6 +37,7 @@ import {
 	successfulMemoryToolTexts,
 	takeRenderedPrefix,
 	type AdviceDedupeIdentity,
+	type AdviseWireInput,
 	type AdvisorRuntimeStatus,
 } from "../../src/index.js";
 
@@ -65,6 +70,148 @@ function assistant(
 		timestamp: Date.now(),
 	};
 }
+
+describe("portable advise wire contract", () => {
+	it("projects a complete top-level object contract without root composition", () => {
+		const tool = createAdviseTool(DEFAULT_ADVISOR_CONFIG, {
+			validCalls: 0,
+			suppressedCalls: 0,
+			memoryPolicySuppressedCalls: 0,
+			memoryLimitSuppressedCalls: 0,
+		});
+		const schema: Record<string, unknown> = { ...ADVISE_WIRE_SCHEMA };
+		expect(schema.type).toBe("object");
+		expect(schema.required).toEqual(["note"]);
+		expect(schema).not.toHaveProperty("anyOf");
+		expect(schema).not.toHaveProperty("oneOf");
+		expect(schema).not.toHaveProperty("allOf");
+		expect(schema).not.toHaveProperty("additionalProperties");
+		const properties = schema.properties as Record<string, Record<string, unknown>>;
+		expect(Object.keys(properties)).toEqual(["note", "intent", "severity", "findingKey", "memory"]);
+		expect(properties.memory).not.toHaveProperty("additionalProperties");
+		expect(properties.memory?.required).toBeUndefined();
+
+		const anthropicProjection = {
+			type: "object",
+			properties: schema.properties,
+			required: schema.required,
+		};
+		expect(anthropicProjection.properties).toEqual(schema.properties);
+		expect(anthropicProjection.required).toEqual(["note"]);
+		for (const description of [
+			tool.description,
+			properties.intent?.description,
+			properties.memory?.description,
+		]) {
+			expect(description).toContain("memory.text");
+			expect(description).toContain("memory.category");
+			expect(description).toContain("memory.basis");
+			expect(description).toContain("Otherwise omit memory");
+		}
+	});
+
+	it("matches TypeBox grapheme-length validation at findingKey boundaries", () => {
+		const tool = createAdviseTool(DEFAULT_ADVISOR_CONFIG, {
+			validCalls: 0,
+			suppressedCalls: 0,
+			memoryPolicySuppressedCalls: 0,
+			memoryLimitSuppressedCalls: 0,
+		});
+		const familyGrapheme = "👨‍👩‍👧‍👦";
+		const accepted = { note: "x", findingKey: familyGrapheme.repeat(200) };
+		const rejected = { note: "x", findingKey: familyGrapheme.repeat(201) };
+
+		expect(isAdviseWireInput({ note: "x", findingKey: "k".repeat(200) })).toBe(true);
+		expect(isAdviseWireInput({ note: "" })).toBe(false);
+		expect(isAdviseWireInput({ note: "x", findingKey: "" })).toBe(false);
+		expect(isAdviseWireInput({ note: "x", findingKey: "k".repeat(201) })).toBe(false);
+		expect(isAdviseWireInput(accepted)).toBe(true);
+		expect(isAdviseWireInput(rejected)).toBe(false);
+		expect(() => {
+			validateToolArguments(tool, {
+				type: "toolCall",
+				id: "accepted-grapheme-key",
+				name: "advise",
+				arguments: accepted,
+			});
+		}).not.toThrow();
+		expect(() => {
+			validateToolArguments(tool, {
+				type: "toolCall",
+				id: "rejected-grapheme-key",
+				name: "advise",
+				arguments: rejected,
+			});
+		}).toThrow();
+	});
+
+	it("parses strict review and complete Memory inputs while discarding unknown fields", () => {
+		const reviewWire = {
+			note: "Verify the rollback.",
+			severity: "blocker",
+			findingKey: "migration-rollback",
+			memory: { text: "ignored for review", nestedUnknown: "discard me" },
+			rootUnknown: "discard me",
+		} satisfies AdviseWireInput & {
+			rootUnknown: string;
+			memory: { text: string; nestedUnknown: string };
+		};
+		expect(parseAdviseWireInput(reviewWire)).toEqual({
+			note: "Verify the rollback.",
+			intent: "review",
+			severity: "blocker",
+			findingKey: "migration-rollback",
+		});
+
+		const memoryWire = {
+			note: "This durable constraint matters later.",
+			intent: "memory-suggestion",
+			severity: "nit",
+			findingKey: "ignored",
+			memory: {
+				text: "Use pnpm for package installation.",
+				category: "project",
+				basis: "project-constraint",
+				nestedUnknown: "discard me",
+			},
+			rootUnknown: "discard me",
+		} satisfies AdviseWireInput & {
+			rootUnknown: string;
+			memory: AdviseWireInput["memory"] & { nestedUnknown: string };
+		};
+		expect(parseAdviseWireInput(memoryWire)).toEqual({
+			note: "This durable constraint matters later.",
+			intent: "memory-suggestion",
+			memory: {
+				text: "Use pnpm for package installation.",
+				category: "project",
+				basis: "project-constraint",
+			},
+		});
+	});
+
+	it.each([
+		{ label: "absent memory" },
+		{ label: "missing text", memory: { category: "project", basis: "project-constraint" } },
+		{ label: "missing category", memory: { text: "durable", basis: "project-constraint" } },
+		{ label: "missing basis", memory: { text: "durable", category: "project" } },
+		{
+			label: "empty text",
+			memory: { text: "   ", category: "project", basis: "project-constraint" },
+		},
+	] satisfies readonly {
+		label: string;
+		memory?: NonNullable<AdviseWireInput["memory"]>;
+	}[])("suppresses $label at the typed boundary", ({ memory }) => {
+		expect(
+			parseAdviseWireInput({
+				note: "Potential durable context.",
+				intent: "memory-suggestion",
+				...(memory === undefined ? {} : { memory }),
+			}),
+		).toBeUndefined();
+	});
+});
 
 function runtimeStatus(): AdvisorRuntimeStatus {
 	return {
@@ -256,8 +403,10 @@ describe("Slice 1 configuration and emission policy", () => {
 		expect(estimateTokens(result.note)).toBeLessThanOrEqual(10);
 	});
 
-	it("suppresses only normalized content-free phrases", () => {
+	it("suppresses normalized approval, whitespace-only, and punctuation-only notes", () => {
 		expect(isContentFreeAdvice("  LOOKS GOOD!!! ")).toBe(true);
+		expect(isContentFreeAdvice("   \t\n ")).toBe(true);
+		expect(isContentFreeAdvice("... !!! --")).toBe(true);
 		expect(isContentFreeAdvice("Stop: this migration deletes production rows.")).toBe(false);
 	});
 

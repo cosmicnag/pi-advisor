@@ -10,6 +10,8 @@ import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+	ADVISOR_ARGUMENT_VALIDATION_FAILURE,
+	ADVISOR_INTERNAL_EXECUTION_FAILURE,
 	ADVISOR_LATE_ENTRY_TYPE,
 	adviceDedupeKey,
 	createPiAdvisorExtension,
@@ -1115,7 +1117,41 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 		}
 	});
 
-	it("counts a malformed advise call as a failed update", async () => {
+	it("suppresses whitespace-only and punctuation-only review notes", async () => {
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "first answer" }] },
+			{ content: [{ type: "text", text: "second answer" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			acceptedAdvice("   \t ", "blank-review"),
+			acceptedAdvice("... !!! --", "punctuation-review"),
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			for (const [index, prompt] of ["blank review", "punctuation review"].entries()) {
+				await harness.session.prompt(prompt);
+				await waitFor(() => runtime?.getStatus().reviewsCompleted === index + 1);
+			}
+			expect(runtime?.getStatus()).toMatchObject({
+				silentReviews: 2,
+				notesSuppressed: 2,
+				notesDelivered: 0,
+				deferredNotesPending: 0,
+			});
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("classifies malformed advise arguments without exposing generated or validator text", async () => {
+		const privateArgument = "GENERATED-PRIVATE-ARGUMENT-SENTINEL";
 		const primary = createPrimaryProvider([{ content: [{ type: "text", text: "answer" }] }]);
 		const advisor = createAdvisorProvider([
 			{
@@ -1124,7 +1160,7 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 						type: "toolCall",
 						id: "malformed-advise",
 						name: "advise",
-						arguments: { severity: "concern" },
+						arguments: { severity: "concern", privateArgument },
 					},
 				],
 				stopReason: "toolUse",
@@ -1141,10 +1177,78 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 		try {
 			await harness.session.prompt("trigger malformed advise");
 			await waitFor(() => runtime?.getStatus().failedReviews === 1);
-			expect(runtime?.getStatus().lastFailure).toContain("advise");
+			expect(runtime?.getStatus().lastFailure).toBe(ADVISOR_ARGUMENT_VALIDATION_FAILURE);
+			expect(ADVISOR_ARGUMENT_VALIDATION_FAILURE).toContain("selected Advisor model");
+			expect(ADVISOR_ARGUMENT_VALIDATION_FAILURE).toContain("/advisor configure");
+			expect(ADVISOR_ARGUMENT_VALIDATION_FAILURE).toContain("/advisor on");
+			expect(ADVISOR_ARGUMENT_VALIDATION_FAILURE).not.toContain(privateArgument);
+			expect(JSON.stringify(harness.sessionManager.getEntries())).not.toContain(privateArgument);
 			expect(runtime?.getNestedMessageCount()).toBe(0);
 			expect(runtime?.getStatus().notesDelivered).toBe(0);
+			expect(Reflect.get(runtime as object, "currentRun")).toBeUndefined();
 		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("classifies a validated advise execution failure at a zero read-only budget", async () => {
+		const advisorBarrier = createBarrier();
+		const rawExecutionError = "RAW-EXECUTION-PRIVATE-SENTINEL";
+		const primary = createPrimaryProvider([{ content: [{ type: "text", text: "answer" }] }]);
+		const advisor = createAdvisorProvider([
+			{
+				...acceptedAdvice("Exercise the validated execution path."),
+				waitFor: advisorBarrier.promise,
+			},
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [
+				extensionFor(
+					configFor(advisor, (config) => {
+						config.limits.maxToolCallsPerUpdate = 0;
+					}),
+					(value) => (runtime = value),
+				),
+			],
+			tools: [],
+			mode: "rpc",
+		});
+		let originalMaximum: number | undefined;
+		try {
+			const turn = harness.session.prompt("trigger validated execution failure");
+			await waitFor(() => advisor.activeRequests === 1);
+			if (runtime === undefined) throw new Error("Expected Advisor runtime");
+			const activeConfig = Reflect.get(runtime, "config") as AdvisorConfig;
+			originalMaximum = activeConfig.limits.maxAdviceCharacters;
+			Object.defineProperty(activeConfig.limits, "maxAdviceCharacters", {
+				configurable: true,
+				get: () => {
+					throw new Error(rawExecutionError);
+				},
+			});
+			advisorBarrier.release();
+			await turn;
+			await waitFor(() => runtime?.getStatus().failedReviews === 1);
+			expect(runtime.getStatus().lastFailure).toBe(ADVISOR_INTERNAL_EXECUTION_FAILURE);
+			expect(ADVISOR_INTERNAL_EXECUTION_FAILURE).toContain("internal");
+			expect(ADVISOR_INTERNAL_EXECUTION_FAILURE).not.toContain("selected Advisor model");
+			expect(ADVISOR_INTERNAL_EXECUTION_FAILURE).not.toContain("/advisor configure");
+			expect(ADVISOR_INTERNAL_EXECUTION_FAILURE).not.toContain(rawExecutionError);
+			expect(JSON.stringify(harness.sessionManager.getEntries())).not.toContain(rawExecutionError);
+			expect(Reflect.get(runtime, "currentRun")).toBeUndefined();
+		} finally {
+			advisorBarrier.release();
+			if (runtime !== undefined && originalMaximum !== undefined) {
+				const activeConfig = Reflect.get(runtime, "config") as AdvisorConfig;
+				Object.defineProperty(activeConfig.limits, "maxAdviceCharacters", {
+					configurable: true,
+					writable: true,
+					value: originalMaximum,
+				});
+			}
 			await harness.dispose();
 		}
 	});
@@ -1292,6 +1396,40 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			expect(preserved?.usage.total).toBe(5);
 			await harness.session.prompt("no paid review while exhausted");
 			expect(advisor.requests).toHaveLength(1);
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("preserves advise-only delivery when the read-only tool budget is zero", async () => {
+		const note = "Preserve internal advice when read-only inspection is disabled.";
+		const primary = createPrimaryProvider([{ content: [{ type: "text", text: "answer" }] }]);
+		const advisor = createAdvisorProvider([acceptedAdvice(note, "advise-at-zero-budget")]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [
+				extensionFor(
+					configFor(advisor, (config) => {
+						config.limits.maxToolCallsPerUpdate = 0;
+					}),
+					(value) => (runtime = value),
+				),
+			],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("review without read-only tool calls");
+			await waitFor(() => runtime?.getStatus().reviewsCompleted === 1);
+			expect(runtime?.getStatus()).toMatchObject({
+				failedReviews: 0,
+				consecutiveFailures: 0,
+				governorSkippedReviews: 0,
+				deferredNotesPending: 1,
+			});
+			expect(JSON.stringify(harness.sessionManager.getEntries())).toContain(note);
 		} finally {
 			await harness.dispose();
 		}

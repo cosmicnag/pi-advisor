@@ -199,7 +199,7 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 
 	it.each([
 		{
-			label: "personal category",
+			label: "unsupported category",
 			arguments: {
 				note: "Do not infer personal memories.",
 				intent: "memory-suggestion",
@@ -207,12 +207,11 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 			},
 		},
 		{
-			label: "severity on Memory intent",
+			label: "wrong text type",
 			arguments: {
-				note: "Memory intent cannot carry severity.",
+				note: "Memory text must remain a string.",
 				intent: "memory-suggestion",
-				severity: "blocker",
-				memory: { text: proposed, category: "project", basis: "project-constraint" },
+				memory: { text: 42, category: "project", basis: "project-constraint" },
 			},
 		},
 	])("rejects $label through the internal advise schema", async ({ arguments: input }) => {
@@ -240,6 +239,132 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 			expect(runtime?.getStatus()).toMatchObject({
 				memorySuggestionsDelivered: 0,
 				deferredNotesPending: 0,
+			});
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("suppresses missing, partial, and empty Memory payloads without advancing failure state", async () => {
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "answer one" }] },
+			{ content: [{ type: "text", text: "answer two" }] },
+			{ content: [{ type: "text", text: "answer three" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			{
+				content: [
+					{
+						type: "toolCall",
+						id: "missing-memory",
+						name: "advise",
+						arguments: { note: memoryRationale, intent: "memory-suggestion" },
+					},
+				],
+				stopReason: "toolUse",
+			},
+			{
+				content: [
+					{
+						type: "toolCall",
+						id: "partial-memory",
+						name: "advise",
+						arguments: {
+							note: memoryRationale,
+							intent: "memory-suggestion",
+							memory: { text: proposed, category: "project" },
+						},
+					},
+				],
+				stopReason: "toolUse",
+			},
+			{
+				content: [
+					{
+						type: "toolCall",
+						id: "empty-memory",
+						name: "advise",
+						arguments: {
+							note: memoryRationale,
+							intent: "memory-suggestion",
+							memory: { text: "   ", category: "project", basis: "project-constraint" },
+						},
+					},
+				],
+				stopReason: "toolUse",
+			},
+		]);
+		const submit = vi.fn();
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			customTools: [compatibleMemoryTool(submit)],
+			tools: ["memory_suggest"],
+			mode: "rpc",
+		});
+		try {
+			for (const [index, prompt] of [
+				"missing payload",
+				"partial payload",
+				"empty payload",
+			].entries()) {
+				await harness.session.prompt(prompt);
+				await waitFor(() => runtime?.getStatus().reviewsCompleted === index + 1);
+			}
+			expect(runtime?.getStatus()).toMatchObject({
+				failedReviews: 0,
+				consecutiveFailures: 0,
+				memorySuggestionsPolicySuppressed: 3,
+				memorySuggestionsDelivered: 0,
+				deferredNotesPending: 0,
+			});
+			expect(submit).not.toHaveBeenCalled();
+			expect(JSON.stringify(harness.sessionManager.getEntries())).not.toContain(
+				'memory-suggestion"',
+			);
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("accepts complete Memory input while discarding unknown and review-only fields", async () => {
+		const primary = createPrimaryProvider([{ content: [{ type: "text", text: "answer" }] }]);
+		const advisor = createAdvisorProvider([
+			memorySuggestion(proposed, "portable-complete-memory", {
+				severity: "blocker",
+				findingKey: "ignored-review-key",
+				rootUnknown: "ROOT-PRIVATE-SENTINEL",
+				memory: {
+					text: proposed,
+					category: "project",
+					basis: "project-constraint",
+					nestedUnknown: "NESTED-PRIVATE-SENTINEL",
+				},
+			}),
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			customTools: [compatibleMemoryTool()],
+			tools: ["memory_suggest"],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("admit portable complete payload");
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			const entries = JSON.stringify(harness.sessionManager.getEntries());
+			expect(entries).toContain(proposed);
+			expect(entries).not.toContain("ROOT-PRIVATE-SENTINEL");
+			expect(entries).not.toContain("NESTED-PRIVATE-SENTINEL");
+			expect(entries).not.toContain("ignored-review-key");
+			expect(runtime?.getStatus()).toMatchObject({
+				failedReviews: 0,
+				consecutiveFailures: 0,
+				memorySuggestionsDelivered: 0,
 			});
 		} finally {
 			await harness.dispose();

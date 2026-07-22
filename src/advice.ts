@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum, validateToolArguments } from "@earendil-works/pi-ai";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { Type, type Static } from "typebox";
 
 import { HARD_LIMITS, type AdvisorConfig } from "./config.js";
 import {
@@ -66,6 +66,134 @@ export interface AdviceCollector {
 	memoryPolicySuppressedCalls: number;
 	memoryLimitSuppressedCalls: number;
 	memoryPolicy?: MemorySuggestionPolicyContext;
+}
+
+const MEMORY_ARGUMENT_GUIDANCE =
+	'When intent is "memory-suggestion", provide memory.text, memory.category, and memory.basis. Otherwise omit memory.';
+const MAX_FINDING_KEY_CHARACTERS = 200;
+
+export const ADVISE_WIRE_SCHEMA = Type.Object({
+	note: Type.String({
+		minLength: 1,
+		description: "Concise rationale for the review finding or Memory suggestion.",
+	}),
+	intent: Type.Optional(
+		StringEnum(["review", "memory-suggestion"] as const, {
+			description: MEMORY_ARGUMENT_GUIDANCE,
+		}),
+	),
+	severity: Type.Optional(StringEnum(["nit", "concern", "blocker"] as const)),
+	findingKey: Type.Optional(
+		Type.String({
+			minLength: 1,
+			maxLength: MAX_FINDING_KEY_CHARACTERS,
+			description:
+				"Canonical identity for exactly one concrete underlying defect. Reuse it for paraphrases or severity changes of that defect; never reuse it for a materially different defect.",
+		}),
+	),
+	memory: Type.Optional(
+		Type.Object(
+			{
+				text: Type.Optional(Type.String()),
+				category: Type.Optional(StringEnum(MEMORY_SUGGESTION_CATEGORIES)),
+				basis: Type.Optional(StringEnum(MEMORY_SUGGESTION_BASES)),
+			},
+			{ description: MEMORY_ARGUMENT_GUIDANCE },
+		),
+	),
+});
+
+export type AdviseWireInput = Static<typeof ADVISE_WIRE_SCHEMA>;
+
+const ADVISE_WIRE_VALIDATION_TOOL = {
+	name: "advise",
+	description: "Validate internal Advisor wire input.",
+	parameters: ADVISE_WIRE_SCHEMA,
+};
+
+export interface ParsedReviewAdviceInput {
+	note: string;
+	intent: "review";
+	severity?: AdviceSeverity;
+	findingKey?: string;
+}
+
+export interface ParsedMemorySuggestionInput {
+	note: string;
+	intent: "memory-suggestion";
+	memory: AcceptedMemorySuggestion["memory"];
+}
+
+export type ParsedAdviceInput = ParsedReviewAdviceInput | ParsedMemorySuggestionInput;
+
+function isOptionalEnum(value: unknown, values: readonly string[]): boolean {
+	return value === undefined || (typeof value === "string" && values.includes(value));
+}
+
+export function isAdviseWireInput(input: unknown): input is AdviseWireInput {
+	if (typeof input !== "object" || input === null || Array.isArray(input)) return false;
+	const wire = input as Readonly<Record<string, unknown>>;
+	const { note, intent, severity, findingKey, memory } = wire;
+	if (
+		typeof note !== "string" ||
+		!isOptionalEnum(intent, ["review", "memory-suggestion"]) ||
+		!isOptionalEnum(severity, ["nit", "concern", "blocker"]) ||
+		(findingKey !== undefined && typeof findingKey !== "string") ||
+		(memory !== undefined &&
+			(typeof memory !== "object" || memory === null || Array.isArray(memory)))
+	) {
+		return false;
+	}
+	if (memory !== undefined) {
+		const nested = memory as Readonly<Record<string, unknown>>;
+		if (
+			(nested.text !== undefined && typeof nested.text !== "string") ||
+			!isOptionalEnum(nested.category, MEMORY_SUGGESTION_CATEGORIES) ||
+			!isOptionalEnum(nested.basis, MEMORY_SUGGESTION_BASES)
+		) {
+			return false;
+		}
+	}
+	try {
+		validateToolArguments(ADVISE_WIRE_VALIDATION_TOOL, {
+			type: "toolCall",
+			id: "advise-wire-validation",
+			name: "advise",
+			arguments: wire,
+		});
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export function parseAdviseWireInput(input: AdviseWireInput): ParsedAdviceInput | undefined {
+	if (input.intent === "memory-suggestion") {
+		const memory = input.memory;
+		if (
+			memory?.text === undefined ||
+			memory.text.trim().length === 0 ||
+			memory.category === undefined ||
+			memory.basis === undefined
+		) {
+			return undefined;
+		}
+		return {
+			note: input.note,
+			intent: "memory-suggestion",
+			memory: {
+				text: memory.text,
+				category: memory.category,
+				basis: memory.basis,
+			},
+		};
+	}
+	return {
+		note: input.note,
+		intent: "review",
+		...(input.severity === undefined ? {} : { severity: input.severity }),
+		...(input.findingKey === undefined ? {} : { findingKey: input.findingKey }),
+	};
 }
 
 const CONTENT_FREE = new Set([
@@ -236,7 +364,8 @@ export class BoundedAdviceDedupe {
 }
 
 export function isContentFreeAdvice(note: string): boolean {
-	return CONTENT_FREE.has(normalizeContentFreeAdvice(note));
+	const normalized = normalizeContentFreeAdvice(note);
+	return normalized.length === 0 || CONTENT_FREE.has(normalized);
 }
 
 function truncateCharacters(
@@ -402,60 +531,26 @@ export function formatAdviceForDelivery(
 export function createAdviseTool(
 	config: AdvisorConfig,
 	collector: AdviceCollector,
-): ToolDefinition {
+	onExecutionStart?: (toolCallId: string) => void,
+): ToolDefinition<typeof ADVISE_WIRE_SCHEMA> {
 	return {
 		name: "advise",
 		label: "advise",
-		description:
-			"Record at most one concise material review note or eligible durable Memory suggestion. Do not call this tool when the Executor is on track.",
-		parameters: Type.Union([
-			Type.Object(
-				{
-					note: Type.String({ minLength: 1 }),
-					severity: Type.Optional(StringEnum(["nit", "concern", "blocker"] as const)),
-					intent: Type.Optional(StringEnum(["review"] as const)),
-					findingKey: Type.Optional(
-						Type.String({
-							minLength: 1,
-							maxLength: 200,
-							description:
-								"Canonical identity for exactly one concrete underlying defect. Reuse it for paraphrases or severity changes of that defect; never reuse it for a materially different defect.",
-						}),
-					),
-				},
-				{ additionalProperties: false },
-			),
-			Type.Object(
-				{
-					note: Type.String({ minLength: 1 }),
-					intent: StringEnum(["memory-suggestion"] as const),
-					memory: Type.Object(
-						{
-							text: Type.String({ minLength: 1 }),
-							category: StringEnum(MEMORY_SUGGESTION_CATEGORIES),
-							basis: StringEnum(MEMORY_SUGGESTION_BASES),
-						},
-						{ additionalProperties: false },
-					),
-				},
-				{ additionalProperties: false },
-			),
-		]),
-		execute(_id, params) {
+		description: `Record at most one concise material review note or eligible durable Memory suggestion. Do not call this tool when the Executor is on track. ${MEMORY_ARGUMENT_GUIDANCE}`,
+		parameters: ADVISE_WIRE_SCHEMA,
+		prepareArguments(args) {
+			if (!isAdviseWireInput(args)) {
+				throw new Error("Advise arguments did not match the internal schema");
+			}
+			return args;
+		},
+		execute(id, params) {
+			onExecutionStart?.(id);
 			collector.validCalls++;
-			const input = params as
-				| {
-						note: string;
-						severity?: AdviceSeverity;
-						intent?: "review";
-						findingKey?: string;
-				  }
-				| {
-						note: string;
-						intent: "memory-suggestion";
-						memory: AcceptedMemorySuggestion["memory"];
-				  };
-			if (input.intent === "memory-suggestion") {
+			const input = parseAdviseWireInput(params);
+			if (input === undefined) {
+				suppressMemory(collector, "policy");
+			} else if (input.intent === "memory-suggestion") {
 				if (collector.accepted?.intent === "review") {
 					suppressMemory(collector, "policy");
 				} else if (collector.accepted !== undefined) {
