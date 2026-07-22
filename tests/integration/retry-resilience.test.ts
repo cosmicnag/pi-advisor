@@ -2,6 +2,7 @@ import type { ExtensionContext, InlineExtension } from "@earendil-works/pi-codin
 import { describe, expect, it } from "vitest";
 
 import {
+	ADVISOR_ARGUMENT_VALIDATION_FAILURE,
 	ADVISOR_RETRY_DELAY_MS,
 	ADVISOR_RUNTIME_STATE_ENTRY_TYPE,
 	createPiAdvisorExtension,
@@ -267,6 +268,70 @@ describe.sequential("Slice 3B retry lifecycle resilience", () => {
 			expect(warnings[0]).not.toContain("super-secret-token-value");
 			await harness.session.prompt("turn after pause");
 			expect(advisor.requests).toHaveLength(6);
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("pauses after three malformed advise updates with actionable model recovery guidance", async () => {
+		const privateArgument = "MALFORMED-PRIVATE-SENTINEL";
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "first answer" }] },
+			{ content: [{ type: "text", text: "second answer" }] },
+			{ content: [{ type: "text", text: "third answer" }] },
+		]);
+		const advisor = createAdvisorProvider(
+			["malformed-one", "malformed-two", "malformed-three"].flatMap((id) => [
+				{
+					content: [
+						{
+							type: "toolCall" as const,
+							id,
+							name: "advise",
+							arguments: { privateArgument },
+						},
+					],
+					stopReason: "toolUse" as const,
+				},
+				{ content: [] },
+			]),
+		);
+		const warnings: string[] = [];
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [
+				extensionFor(
+					configFor(advisor),
+					(value) => (runtime = value),
+					(message) => warnings.push(message),
+				),
+			],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			for (const [index, prompt] of [
+				"first malformed",
+				"second malformed",
+				"third malformed",
+			].entries()) {
+				await harness.session.prompt(prompt);
+				await waitFor(() => runtime?.getStatus().consecutiveFailures === index + 1);
+			}
+			expect(runtime?.getStatus()).toMatchObject({
+				paused: true,
+				consecutiveFailures: 3,
+				failedReviews: 3,
+				retryAttempts: 0,
+				lastFailure: ADVISOR_ARGUMENT_VALIDATION_FAILURE,
+			});
+			expect(warnings).toHaveLength(1);
+			expect(warnings[0]).toContain("Three consecutive Advisor updates failed");
+			expect(warnings[0]).toContain("/advisor configure");
+			expect(warnings[0]).toContain("/advisor on");
+			expect(warnings[0]).not.toContain(privateArgument);
 		} finally {
 			await harness.dispose();
 		}

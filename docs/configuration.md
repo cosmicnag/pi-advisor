@@ -258,7 +258,9 @@ Private context pressure compacts first, then clears only private Advisor histor
 An update that still cannot fit fresh private context is dropped with a bounded warning while Advisor remains active for later updates.
 Reaching a hard per-update tool-call or turn limit skips only that review without retry and leaves Advisor active for later eligible updates.
 Status and diagnostics report the cumulative governor-skipped review count and latest bounded outcome.
-Three consecutive ordinary updates that each fail after bounded retry handling pause Advisor with one warning containing the final bounded, secret-redacted failure reason.
+Three consecutive ordinary updates that each fail after bounded retry handling pause Advisor with one privacy-safe warning describing the final failure classification.
+When the selected model returns invalid internal `advise` arguments, run `/advisor configure` to select another model and `/advisor on` to retry.
+An internal `advise` execution failure recommends retrying with `/advisor on` without blaming the selected model or recommending a model switch.
 A handled per-update governor skip clears rather than advances that ordinary failure streak.
 Provider attempts remain separately visible in request, retry, usage, and failed-review diagnostics.
 The local redacted activity record is enabled by default for valid User configurations and stores troubleshooting metadata in the active Pi session.

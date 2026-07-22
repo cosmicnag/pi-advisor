@@ -40,7 +40,7 @@ import {
 	type ResolvedAdvisorModelRuntime,
 } from "./compatibility/model-runtime.js";
 import { isMemorySuggestionBasis, isMemorySuggestionCategory } from "./memory-suggestions.js";
-import { normalizeAdvisorConfig, type AdvisorConfig } from "./config.js";
+import { HARD_LIMITS, normalizeAdvisorConfig, type AdvisorConfig } from "./config.js";
 import {
 	BoundedKeyedByteFifo,
 	MAX_DEFERRED_DELIVERY_BYTES,
@@ -103,6 +103,10 @@ const FAILURE_PAUSE_COUNT = 3;
 export const MAX_ADVISOR_RETRIES_PER_UPDATE = 1;
 export const ADVISOR_RETRY_DELAY_MS = 250;
 export const MAX_ADVISOR_DUMP_BYTES = 16 * 1_024;
+export const ADVISOR_ARGUMENT_VALIDATION_FAILURE =
+	'The selected Advisor model returned "advise" arguments that did not match the internal schema. Run /advisor configure to select another model. Run /advisor on to retry after correcting configuration or after a transient model failure.';
+export const ADVISOR_INTERNAL_EXECUTION_FAILURE =
+	'The internal "advise" tool failed while executing arguments that passed schema validation. Run /advisor on to retry. If the failure persists, report a Pi Advisor bug.';
 
 function utf8TextSetBytes(values: ReadonlySet<string>): number {
 	let bytes = 0;
@@ -414,6 +418,8 @@ interface CurrentRun {
 	providerFailure?: string;
 	providerOverflow: boolean;
 	toolFailure?: string;
+	adviseToolCalls: number;
+	adviseExecutionStartedCallIds: Set<string>;
 	usage: AdvisorUsageTotals;
 	stopReason: string;
 	transcriptRecords: PersistedAdvisorToolAttempt[];
@@ -825,6 +831,7 @@ Review each bounded update for one material correctness, safety, scope, or verif
 Silence is the normal successful outcome when the Executor is on track.
 Only a valid call to the internal advise tool can create an Advisory note.
 Never emit content-free approval phrases through advise.
+When advise intent is memory-suggestion, provide memory.text, memory.category, and memory.basis; otherwise omit memory.
 Use only the configured read-only tools. Never request or suggest a mutating tool.
 Keep ordinary verification lean: normally use no more than two or three read-only tool calls before advising or remaining silent. Investigate more deeply only when a specific critical risk genuinely requires it.
 Fixed policy in this system message has highest authority, followed by User instructions, tagged Project instructions, then observed Executor context.
@@ -1777,7 +1784,18 @@ export class AdvisorRuntime {
 					: result;
 			};
 		}
-		const customTools = [...protectedTools, createAdviseTool(this.config, this.collector)];
+		const customTools = [
+			...protectedTools,
+			createAdviseTool(this.config, this.collector, (toolCallId) => {
+				const run = this.currentRun;
+				if (
+					run !== undefined &&
+					run.adviseExecutionStartedCallIds.size < HARD_LIMITS.maxToolCallsPerUpdate
+				) {
+					run.adviseExecutionStartedCallIds.add(toolCallId);
+				}
+			}),
+		];
 		const activeTools = [...this.config.tools, "advise"];
 		const result = await createAgentSession({
 			cwd: ctx.cwd,
@@ -1811,10 +1829,18 @@ export class AdvisorRuntime {
 				return;
 			}
 			if (event.type === "tool_execution_start") {
-				run.toolCalls++;
-				if (run.toolCalls > this.config.limits.maxToolCallsPerUpdate) {
-					run.governorFailure = "Advisor tool-call limit reached";
-					void this.session?.abort();
+				if (event.toolName === "advise") {
+					run.adviseToolCalls++;
+					if (run.adviseToolCalls > HARD_LIMITS.maxToolCallsPerUpdate) {
+						run.governorFailure = "Advisor tool-call limit reached";
+						void this.session?.abort();
+					}
+				} else {
+					run.toolCalls++;
+					if (run.toolCalls > this.config.limits.maxToolCallsPerUpdate) {
+						run.governorFailure = "Advisor tool-call limit reached";
+						void this.session?.abort();
+					}
 				}
 			}
 			if (event.type !== "turn_end" || !messageIsAssistant(event.message)) return;
@@ -1854,7 +1880,12 @@ export class AdvisorRuntime {
 					(resultMessage.toolName === "advise" || !isAdvisorReadOnlyTool(resultMessage.toolName)),
 			);
 			if (errorResult !== undefined) {
-				run.toolFailure = `Advisor tool ${errorResult.toolName} failed or was malformed`;
+				run.toolFailure =
+					errorResult.toolName === "advise"
+						? run.adviseExecutionStartedCallIds.has(errorResult.toolCallId)
+							? ADVISOR_INTERNAL_EXECUTION_FAILURE
+							: ADVISOR_ARGUMENT_VALIDATION_FAILURE
+						: `An internal Advisor tool failed while executing.`;
 			}
 			if (run.turns >= this.config.limits.maxAdvisorTurnsPerUpdate && hasToolCall(event.message)) {
 				run.governorFailure = "Advisor turn limit reached";
@@ -2132,6 +2163,10 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			"[Older Executor delta content truncated]\n",
 		);
 		return `${prefix}${boundedExecutor}${suffix}`;
+	}
+
+	private clearAdviseExecutionMarkers(): void {
+		this.currentRun?.adviseExecutionStartedCallIds.clear();
 	}
 
 	private resetCollectorForAttempt(
@@ -2439,6 +2474,8 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				toolCalls: 0,
 				deferAdvice: false,
 				providerOverflow: false,
+				adviseToolCalls: 0,
+				adviseExecutionStartedCallIds: new Set(),
 				usage: emptyUsage(),
 				stopReason: "unknown",
 				transcriptRecords: [],
@@ -2454,6 +2491,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			} catch (error) {
 				thrownFailure = boundedReason(error);
 			} finally {
+				run.adviseExecutionStartedCallIds.clear();
 				delete this.currentRun;
 				delete this.collector.memoryPolicy;
 			}
@@ -3085,6 +3123,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		branch: ReturnType<ExtensionContext["sessionManager"]["getBranch"]>,
 		prepareReprime = true,
 	): Promise<void> {
+		this.clearAdviseExecutionMarkers();
 		this.status.epoch++;
 		this.status.branchResets++;
 		this.status.retryPending = false;
@@ -3128,6 +3167,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 
 	async disable(): Promise<void> {
 		if (this.disposed) return;
+		this.clearAdviseExecutionMarkers();
 		this.status.epoch++;
 		this.status.enabled = false;
 		this.status.active = false;
@@ -3159,6 +3199,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 
 	async shutdown(): Promise<void> {
 		if (this.disposed) return;
+		this.clearAdviseExecutionMarkers();
 		this.status.epoch++;
 		this.status.enabled = false;
 		this.status.active = false;
@@ -3173,6 +3214,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 	}
 
 	private async disposeNestedSession(): Promise<void> {
+		this.clearAdviseExecutionMarkers();
 		this.clearCadenceTimer();
 		delete this.submittedProjectContext;
 		this.sessionUnsubscribe?.();
