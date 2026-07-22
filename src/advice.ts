@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
+import { Guard } from "typebox/guard";
 
 import { HARD_LIMITS, type AdvisorConfig } from "./config.js";
 import {
@@ -130,13 +131,13 @@ export function isAdviseWireInput(input: unknown): input is AdviseWireInput {
 	const { note, intent, severity, findingKey, memory } = wire;
 	if (
 		typeof note !== "string" ||
-		Array.from(note).length < 1 ||
+		!Guard.IsMinLength(note, 1) ||
 		!isOptionalEnum(intent, ["review", "memory-suggestion"]) ||
 		!isOptionalEnum(severity, ["nit", "concern", "blocker"]) ||
 		(findingKey !== undefined &&
 			(typeof findingKey !== "string" ||
-				Array.from(findingKey).length < 1 ||
-				Array.from(findingKey).length > MAX_FINDING_KEY_CHARACTERS)) ||
+				!Guard.IsMinLength(findingKey, 1) ||
+				!Guard.IsMaxLength(findingKey, MAX_FINDING_KEY_CHARACTERS))) ||
 		(memory !== undefined &&
 			(typeof memory !== "object" || memory === null || Array.isArray(memory)))
 	) {

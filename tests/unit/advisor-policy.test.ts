@@ -1,5 +1,5 @@
 import { estimateContextTokens } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { validateToolArguments, type AssistantMessage } from "@earendil-works/pi-ai";
 import { SessionManager, type TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 
@@ -110,13 +110,39 @@ describe("portable advise wire contract", () => {
 		}
 	});
 
-	it("mirrors required and bounded string constraints before schema validation", () => {
+	it("matches TypeBox grapheme-length validation at findingKey boundaries", () => {
+		const tool = createAdviseTool(DEFAULT_ADVISOR_CONFIG, {
+			validCalls: 0,
+			suppressedCalls: 0,
+			memoryPolicySuppressedCalls: 0,
+			memoryLimitSuppressedCalls: 0,
+		});
+		const familyGrapheme = "👨‍👩‍👧‍👦";
+		const accepted = { note: "x", findingKey: familyGrapheme.repeat(200) };
+		const rejected = { note: "x", findingKey: familyGrapheme.repeat(201) };
+
 		expect(isAdviseWireInput({ note: "x", findingKey: "k".repeat(200) })).toBe(true);
 		expect(isAdviseWireInput({ note: "" })).toBe(false);
 		expect(isAdviseWireInput({ note: "x", findingKey: "" })).toBe(false);
 		expect(isAdviseWireInput({ note: "x", findingKey: "k".repeat(201) })).toBe(false);
-		expect(isAdviseWireInput({ note: "x", findingKey: "😀".repeat(200) })).toBe(true);
-		expect(isAdviseWireInput({ note: "x", findingKey: "😀".repeat(201) })).toBe(false);
+		expect(isAdviseWireInput(accepted)).toBe(true);
+		expect(isAdviseWireInput(rejected)).toBe(false);
+		expect(() => {
+			validateToolArguments(tool, {
+				type: "toolCall",
+				id: "accepted-grapheme-key",
+				name: "advise",
+				arguments: accepted,
+			});
+		}).not.toThrow();
+		expect(() => {
+			validateToolArguments(tool, {
+				type: "toolCall",
+				id: "rejected-grapheme-key",
+				name: "advise",
+				arguments: rejected,
+			});
+		}).toThrow();
 	});
 
 	it("parses strict review and complete Memory inputs while discarding unknown fields", () => {
