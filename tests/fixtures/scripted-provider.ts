@@ -10,6 +10,7 @@ import {
 	type ToolCall,
 	type Usage,
 } from "@earendil-works/pi-ai";
+import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
 export const SCRIPTED_API = "pi-advisor-scripted" as Api;
 export const ADVISOR_SCRIPTED_API = "pi-advisor-scripted-advisor" as Api;
@@ -52,6 +53,40 @@ export interface ScriptedProviderOptions {
 	contextWindow?: number;
 	maxTokens?: number;
 	cost?: Model<Api>["cost"];
+}
+
+export interface ScriptedProviderRegistrationOptions {
+	name?: string;
+	providerHeaders?: Record<string, string>;
+	modelHeaders?: Record<string, string>;
+}
+
+export function registerScriptedProvider(
+	modelRuntime: ModelRuntime,
+	provider: ScriptedProvider,
+	options: ScriptedProviderRegistrationOptions = {},
+): void {
+	modelRuntime.registerProvider(provider.model.provider, {
+		...(options.name === undefined ? {} : { name: options.name }),
+		baseUrl: provider.model.baseUrl,
+		api: provider.model.api,
+		...(options.providerHeaders === undefined ? {} : { headers: options.providerHeaders }),
+		streamSimple: provider.streamSimple,
+		models: [
+			{
+				id: provider.model.id,
+				name: provider.model.name,
+				api: provider.model.api,
+				baseUrl: provider.model.baseUrl,
+				reasoning: provider.model.reasoning,
+				input: provider.model.input,
+				cost: provider.model.cost,
+				contextWindow: provider.model.contextWindow,
+				maxTokens: provider.model.maxTokens,
+				...(options.modelHeaders === undefined ? {} : { headers: options.modelHeaders }),
+			},
+		],
+	});
 }
 
 function copyContext(context: Context): Context {

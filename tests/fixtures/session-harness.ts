@@ -14,7 +14,7 @@ import {
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
-import { type ScriptedProvider } from "./scripted-provider.js";
+import { registerScriptedProvider, type ScriptedProvider } from "./scripted-provider.js";
 
 export interface SessionHarnessOptions {
 	provider: ScriptedProvider;
@@ -35,27 +35,6 @@ export interface SessionHarness {
 	cwd: string;
 	agentDir: string;
 	dispose(): Promise<void>;
-}
-
-function registerScriptedProvider(modelRuntime: ModelRuntime, provider: ScriptedProvider): void {
-	modelRuntime.registerProvider(provider.model.provider, {
-		baseUrl: provider.model.baseUrl,
-		api: provider.model.api,
-		streamSimple: provider.streamSimple,
-		models: [
-			{
-				id: provider.model.id,
-				name: provider.model.name,
-				api: provider.model.api,
-				baseUrl: provider.model.baseUrl,
-				reasoning: provider.model.reasoning,
-				input: provider.model.input,
-				cost: provider.model.cost,
-				contextWindow: provider.model.contextWindow,
-				maxTokens: provider.model.maxTokens,
-			},
-		],
-	});
 }
 
 export async function createSessionHarness(

@@ -10,7 +10,11 @@ import {
 	ModelRuntimeCompatibilityError,
 	resolveAdvisorModelRuntime,
 } from "../../src/compatibility/model-runtime.js";
-import { createAdvisorProvider, type ScriptedProvider } from "../fixtures/scripted-provider.js";
+import {
+	createAdvisorProvider,
+	registerScriptedProvider,
+	type ScriptedProvider,
+} from "../fixtures/scripted-provider.js";
 
 const roots: string[] = [];
 
@@ -24,29 +28,11 @@ afterEach(async () => {
 	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-function registerScriptedProvider(runtime: ModelRuntime, provider: ScriptedProvider): void {
-	runtime.registerProvider(provider.model.provider, {
-		name: "Scripted Advisor",
-		baseUrl: provider.model.baseUrl,
-		api: provider.model.api,
-		headers: { "X-Provider": "configured" },
-		streamSimple: provider.streamSimple,
-		models: [
-			{
-				id: provider.model.id,
-				name: provider.model.name,
-				api: provider.model.api,
-				baseUrl: provider.model.baseUrl,
-				reasoning: provider.model.reasoning,
-				input: provider.model.input,
-				cost: provider.model.cost,
-				contextWindow: provider.model.contextWindow,
-				maxTokens: provider.model.maxTokens,
-				headers: { "X-Model": "selected" },
-			},
-		],
-	});
-}
+const parityRegistrationOptions = {
+	name: "Scripted Advisor",
+	providerHeaders: { "X-Provider": "configured" },
+	modelHeaders: { "X-Model": "selected" },
+};
 
 async function createHost(provider: ScriptedProvider): Promise<{
 	runtime: ModelRuntime;
@@ -57,7 +43,7 @@ async function createHost(provider: ScriptedProvider): Promise<{
 		modelsPath: null,
 		allowModelNetwork: false,
 	});
-	registerScriptedProvider(runtime, provider);
+	registerScriptedProvider(runtime, provider, parityRegistrationOptions);
 	await runtime.setRuntimeApiKey(provider.model.provider, "runtime-secret", {
 		allowNetwork: false,
 	});
@@ -186,7 +172,7 @@ describe("Advisor ModelRuntime compatibility resolver", () => {
 			modelsPath: null,
 			allowModelNetwork: false,
 		});
-		registerScriptedProvider(hostRuntime, provider);
+		registerScriptedProvider(hostRuntime, provider, parityRegistrationOptions);
 		const resolved = await resolveAdvisorModelRuntime({
 			modelRegistry: new ModelRegistry(hostRuntime),
 			model: provider.model,

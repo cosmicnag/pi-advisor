@@ -24,29 +24,8 @@ import {
 import {
 	createAdvisorProvider,
 	createPrimaryProvider,
-	type ScriptedProvider,
+	registerScriptedProvider,
 } from "../fixtures/scripted-provider.js";
-
-function registerScriptedProvider(modelRuntime: ModelRuntime, provider: ScriptedProvider): void {
-	modelRuntime.registerProvider(provider.model.provider, {
-		baseUrl: provider.model.baseUrl,
-		api: provider.model.api,
-		streamSimple: provider.streamSimple,
-		models: [
-			{
-				id: provider.model.id,
-				name: provider.model.name,
-				api: provider.model.api,
-				baseUrl: provider.model.baseUrl,
-				reasoning: provider.model.reasoning,
-				input: provider.model.input,
-				cost: provider.model.cost,
-				contextWindow: provider.model.contextWindow,
-				maxTokens: provider.model.maxTokens,
-			},
-		],
-	});
-}
 
 async function waitFor(predicate: () => boolean): Promise<void> {
 	await expect.poll(predicate, { timeout: 5_000, interval: 10 }).toBe(true);
