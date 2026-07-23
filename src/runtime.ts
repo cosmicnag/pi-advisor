@@ -2024,7 +2024,7 @@ export class AdvisorRuntime {
 		}
 		const entries = branch.slice(this.cursor.expectedIndex);
 		const nextCursor = cursorAtTail(branch);
-		if (this.isSupersededAutomaticMemoryVerification(entries)) {
+		if (this.isStaleAutomaticMemoryVerificationStillValid(entries)) {
 			if (event.message.role !== "assistant" || event.message.stopReason !== "toolUse") {
 				delete this.automaticMemoryFollowUpDeliveryId;
 				this.cursor = nextCursor;
@@ -2063,7 +2063,7 @@ export class AdvisorRuntime {
 		this.persistState();
 	}
 
-	private isSupersededAutomaticMemoryVerification(entries: SessionEntry[]): boolean {
+	private isStaleAutomaticMemoryVerificationStillValid(entries: SessionEntry[]): boolean {
 		const deliveryId = this.automaticMemoryFollowUpDeliveryId;
 		if (deliveryId === undefined) return false;
 		const containsStaleMemoryFollowUp = entries.some((entry) => {

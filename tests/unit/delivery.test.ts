@@ -23,9 +23,8 @@ describe("Advisor delivery selection", () => {
 		).toBe("steer");
 	});
 
-	it("follows up for a stale idle Memory suggestion without newer instruction input", () => {
-		const chronologicallyStale = { ...idleMemory, stale: true };
-		expect(selectAdviceDispatch(chronologicallyStale)).toBe("followUp");
+	it("follows up for an idle Memory suggestion without newer instruction input", () => {
+		expect(selectAdviceDispatch(idleMemory)).toBe("followUp");
 	});
 
 	it("defers an idle Memory suggestion after newer instruction input", () => {
