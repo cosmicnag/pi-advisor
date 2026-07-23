@@ -162,7 +162,11 @@ While the Executor is idle, an accepted suggestion starts one automatic Executor
 Newer Executor assistant, tool-call, or tool-result continuation does not by itself prevent the follow-up, although chronological staleness remains visible.
 A newer user message, instruction-bearing extension message, or any bash execution prevents automatic follow-up, including a context-excluded `!!` command.
 The Executor still verifies, revises, or declines the proposal against its latest context and submits only through compatible `memory_suggest` with explicit `status: "pending"`; user approval remains mandatory through the memory system's normal review flow.
-The follow-up can add one primary-model completion per accepted suggestion within the configured cadence and session cap, but it does not trigger another Advisor model call or Advisor model cost.
+The automatic follow-up can add one primary-model completion per accepted suggestion within the configured cadence and session cap.
+In the stale superseding path, automatic Executor verification replaces the pending ordinary Advisor review of the intervening Executor continuation.
+This is an accepted tradeoff: the path avoids that queued Advisor call, so it adds no second Advisor semantic validation or related Advisor model cost.
+A non-stale current-window follow-up still receives ordinary Advisor review, and ordinary active steering is unchanged.
+Newer user or instruction-bearing input restores normal review or deferred delivery instead of using stale supersession.
 If capability is absent, no suggestion or extra completion is produced and ordinary review remains unchanged.
 If capability is lost before idle dispatch, no automatic follow-up starts and the accepted suggestion is retained with bounded `could-not-queue` presentation.
 Pi Advisor never calls that tool itself and never saves or approves a memory.

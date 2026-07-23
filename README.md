@@ -159,7 +159,11 @@ An eligible Memory suggestion that arrives while the Executor is idle starts one
 Newer Executor assistant, tool-call, or tool-result continuation does not by itself prevent that follow-up, even though the suggestion remains marked potentially stale.
 Any newer user message, instruction-bearing extension message, or bash execution blocks automatic follow-up, including a context-excluded `!!` command.
 The Executor must verify, revise, or decline the suggestion against its latest context and can submit only through a compatible `memory_suggest` tool with explicit `status: "pending"`.
-This can add one primary-model completion per accepted Memory suggestion, bounded by the configured cadence and session cap, but it does not make another Advisor model call or add Advisor model cost.
+The automatic follow-up can add one primary-model completion per accepted Memory suggestion, bounded by the configured cadence and session cap.
+In the stale superseding path, automatic Executor verification replaces the pending ordinary Advisor review of the intervening Executor continuation.
+This is an accepted tradeoff: the path avoids that queued Advisor call, so it adds no second Advisor semantic validation or related Advisor model cost.
+A non-stale current-window follow-up still receives ordinary Advisor review, and ordinary active steering is unchanged.
+Newer user or instruction-bearing input restores normal review or deferred delivery instead of using stale supersession.
 The memory remains pending until the user approves or rejects it through the memory system's normal review flow.
 If compatible capability is absent, no Memory suggestion is produced and ordinary review is unchanged; if capability is lost before idle dispatch, no follow-up starts and the accepted suggestion is marked `could-not-queue` for bounded later presentation.
 Advice is marked potentially stale when the Executor has advanced beyond the reviewed window, and restored advice requires fresh verification.
