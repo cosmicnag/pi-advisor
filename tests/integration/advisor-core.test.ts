@@ -308,6 +308,7 @@ describe.sequential("Slice 1 automatic Advisor core", () => {
 				await mkdir(join(cwd, "safe"), { recursive: true });
 				await mkdir(join(cwd, "protected-real"), { recursive: true });
 				await writeFile(join(cwd, ".env"), "TOKEN=super-secret-value\nneedle hidden");
+				await writeFile(join(cwd, "visible-root.txt"), "visible root entry");
 				await writeFile(join(cwd, "safe", "visible.txt"), "needle visible");
 				await writeFile(join(cwd, "safe", "context.txt"), "before\nneedle context\nafter");
 				await writeFile(join(cwd, "safe", "large.txt"), `needle ${"x".repeat(1_000_001)}`);

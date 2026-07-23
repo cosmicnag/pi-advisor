@@ -1,6 +1,6 @@
 {
 	"name": "@ribbons-digital/pi-advisor",
-	"version": "0.2.1",
+	"version": "0.2.2",
 	"description": "Automatic isolated secondary review for Pi coding agent sessions",
 	"license": "MIT",
 	"author": "Ribbons Digital",
@@ -45,7 +45,8 @@
 	"pi": {
 		"extensions": [
 			"./src/index.ts"
-		]
+		],
+		"image": "https://raw.githubusercontent.com/ribbons-digital/pi-advisor/66cd0253c6ee84471a9870dfce806fc767f26bd3/docs/assets/advisor-in-action.png"
 	},
 	"scripts": {
 		"clean": "rm -rf coverage dist",

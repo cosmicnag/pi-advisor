@@ -11,7 +11,7 @@ It stays silent when work is sound and delivers a bounded, actionable note when 
 > When Advisor is active, it sends bounded session content and allowed file content to the model provider you select, which can create additional usage and cost.
 
 > [!IMPORTANT]
-> Pi Advisor 0.2.1 requires Pi (`@earendil-works/pi-coding-agent`) **0.81.1 or newer within 0.81.x**.
+> Pi Advisor 0.2.2 requires Pi (`@earendil-works/pi-coding-agent`) **0.81.1 or newer within 0.81.x**.
 > Pi 0.80.x is not supported by this release.
 > On Pi 0.80.7, install the pinned legacy release `npm:@ribbons-digital/pi-advisor@0.1.3` instead.
 
@@ -29,7 +29,7 @@ _Pi Advisor reviewing a synthetic cache implementation in a privacy-safe demo se
 - Protected and bounded `read`, `grep`, `find`, and `ls` tools, with no mutating Advisor tools.
 - Context, update, tool-call, turn, pending-byte, and opt-in cumulative token and reported-cost governors.
 - Branch, compaction, session replacement, retry, and compatible-resume handling.
-- Optional capability-based Memory suggestions without a Memory Lane dependency.
+- Optional capability-based Memory suggestions without a [Memory Lane](https://github.com/ribbons-digital/memory-lane) dependency.
 - Local redacted activity records enabled by default, with metadata-only review, tool-order, outcome, usage, and cost details.
 - No product telemetry or automatic crash reporting.
 
@@ -42,7 +42,7 @@ Declared compatibility range: >=0.81.1 <0.82.0
 
 Tested Pi release: 0.81.1
 
-Pi 0.80.x is not compatible with Pi Advisor 0.2.1.
+Pi 0.80.x is not compatible with Pi Advisor 0.2.2.
 Pi Advisor 0.1.3 is the legacy release for Pi 0.80.7.
 Missing capabilities, unavailable models, missing credentials, or unverifiable provider parity leave Advisor inactive without fallback.
 

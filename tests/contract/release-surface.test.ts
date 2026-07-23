@@ -9,7 +9,7 @@ const manifest = JSON.parse(readFileSync("package.json", "utf8")) as {
 	keywords?: string[];
 	files?: string[];
 	publishConfig?: { access?: string; provenance?: boolean; tag?: string };
-	pi?: { extensions?: string[] };
+	pi?: { extensions?: string[]; image?: string };
 };
 const readme = readFileSync("README.md", "utf8");
 const publicDocs = [
@@ -20,12 +20,16 @@ const publicDocs = [
 ].map((path) => ({ path, content: readFileSync(path, "utf8") }));
 
 describe("public release surface", () => {
-	it("declares discoverable publishable 0.2.1 metadata", () => {
+	it("declares discoverable publishable 0.2.2 metadata", () => {
 		expect(manifest).toMatchObject({
 			name: "@ribbons-digital/pi-advisor",
-			version: "0.2.1",
+			version: "0.2.2",
 			publishConfig: { access: "public", provenance: true },
-			pi: { extensions: ["./src/index.ts"] },
+			pi: {
+				extensions: ["./src/index.ts"],
+				image:
+					"https://raw.githubusercontent.com/ribbons-digital/pi-advisor/66cd0253c6ee84471a9870dfce806fc767f26bd3/docs/assets/advisor-in-action.png",
+			},
 		});
 		expect(manifest.private).not.toBe(true);
 		expect(manifest.publishConfig?.tag).toBeUndefined();
@@ -42,7 +46,7 @@ describe("public release surface", () => {
 	});
 
 	it("documents official compatibility, install, update, and uninstall guidance", () => {
-		expect(readme).toContain("Pi Advisor 0.2.1 requires Pi");
+		expect(readme).toContain("Pi Advisor 0.2.2 requires Pi");
 		expect(readme).toContain("Declared compatibility range: >=0.81.1 <0.82.0");
 		expect(readme).toContain("Tested Pi release: 0.81.1");
 		expect(readme).toContain("Pi Advisor 0.1.3 is the legacy release for Pi 0.80.7");
