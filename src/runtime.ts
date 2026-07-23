@@ -87,6 +87,7 @@ import {
 } from "./persistence.js";
 import {
 	ADVISOR_CUSTOM_TYPE,
+	branchHasNewerInstructionInput,
 	cursorAtTail,
 	cursorMatches,
 	isMeaningfulExecutorTurn,
@@ -905,6 +906,7 @@ export class AdvisorRuntime {
 	private persistenceWarningEmitted = false;
 	private finalPersistenceFallbackWarningEmitted = false;
 	private deliverySequence = 0;
+	private automaticMemoryFollowUpDeliveryId?: string;
 	private readonly adviceDedupe = new BoundedAdviceDedupe();
 	private readonly transcriptRecords: PersistedAdvisorTranscriptRecord[] = [];
 	private readonly collector: AdviceCollector = {
@@ -1095,6 +1097,7 @@ export class AdvisorRuntime {
 		delete this.lastReviewSubmittedAt;
 		delete this.configurationReprimeSnapshot;
 		delete this.collector.accepted;
+		delete this.automaticMemoryFollowUpDeliveryId;
 		this.pendingAdvice.clear();
 		this.activeAdvice.clear();
 		this.adviceDedupe.clear();
@@ -2021,6 +2024,15 @@ export class AdvisorRuntime {
 		}
 		const entries = branch.slice(this.cursor.expectedIndex);
 		const nextCursor = cursorAtTail(branch);
+		if (this.isSupersededAutomaticMemoryVerification(entries)) {
+			if (event.message.role !== "assistant" || event.message.stopReason !== "toolUse") {
+				delete this.automaticMemoryFollowUpDeliveryId;
+				this.cursor = nextCursor;
+				this.persistState();
+			}
+			return;
+		}
+		delete this.automaticMemoryFollowUpDeliveryId;
 		if (!isMeaningfulExecutorTurn(event, entries)) {
 			this.cursor = nextCursor;
 			this.persistState();
@@ -2049,6 +2061,27 @@ export class AdvisorRuntime {
 			successfulMemoryTexts,
 		});
 		this.persistState();
+	}
+
+	private isSupersededAutomaticMemoryVerification(entries: SessionEntry[]): boolean {
+		const deliveryId = this.automaticMemoryFollowUpDeliveryId;
+		if (deliveryId === undefined) return false;
+		const containsStaleMemoryFollowUp = entries.some((entry) => {
+			if (entry.type !== "custom_message" || entry.customType !== ADVISOR_CUSTOM_TYPE) {
+				return false;
+			}
+			if (typeof entry.details !== "object" || entry.details === null) return false;
+			const details = entry.details as Record<string, unknown>;
+			return (
+				details.deliveryId === deliveryId &&
+				details.intent === "memory-suggestion" &&
+				details.delivery === "active" &&
+				details.stale === true
+			);
+		});
+		return (
+			containsStaleMemoryFollowUp && !branchHasNewerInstructionInput(entries, { expectedIndex: 0 })
+		);
 	}
 
 	private enqueue(update: QueuedAdvisorUpdate): void {
@@ -2507,6 +2540,10 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			}
 			for (const record of run.transcriptRecords) this.appendTranscriptRecord(record);
 			const stale = branchHasNewerExecutorState(branchAfterAttempt, update.window);
+			const newerInstructionInput = branchHasNewerInstructionInput(
+				branchAfterAttempt,
+				update.window,
+			);
 			const failure =
 				thrownFailure ?? run.governorFailure ?? run.toolFailure ?? run.providerFailure;
 			const accepted = this.getAcceptedAdvice();
@@ -2519,7 +2556,15 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 					delivery =
 						accepted === undefined
 							? undefined
-							: this.deliver(accepted, ctx, stale, run.deferAdvice, update.turnNumber, reviewId);
+							: this.deliver(
+									accepted,
+									ctx,
+									stale,
+									newerInstructionInput,
+									run.deferAdvice,
+									update.turnNumber,
+									reviewId,
+								);
 				} catch (error) {
 					this.rollbackNestedAttempt(session, messagesBeforeAttempt);
 					const reason = boundedReason(error);
@@ -2578,7 +2623,15 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				// provisional Executor handoffs and are intentionally discarded with the rollback.
 				if (accepted?.intent === "review") {
 					try {
-						this.deliver(accepted, ctx, stale, run.deferAdvice, update.turnNumber, reviewId);
+						this.deliver(
+							accepted,
+							ctx,
+							stale,
+							newerInstructionInput,
+							run.deferAdvice,
+							update.turnNumber,
+							reviewId,
+						);
 					} catch (error) {
 						deliveryFailure = boundedReason(error);
 					}
@@ -2702,6 +2755,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		advice: AcceptedAdvice,
 		ctx: ExtensionContext,
 		stale: boolean,
+		newerInstructionInput: boolean,
 		forceDeferred: boolean,
 		turnNumber: number,
 		reviewId: string,
@@ -2719,7 +2773,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			forceDeferred,
 			aborted: ctx.signal?.aborted === true,
 			idle: ctx.isIdle(),
-			stale,
+			newerInstructionInput,
 			memorySuggestion: advice.intent === "memory-suggestion",
 			memoryCapabilityAvailable:
 				advice.intent === "memory-suggestion" &&
@@ -2811,7 +2865,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				if (previousAt === undefined) delete this.lastMemorySuggestionAt;
 				else this.lastMemorySuggestionAt = previousAt;
 				this.status.activeNotesPending = this.activeAdvice.length;
-				return this.deliver(advice, ctx, stale, true, turnNumber, reviewId);
+				return this.deliver(advice, ctx, stale, newerInstructionInput, true, turnNumber, reviewId);
 			}
 			const details = this.adviceDetails(
 				advice,
@@ -2823,6 +2877,14 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				false,
 				reviewId,
 			);
+			const supersedesNewerExecutorReview = dispatch === "followUp" && stale;
+			const supersededUpdate = supersedesNewerExecutorReview ? this.pendingUpdate : undefined;
+			if (supersededUpdate !== undefined) {
+				delete this.pendingUpdate;
+				this.updateBacklogStatus();
+				this.persistState();
+			}
+			if (dispatch === "followUp") this.automaticMemoryFollowUpDeliveryId = deliveryId;
 			try {
 				this.pi.sendMessage(
 					{
@@ -2836,6 +2898,16 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 						: { deliverAs: "steer" },
 				);
 			} catch (error) {
+				if (this.automaticMemoryFollowUpDeliveryId === deliveryId) {
+					delete this.automaticMemoryFollowUpDeliveryId;
+				}
+				if (supersededUpdate !== undefined) {
+					this.pendingUpdate =
+						this.pendingUpdate === undefined
+							? supersededUpdate
+							: this.coalescePending(supersededUpdate, this.pendingUpdate);
+					this.updateBacklogStatus();
+				}
 				this.activeAdvice.remove(identity);
 				this.adviceDedupe.delete(advice);
 				this.memorySuggestionAdmissions = previousAdmissions;
@@ -3116,6 +3188,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 
 	private pause(reason: string): void {
 		if (this.status.paused) return;
+		delete this.automaticMemoryFollowUpDeliveryId;
 		this.status.paused = true;
 		this.status.pauseReason = reason;
 		this.status.retryPending = false;
@@ -3156,6 +3229,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		delete this.configurationReprimeSnapshot;
 		delete this.lastReviewSubmittedTurn;
 		delete this.lastReviewSubmittedAt;
+		delete this.automaticMemoryFollowUpDeliveryId;
 		this.pendingAdvice.clear();
 		this.activeAdvice.clear();
 		this.status.activeNotesPending = 0;
@@ -3203,6 +3277,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		delete this.configurationReprimeSnapshot;
 		delete this.lastReviewSubmittedTurn;
 		delete this.lastReviewSubmittedAt;
+		delete this.automaticMemoryFollowUpDeliveryId;
 		this.pendingAdvice.clear();
 		this.activeAdvice.clear();
 		this.restoredRecoveryPending = false;
@@ -3227,6 +3302,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		this.status.retryPending = false;
 		this.status.retryDelayMs = 0;
 		this.clearCadenceTimer();
+		delete this.automaticMemoryFollowUpDeliveryId;
 		await this.disposeNestedSession();
 		this.persistState();
 		this.disposed = true;

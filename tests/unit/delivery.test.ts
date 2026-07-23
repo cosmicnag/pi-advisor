@@ -6,7 +6,7 @@ const idleMemory: AdviceDispatchState = {
 	forceDeferred: false,
 	aborted: false,
 	idle: true,
-	stale: false,
+	newerInstructionInput: false,
 	memorySuggestion: true,
 	memoryCapabilityAvailable: true,
 };
@@ -23,17 +23,31 @@ describe("Advisor delivery selection", () => {
 		).toBe("steer");
 	});
 
-	it("triggers a follow-up only for a current idle Memory suggestion with capability", () => {
-		expect(selectAdviceDispatch(idleMemory)).toBe("followUp");
+	it("follows up for a stale idle Memory suggestion without newer instruction input", () => {
+		const chronologicallyStale = { ...idleMemory, stale: true };
+		expect(selectAdviceDispatch(chronologicallyStale)).toBe("followUp");
+	});
+
+	it("defers an idle Memory suggestion after newer instruction input", () => {
+		expect(selectAdviceDispatch({ ...idleMemory, newerInstructionInput: true })).toBe("deferred");
+	});
+
+	it("never follows up for ordinary idle advice or unavailable capability", () => {
+		expect(selectAdviceDispatch({ ...idleMemory, memorySuggestion: false })).toBe("deferred");
 		expect(selectAdviceDispatch({ ...idleMemory, memoryCapabilityAvailable: false })).toBe(
 			"deferred",
 		);
-		expect(selectAdviceDispatch({ ...idleMemory, stale: true })).toBe("deferred");
-		expect(selectAdviceDispatch({ ...idleMemory, memorySuggestion: false })).toBe("deferred");
 	});
 
 	it("preserves forced and aborted deferral boundaries", () => {
 		expect(selectAdviceDispatch({ ...idleMemory, forceDeferred: true })).toBe("deferred");
 		expect(selectAdviceDispatch({ ...idleMemory, aborted: true })).toBe("deferred");
+		expect(
+			selectAdviceDispatch({
+				...idleMemory,
+				forceDeferred: true,
+				aborted: true,
+			}),
+		).toBe("deferred");
 	});
 });

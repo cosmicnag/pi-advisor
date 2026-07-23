@@ -59,6 +59,25 @@ export function cursorMatches(branch: SessionEntry[], cursor: AdvisorCursor): bo
 	return validateCursor(branch, cursor) === "valid";
 }
 
+export function branchHasNewerInstructionInput(
+	branch: SessionEntry[],
+	window: AdvisorCursor,
+): boolean {
+	for (let index = window.expectedIndex; index < branch.length; index++) {
+		const entry = branch[index];
+		if (entry === undefined) continue;
+		if (entry.type === "custom_message") {
+			if (entry.customType !== ADVISOR_CUSTOM_TYPE) return true;
+			continue;
+		}
+		if (!isMessageEntry(entry)) continue;
+		const message = entry.message;
+		if (message.role === "user" || message.role === "bashExecution") return true;
+		if (message.role === "custom" && message.customType !== ADVISOR_CUSTOM_TYPE) return true;
+	}
+	return false;
+}
+
 function stringValue(value: unknown, fallback = ""): string {
 	return typeof value === "string" ? value : fallback;
 }

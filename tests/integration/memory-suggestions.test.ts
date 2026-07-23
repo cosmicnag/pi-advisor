@@ -550,6 +550,92 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 		}
 	});
 
+	it("does not suppress terminal review after a stale active Memory steer", async () => {
+		const executorBarrier = createBarrier();
+		const continuationBarrier = createBarrier();
+		const advisorBarrier = createBarrier();
+		const hold = defineTool({
+			name: "hold",
+			label: "hold",
+			description: "Create an active Executor boundary.",
+			parameters: Type.Object({}),
+			execute: () =>
+				Promise.resolve({ content: [{ type: "text" as const, text: "held" }], details: {} }),
+		});
+		const primary = createPrimaryProvider([
+			{
+				content: [{ type: "toolCall", id: "hold-stale-memory", name: "hold", arguments: {} }],
+				stopReason: "toolUse",
+			},
+			{
+				waitFor: executorBarrier.promise,
+				content: [{ type: "text", text: "terminal result after the stale Memory steer" }],
+			},
+			{
+				waitFor: continuationBarrier.promise,
+				content: [{ type: "text", text: "processed the active Memory suggestion" }],
+			},
+		]);
+		const advisor = createAdvisorProvider([
+			{ ...memorySuggestion(proposed), waitFor: advisorBarrier.promise },
+			{ content: [] },
+			{ content: [] },
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			customTools: [hold, compatibleMemoryTool()],
+			tools: ["hold", "memory_suggest"],
+			mode: "rpc",
+		});
+		try {
+			const activeTurn = harness.session.prompt("review a stale active Memory steer");
+			await waitFor(
+				() =>
+					advisor.activeRequests === 1 &&
+					primary.requests.length === 2 &&
+					primary.activeRequests === 1,
+			);
+			harness.sessionManager.appendMessage({
+				role: "toolResult",
+				toolCallId: "late-active-result",
+				toolName: "hold",
+				content: [{ type: "text", text: "newer active Executor evidence" }],
+				isError: false,
+				timestamp: Date.now(),
+			});
+			advisorBarrier.release();
+			await waitFor(() => runtime?.getStatus().activeNotesPending === 1);
+
+			executorBarrier.release();
+			await waitFor(() => primary.requests.length === 3 && primary.activeRequests === 1);
+			await waitFor(() => advisor.requests.length === 2);
+			expect(JSON.stringify(advisor.requests[1]?.context)).toContain(
+				"terminal result after the stale Memory steer",
+			);
+			expect(
+				harness.sessionManager
+					.getBranch()
+					.some(
+						(entry) =>
+							entry.type === "custom_message" &&
+							entry.customType === "pi-advisor-note" &&
+							(entry.details as Record<string, unknown> | undefined)?.stale === true,
+					),
+			).toBe(true);
+
+			continuationBarrier.release();
+			await activeTurn;
+		} finally {
+			advisorBarrier.release();
+			executorBarrier.release();
+			continuationBarrier.release();
+			await harness.dispose();
+		}
+	});
+
 	it("rechecks capability loss before active steering and removes call guidance", async () => {
 		const executorBarrier = createBarrier();
 		const advisorBarrier = createBarrier();
