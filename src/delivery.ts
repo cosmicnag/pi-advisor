@@ -9,7 +9,7 @@ export interface AdviceDispatchState {
 	forceDeferred: boolean;
 	aborted: boolean;
 	idle: boolean;
-	stale: boolean;
+	newerInstructionInput: boolean;
 	memorySuggestion: boolean;
 	memoryCapabilityAvailable: boolean;
 }
@@ -17,7 +17,7 @@ export interface AdviceDispatchState {
 export function selectAdviceDispatch(state: AdviceDispatchState): AdviceDispatch {
 	if (state.forceDeferred || state.aborted) return "deferred";
 	if (!state.idle) return "steer";
-	if (state.memorySuggestion && !state.stale && state.memoryCapabilityAvailable) {
+	if (state.memorySuggestion && !state.newerInstructionInput && state.memoryCapabilityAvailable) {
 		return "followUp";
 	}
 	return "deferred";

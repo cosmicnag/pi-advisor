@@ -3,6 +3,7 @@ import {
 	defineTool,
 	type ExtensionAPI,
 	type InlineExtension,
+	type SessionManager,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -545,6 +546,92 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 			});
 		} finally {
 			executorBarrier.release();
+			await harness.dispose();
+		}
+	});
+
+	it("does not suppress terminal review after a stale active Memory steer", async () => {
+		const executorBarrier = createBarrier();
+		const continuationBarrier = createBarrier();
+		const advisorBarrier = createBarrier();
+		const hold = defineTool({
+			name: "hold",
+			label: "hold",
+			description: "Create an active Executor boundary.",
+			parameters: Type.Object({}),
+			execute: () =>
+				Promise.resolve({ content: [{ type: "text" as const, text: "held" }], details: {} }),
+		});
+		const primary = createPrimaryProvider([
+			{
+				content: [{ type: "toolCall", id: "hold-stale-memory", name: "hold", arguments: {} }],
+				stopReason: "toolUse",
+			},
+			{
+				waitFor: executorBarrier.promise,
+				content: [{ type: "text", text: "terminal result after the stale Memory steer" }],
+			},
+			{
+				waitFor: continuationBarrier.promise,
+				content: [{ type: "text", text: "processed the active Memory suggestion" }],
+			},
+		]);
+		const advisor = createAdvisorProvider([
+			{ ...memorySuggestion(proposed), waitFor: advisorBarrier.promise },
+			{ content: [] },
+			{ content: [] },
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			customTools: [hold, compatibleMemoryTool()],
+			tools: ["hold", "memory_suggest"],
+			mode: "rpc",
+		});
+		try {
+			const activeTurn = harness.session.prompt("review a stale active Memory steer");
+			await waitFor(
+				() =>
+					advisor.activeRequests === 1 &&
+					primary.requests.length === 2 &&
+					primary.activeRequests === 1,
+			);
+			harness.sessionManager.appendMessage({
+				role: "toolResult",
+				toolCallId: "late-active-result",
+				toolName: "hold",
+				content: [{ type: "text", text: "newer active Executor evidence" }],
+				isError: false,
+				timestamp: Date.now(),
+			});
+			advisorBarrier.release();
+			await waitFor(() => runtime?.getStatus().activeNotesPending === 1);
+
+			executorBarrier.release();
+			await waitFor(() => primary.requests.length === 3 && primary.activeRequests === 1);
+			await waitFor(() => advisor.requests.length === 2);
+			expect(JSON.stringify(advisor.requests[1]?.context)).toContain(
+				"terminal result after the stale Memory steer",
+			);
+			expect(
+				harness.sessionManager
+					.getBranch()
+					.some(
+						(entry) =>
+							entry.type === "custom_message" &&
+							entry.customType === "pi-advisor-note" &&
+							(entry.details as Record<string, unknown> | undefined)?.stale === true,
+					),
+			).toBe(true);
+
+			continuationBarrier.release();
+			await activeTurn;
+		} finally {
+			advisorBarrier.release();
+			executorBarrier.release();
+			continuationBarrier.release();
 			await harness.dispose();
 		}
 	});
@@ -1146,6 +1233,101 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 		} finally {
 			advisorBarrier.release();
 			executorBarrier.release();
+			await harness.dispose();
+		}
+	});
+
+	it.each([
+		{
+			label: "newer user input",
+			append: (manager: SessionManager) =>
+				manager.appendMessage({
+					role: "user",
+					content: "newer instruction from the user",
+					timestamp: Date.now(),
+				}),
+		},
+		{
+			label: "normal bash execution",
+			append: (manager: SessionManager) =>
+				manager.appendMessage({
+					role: "bashExecution",
+					command: "touch normal-side-effect",
+					output: "",
+					exitCode: 0,
+					cancelled: false,
+					truncated: false,
+					timestamp: Date.now(),
+				}),
+		},
+		{
+			label: "context-excluded bash execution",
+			append: (manager: SessionManager) =>
+				manager.appendMessage({
+					role: "bashExecution",
+					command: "touch hidden-side-effect",
+					output: "",
+					exitCode: 0,
+					cancelled: false,
+					truncated: false,
+					excludeFromContext: true,
+					timestamp: Date.now(),
+				}),
+		},
+		{
+			label: "foreign custom message",
+			append: (manager: SessionManager) =>
+				manager.appendCustomMessageEntry(
+					"foreign-extension",
+					"Follow these newer extension instructions.",
+					false,
+				),
+		},
+		{
+			label: "custom-role instruction message",
+			append: (manager: SessionManager) =>
+				manager.appendMessage({
+					role: "custom",
+					customType: "foreign-instruction",
+					content: "Apply this newer instruction.",
+					display: false,
+					timestamp: Date.now(),
+				}),
+		},
+	])("keeps a late Memory suggestion deferred after $label", async ({ append }) => {
+		const advisorBarrier = createBarrier();
+		const submit = vi.fn();
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "reviewed terminal answer" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			{ ...memorySuggestion(proposed), waitFor: advisorBarrier.promise },
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			customTools: [compatibleMemoryTool(submit)],
+			tools: ["memory_suggest"],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("start a late Memory review");
+			await waitFor(() => advisor.activeRequests === 1);
+			append(harness.sessionManager);
+			advisorBarrier.release();
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			expect(primary.requests).toHaveLength(1);
+			expect(advisor.requests).toHaveLength(1);
+			expect(submit).not.toHaveBeenCalled();
+			expect(runtime?.getStatus()).toMatchObject({
+				memorySuggestionsDelivered: 0,
+				activeNotesPending: 0,
+				deferredNotesPending: 1,
+			});
+		} finally {
+			advisorBarrier.release();
 			await harness.dispose();
 		}
 	});
