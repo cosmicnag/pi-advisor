@@ -29,7 +29,7 @@ _Pi Advisor reviewing a synthetic cache implementation in a privacy-safe demo se
 - Protected and bounded `read`, `grep`, `find`, and `ls` tools, with no mutating Advisor tools.
 - Context, update, tool-call, turn, pending-byte, and opt-in cumulative token and reported-cost governors.
 - Branch, compaction, session replacement, retry, and compatible-resume handling.
-- Optional capability-based Memory suggestions without a Memory Lane dependency.
+- Optional capability-based Memory suggestions without a [Memory Lane](https://github.com/ribbons-digital/memory-lane) dependency.
 - Local redacted activity records enabled by default, with metadata-only review, tool-order, outcome, usage, and cost details.
 - No product telemetry or automatic crash reporting.
 
