@@ -28,7 +28,7 @@ describe("public release surface", () => {
 			pi: {
 				extensions: ["./src/index.ts"],
 				image:
-					"https://raw.githubusercontent.com/ribbons-digital/pi-advisor/refs/heads/main/docs/assets/advisor-in-action.png",
+					"https://raw.githubusercontent.com/ribbons-digital/pi-advisor/66cd0253c6ee84471a9870dfce806fc767f26bd3/docs/assets/advisor-in-action.png",
 			},
 		});
 		expect(manifest.private).not.toBe(true);
