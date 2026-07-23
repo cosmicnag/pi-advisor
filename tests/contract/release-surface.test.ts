@@ -9,7 +9,7 @@ const manifest = JSON.parse(readFileSync("package.json", "utf8")) as {
 	keywords?: string[];
 	files?: string[];
 	publishConfig?: { access?: string; provenance?: boolean; tag?: string };
-	pi?: { extensions?: string[] };
+	pi?: { extensions?: string[]; image?: string };
 };
 const readme = readFileSync("README.md", "utf8");
 const publicDocs = [
@@ -25,7 +25,11 @@ describe("public release surface", () => {
 			name: "@ribbons-digital/pi-advisor",
 			version: "0.2.1",
 			publishConfig: { access: "public", provenance: true },
-			pi: { extensions: ["./src/index.ts"] },
+			pi: {
+				extensions: ["./src/index.ts"],
+				image:
+					"https://raw.githubusercontent.com/ribbons-digital/pi-advisor/refs/heads/main/docs/assets/advisor-in-action.png",
+			},
 		});
 		expect(manifest.private).not.toBe(true);
 		expect(manifest.publishConfig?.tag).toBeUndefined();

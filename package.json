@@ -45,7 +45,8 @@
 	"pi": {
 		"extensions": [
 			"./src/index.ts"
-		]
+		],
+		"image": "https://raw.githubusercontent.com/ribbons-digital/pi-advisor/refs/heads/main/docs/assets/advisor-in-action.png"
 	},
 	"scripts": {
 		"clean": "rm -rf coverage dist",
