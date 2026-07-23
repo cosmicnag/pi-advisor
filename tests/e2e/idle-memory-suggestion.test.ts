@@ -35,6 +35,14 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 	await expect.poll(predicate, { timeout: 5_000, interval: 10 }).toBe(true);
 }
 
+function createBarrier(): { promise: Promise<void>; release: () => void } {
+	let release: () => void = () => undefined;
+	const promise = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	return { promise, release };
+}
+
 const proposed = "Use sfw-prefixed pnpm commands for package installation in this project.";
 
 function packedMemorySuggestion() {
@@ -91,7 +99,20 @@ describe.sequential("packed idle Memory suggestion delivery", () => {
 				pathToFileURL(join(unpacked, "package", "src", "index.ts")).href
 			)) as PackedAdvisorModule;
 
+			const advisorBarrier = createBarrier();
+			const executorBarrier = createBarrier();
 			const submit = vi.fn();
+			const inspectTool = defineTool({
+				name: "inspect",
+				label: "inspect",
+				description: "Produce intermediate Executor evidence.",
+				parameters: Type.Object({}),
+				execute: () =>
+					Promise.resolve({
+						content: [{ type: "text" as const, text: "intermediate cleanup completed" }],
+						details: {},
+					}),
+			});
 			const memoryTool = defineTool({
 				name: "memory_suggest",
 				label: "memory_suggest",
@@ -110,7 +131,16 @@ describe.sequential("packed idle Memory suggestion delivery", () => {
 				},
 			});
 			const primary = createPrimaryProvider([
-				{ content: [{ type: "text", text: "terminal answer" }] },
+				{
+					content: [
+						{ type: "toolCall", id: "packed-intermediate-inspect", name: "inspect", arguments: {} },
+					],
+					stopReason: "toolUse",
+				},
+				{
+					waitFor: executorBarrier.promise,
+					content: [{ type: "text", text: "terminal answer after newer Executor activity" }],
+				},
 				{
 					content: [
 						{
@@ -124,7 +154,9 @@ describe.sequential("packed idle Memory suggestion delivery", () => {
 				},
 				{ content: [{ type: "text", text: "Queued the pending memory." }] },
 			]);
-			const advisor = createAdvisorProvider([packedMemorySuggestion(), { content: [] }]);
+			const advisor = createAdvisorProvider([
+				{ ...packedMemorySuggestion(), waitFor: advisorBarrier.promise },
+			]);
 			let runtime: AdvisorRuntime | undefined;
 			const harness = await createSessionHarness({
 				provider: primary,
@@ -138,24 +170,49 @@ describe.sequential("packed idle Memory suggestion delivery", () => {
 						}),
 					},
 				],
-				customTools: [memoryTool],
-				tools: ["memory_suggest"],
+				customTools: [inspectTool, memoryTool],
+				tools: ["inspect", "memory_suggest"],
 				mode: "rpc",
 			});
 			try {
-				await harness.session.prompt("produce a late durable suggestion");
-				await waitFor(() => submit.mock.calls.length === 1 && primary.requests.length === 3);
+				const executorTurn = harness.session.prompt("produce a late durable suggestion");
+				await waitFor(
+					() =>
+						advisor.activeRequests === 1 &&
+						primary.activeRequests === 1 &&
+						primary.requests.length === 2,
+				);
+				executorBarrier.release();
+				await executorTurn;
+				advisorBarrier.release();
+				await expect.poll(() => primary.requests.length, { timeout: 5_000, interval: 10 }).toBe(4);
+				await waitFor(() => submit.mock.calls.length === 1);
+				expect(submit).toHaveBeenCalledTimes(1);
 				expect(submit).toHaveBeenCalledWith({
 					text: proposed,
 					category: "project",
 					status: "pending",
 				});
-				expect(JSON.stringify(primary.requests[1]?.context)).toContain('delivery=\\"active\\"');
+				expect(JSON.stringify(primary.requests[2]?.context)).toContain('delivery=\\"active\\"');
+				expect(JSON.stringify(primary.requests[2]?.context)).toContain('stale=\\"true\\"');
+				const delivered = harness.sessionManager
+					.getEntries()
+					.find(
+						(entry) => entry.type === "custom_message" && entry.customType === "pi-advisor-note",
+					);
+				expect(delivered?.type === "custom_message" ? delivered.details : undefined).toMatchObject({
+					delivery: "active",
+					stale: true,
+					intent: "memory-suggestion",
+				});
+				expect(advisor.requests).toHaveLength(1);
 				expect(runtime?.getStatus()).toMatchObject({
 					memorySuggestionsDelivered: 1,
 					deferredNotesPending: 0,
 				});
 			} finally {
+				executorBarrier.release();
+				advisorBarrier.release();
 				await harness.dispose();
 			}
 

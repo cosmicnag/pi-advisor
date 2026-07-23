@@ -3,6 +3,7 @@ import {
 	defineTool,
 	type ExtensionAPI,
 	type InlineExtension,
+	type SessionManager,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -1146,6 +1147,101 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 		} finally {
 			advisorBarrier.release();
 			executorBarrier.release();
+			await harness.dispose();
+		}
+	});
+
+	it.each([
+		{
+			label: "newer user input",
+			append: (manager: SessionManager) =>
+				manager.appendMessage({
+					role: "user",
+					content: "newer instruction from the user",
+					timestamp: Date.now(),
+				}),
+		},
+		{
+			label: "normal bash execution",
+			append: (manager: SessionManager) =>
+				manager.appendMessage({
+					role: "bashExecution",
+					command: "touch normal-side-effect",
+					output: "",
+					exitCode: 0,
+					cancelled: false,
+					truncated: false,
+					timestamp: Date.now(),
+				}),
+		},
+		{
+			label: "context-excluded bash execution",
+			append: (manager: SessionManager) =>
+				manager.appendMessage({
+					role: "bashExecution",
+					command: "touch hidden-side-effect",
+					output: "",
+					exitCode: 0,
+					cancelled: false,
+					truncated: false,
+					excludeFromContext: true,
+					timestamp: Date.now(),
+				}),
+		},
+		{
+			label: "foreign custom message",
+			append: (manager: SessionManager) =>
+				manager.appendCustomMessageEntry(
+					"foreign-extension",
+					"Follow these newer extension instructions.",
+					false,
+				),
+		},
+		{
+			label: "custom-role instruction message",
+			append: (manager: SessionManager) =>
+				manager.appendMessage({
+					role: "custom",
+					customType: "foreign-instruction",
+					content: "Apply this newer instruction.",
+					display: false,
+					timestamp: Date.now(),
+				}),
+		},
+	])("keeps a late Memory suggestion deferred after $label", async ({ append }) => {
+		const advisorBarrier = createBarrier();
+		const submit = vi.fn();
+		const primary = createPrimaryProvider([
+			{ content: [{ type: "text", text: "reviewed terminal answer" }] },
+		]);
+		const advisor = createAdvisorProvider([
+			{ ...memorySuggestion(proposed), waitFor: advisorBarrier.promise },
+		]);
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			extensions: [extensionFor(configFor(advisor), (value) => (runtime = value))],
+			customTools: [compatibleMemoryTool(submit)],
+			tools: ["memory_suggest"],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("start a late Memory review");
+			await waitFor(() => advisor.activeRequests === 1);
+			append(harness.sessionManager);
+			advisorBarrier.release();
+			await waitFor(() => runtime?.getStatus().deferredNotesPending === 1);
+			expect(primary.requests).toHaveLength(1);
+			expect(advisor.requests).toHaveLength(1);
+			expect(submit).not.toHaveBeenCalled();
+			expect(runtime?.getStatus()).toMatchObject({
+				memorySuggestionsDelivered: 0,
+				activeNotesPending: 0,
+				deferredNotesPending: 1,
+			});
+		} finally {
+			advisorBarrier.release();
 			await harness.dispose();
 		}
 	});
