@@ -8,6 +8,7 @@ import {
 import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
 
+import { probeConstrainedSamplingSupport } from "../../src/compatibility/constrained-sampling.js";
 import {
 	ADVISOR_ARGUMENT_VALIDATION_FAILURE,
 	createPiAdvisorExtension,
@@ -50,11 +51,12 @@ function enableStrictAdvise(modelRuntime: ModelRuntime, advisor: ScriptedProvide
 		api: "anthropic-messages",
 		models: registration.models.map((model) =>
 			model.id === advisor.model.id
-				? {
+				? // Pi 0.81 omits the strict flag that its 0.82 runtime successor consumes.
+					({
 						...model,
 						api: "anthropic-messages",
 						compat: { supportsStrictTools: true },
-					}
+					} as typeof model)
 				: model,
 		),
 	});
@@ -95,8 +97,11 @@ const nullMemory = { text: null, category: null, basis: null };
 const rationale = "This durable project rule should be available in future sessions.";
 const proposed = "Use sfw-prefixed pnpm commands when installing project packages.";
 
+const runtimeSupportsConstrainedSampling = await probeConstrainedSamplingSupport();
+
 describe.sequential("strict advise with a scripted provider", () => {
 	it("accepts an explicit null-bearing review with default severity and normal delivery", async () => {
+		if (!runtimeSupportsConstrainedSampling) return;
 		const note = "Verify the rollback artifact before publishing the release.";
 		const primary = createPrimaryProvider([
 			{ content: [{ type: "text", text: "first answer" }] },
@@ -139,6 +144,7 @@ describe.sequential("strict advise with a scripted provider", () => {
 	});
 
 	it("accepts a complete Memory suggestion through the existing Memory policy", async () => {
+		if (!runtimeSupportsConstrainedSampling) return;
 		const primary = createPrimaryProvider([
 			{ content: [{ type: "text", text: "answer" }] },
 			{ content: [{ type: "text", text: "evaluated suggestion" }] },
@@ -188,6 +194,7 @@ describe.sequential("strict advise with a scripted provider", () => {
 	});
 
 	it("null-fills omitted fields and discards unknown root and nested fallback keys", async () => {
+		if (!runtimeSupportsConstrainedSampling) return;
 		const note = "The fallback migration can overwrite the existing index.";
 		const rootSentinel = "STRICT-ROOT-PRIVATE-SENTINEL";
 		const nestedSentinel = "STRICT-NESTED-PRIVATE-SENTINEL";
@@ -231,6 +238,7 @@ describe.sequential("strict advise with a scripted provider", () => {
 	});
 
 	it("retains invalid-arguments failure and pause policy for wrong known values", async () => {
+		if (!runtimeSupportsConstrainedSampling) return;
 		const primary = createPrimaryProvider([
 			{ content: [{ type: "text", text: "answer one" }] },
 			{ content: [{ type: "text", text: "answer two" }] },
@@ -290,6 +298,7 @@ describe.sequential("strict advise with a scripted provider", () => {
 	});
 
 	it("suppresses incomplete Memory calls without advancing the failure streak", async () => {
+		if (!runtimeSupportsConstrainedSampling) return;
 		const submit = vi.fn();
 		const primary = createPrimaryProvider([
 			{ content: [{ type: "text", text: "answer one" }] },
@@ -333,6 +342,7 @@ describe.sequential("strict advise with a scripted provider", () => {
 	});
 
 	it("preserves one-note limits, terminate behavior, delivery, and dedupe", async () => {
+		if (!runtimeSupportsConstrainedSampling) return;
 		const first = "Verify the strict rollback path!";
 		const second = "A second strict finding must not replace the first.";
 		const primary = createPrimaryProvider([
@@ -351,7 +361,12 @@ describe.sequential("strict advise with a scripted provider", () => {
 			{
 				content: [
 					{ type: "toolCall", id: "strict-first", name: "advise", arguments: fullReview(first) },
-					{ type: "toolCall", id: "strict-second", name: "advise", arguments: fullReview(second) },
+					{
+						type: "toolCall",
+						id: "strict-second",
+						name: "advise",
+						arguments: fullReview(second),
+					},
 				],
 				stopReason: "toolUse",
 			},

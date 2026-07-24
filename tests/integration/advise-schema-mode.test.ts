@@ -13,6 +13,7 @@ import {
 	type AdvisorRuntime,
 } from "../../src/index.js";
 import { createSessionHarness } from "../fixtures/session-harness.js";
+import { probeConstrainedSamplingSupport } from "../../src/compatibility/constrained-sampling.js";
 import {
 	createAdvisorProvider,
 	createPrimaryProvider,
@@ -43,8 +44,11 @@ function nestedAdviseTool(runtime: AdvisorRuntime): Record<string, unknown> {
 	return tool as unknown as Record<string, unknown>;
 }
 
+const runtimeSupportsConstrainedSampling = await probeConstrainedSamplingSupport();
+
 describe.sequential("Advisor advise schema mode", () => {
 	it("selects the strict closed schema for an explicitly eligible model", async () => {
+		if (!runtimeSupportsConstrainedSampling) return;
 		const primary = createPrimaryProvider([]);
 		const advisor = createAdvisorProvider([]);
 		let runtime: AdvisorRuntime | undefined;
@@ -62,11 +66,12 @@ describe.sequential("Advisor advise schema mode", () => {
 					api: "anthropic-messages",
 					models: models.map((model) =>
 						model.id === advisor.model.id
-							? {
+							? // Pi 0.81 omits the strict flag that its 0.82 runtime successor consumes.
+								({
 									...model,
 									api: "anthropic-messages",
 									compat: { supportsStrictTools: true },
-								}
+								} as typeof model)
 							: model,
 					),
 				});

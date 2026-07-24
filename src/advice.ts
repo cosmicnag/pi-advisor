@@ -764,11 +764,15 @@ function normalizeStrictAdviseWireInput(input: unknown): AdviseWireInput {
 	};
 }
 
+type StrictAdviseToolDefinition = ToolDefinition<typeof STRICT_ADVISE_WIRE_SCHEMA> & {
+	constrainedSampling?: { type: "json_schema"; strict: "prefer" };
+};
+
 export function createStrictAdviseTool(
 	config: AdvisorConfig,
 	collector: AdviceCollector,
 	onExecutionStart?: (toolCallId: string) => void,
-): ToolDefinition<typeof STRICT_ADVISE_WIRE_SCHEMA> {
+): StrictAdviseToolDefinition {
 	return {
 		name: "advise",
 		label: "advise",

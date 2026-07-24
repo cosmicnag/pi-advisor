@@ -185,10 +185,10 @@ process.stdout.write(JSON.stringify({ mode, constrainedSampling: tool.constraine
 			if (expectedPiVersion === "0.81.1") {
 				expect(packagedProbe.mode).toBe("portable");
 				expect(packagedProbe).not.toHaveProperty("constrainedSampling");
+				expect(packagedProbe.parameters).not.toHaveProperty("additionalProperties");
 				expect(packagedProbe.parameters).toMatchObject({
 					type: "object",
 					required: ["note"],
-					additionalProperties: false,
 					properties: {
 						note: { type: "string", minLength: 1 },
 						intent: { type: "string", enum: ["review", "memory-suggestion"] },

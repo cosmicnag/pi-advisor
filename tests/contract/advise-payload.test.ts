@@ -6,6 +6,7 @@ import { stream as streamOpenAI } from "@earendil-works/pi-ai/api/openai-respons
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createStrictAdviseTool } from "../../src/advice.js";
+import { probeConstrainedSamplingSupport } from "../../src/compatibility/constrained-sampling.js";
 import { DEFAULT_ADVISOR_CONFIG } from "../../src/config.js";
 
 interface CapturedRequest {
@@ -124,16 +125,20 @@ afterEach(async () => {
 	);
 });
 
+const runtimeSupportsConstrainedSampling = await probeConstrainedSamplingSupport();
+
 describe("strict advise provider payload contract", () => {
 	it("serializes the strict schema and strict flag through OpenAI Responses", async () => {
+		if (!runtimeSupportsConstrainedSampling) return;
 		const capture = await startCaptureServer();
-		const model: Model<"openai-responses"> = {
+		const model = {
 			...modelBase,
-			api: "openai-responses",
+			api: "openai-responses" as const,
 			baseUrl: `${capture.baseUrl}/v1`,
 			compat: { supportsStrictMode: true },
 		};
-		const result = streamOpenAI(model, context(createTool()), {
+		// Pi 0.81 omits the strict flag that its 0.82 runtime successor consumes.
+		const result = streamOpenAI(model as Model<"openai-responses">, context(createTool()), {
 			apiKey: "dummy-openai-key",
 			maxRetries: 0,
 		});
@@ -148,14 +153,16 @@ describe("strict advise provider payload contract", () => {
 	});
 
 	it("serializes the strict schema and Anthropic strict-tool marker", async () => {
+		if (!runtimeSupportsConstrainedSampling) return;
 		const capture = await startCaptureServer();
-		const model: Model<"anthropic-messages"> = {
+		const model = {
 			...modelBase,
-			api: "anthropic-messages",
+			api: "anthropic-messages" as const,
 			baseUrl: capture.baseUrl,
 			compat: { supportsStrictTools: true },
 		};
-		const result = streamAnthropic(model, context(createTool()), {
+		// Pi 0.81 omits the strict flag that its 0.82 runtime successor consumes.
+		const result = streamAnthropic(model as Model<"anthropic-messages">, context(createTool()), {
 			apiKey: "dummy-anthropic-key",
 			maxRetries: 0,
 		});

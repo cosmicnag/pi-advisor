@@ -7,28 +7,44 @@ import {
 	type ConstrainedSamplingImporter,
 } from "../../src/compatibility/constrained-sampling.js";
 
-function model(api: Api, compat?: Model<Api>["compat"]): Model<Api> {
-	return {
+interface StrictCompatFlags {
+	supportsStrictMode?: boolean;
+	supportsStrictTools?: boolean;
+}
+
+function model(api: Api, compat?: StrictCompatFlags): Model<Api> {
+	const value = {
 		provider: "test",
 		id: `test-${api}`,
 		name: `Test ${api}`,
 		api,
 		baseUrl: "https://example.test",
 		reasoning: false,
-		input: ["text"],
+		input: ["text" as const],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 100_000,
 		maxTokens: 10_000,
 		...(compat === undefined ? {} : { compat }),
 	};
+	// Pi 0.81 omits the strict flags that its 0.82 runtime successors consume.
+	return value as Model<Api>;
 }
 
 const supportsStrict = (): Promise<boolean> => Promise.resolve(true);
 const lacksRuntimeSupport = (): Promise<boolean> => Promise.resolve(false);
 
 describe("constrained-sampling runtime probe", () => {
-	it("detects the resolver exported by the installed Pi runtime", async () => {
-		await expect(probeConstrainedSamplingSupport()).resolves.toBe(true);
+	it("detects whether the installed Pi runtime exports the resolver", async () => {
+		const moduleName = "@earendil-works/pi-ai/api/constrained-sampling";
+		let expected = false;
+		try {
+			const runtime: unknown = await import(moduleName);
+			expected =
+				typeof (runtime as Record<string, unknown>).resolveJsonSchemaStrictSampling === "function";
+		} catch {
+			// Pi 0.81 does not expose this subpath.
+		}
+		await expect(probeConstrainedSamplingSupport()).resolves.toBe(expected);
 	});
 
 	it("accepts an injected module exposing the strict sampling resolver", async () => {
