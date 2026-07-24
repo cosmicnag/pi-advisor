@@ -1735,12 +1735,7 @@ export class AdvisorRuntime {
 				// Schema selection is diagnostic only and must fail closed without blocking Advisor.
 			}
 			if (!this.activationStillCurrent(ctx, activationEpoch)) return;
-			await this.createNestedSession(
-				ctx,
-				resolved.model,
-				resolved.modelRuntime,
-				adviseSchemaMode,
-			);
+			await this.createNestedSession(ctx, resolved.model, resolved.modelRuntime, adviseSchemaMode);
 			if (!this.activationStillCurrent(ctx, activationEpoch)) {
 				await this.disposeNestedSession();
 				return;

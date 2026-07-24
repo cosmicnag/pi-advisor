@@ -151,9 +151,7 @@ const STRICT_ADVISE_WIRE_SCHEMA_SHAPE = Type.Object(
 );
 
 /** Provider-compatible, closed schema used only when constrained sampling is available. */
-export const STRICT_ADVISE_WIRE_SCHEMA = Type.Unsafe<unknown>(
-	STRICT_ADVISE_WIRE_SCHEMA_SHAPE,
-);
+export const STRICT_ADVISE_WIRE_SCHEMA = Type.Unsafe<unknown>(STRICT_ADVISE_WIRE_SCHEMA_SHAPE);
 
 const ADVISE_WIRE_VALIDATION_TOOL = {
 	name: "advise",

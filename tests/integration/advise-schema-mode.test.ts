@@ -63,10 +63,10 @@ describe.sequential("Advisor advise schema mode", () => {
 					models: models.map((model) =>
 						model.id === advisor.model.id
 							? {
-								...model,
-								api: "anthropic-messages",
-								compat: { supportsStrictTools: true },
-							}
+									...model,
+									api: "anthropic-messages",
+									compat: { supportsStrictTools: true },
+								}
 							: model,
 					),
 				});

@@ -45,10 +45,7 @@ function prepareAndValidate(
 	return prepared;
 }
 
-async function executeStrict(
-	tool: ReturnType<typeof createStrictAdviseTool>,
-	raw: unknown,
-) {
+async function executeStrict(tool: ReturnType<typeof createStrictAdviseTool>, raw: unknown) {
 	const prepared = prepareAndValidate(tool, raw);
 	return tool.execute("strict-advise", prepared, undefined, undefined, undefined as never);
 }
@@ -85,13 +82,7 @@ describe("strict advise wire contract", () => {
 		expect(schema.type).toBe("object");
 		expect(schema.required).toEqual(["note"]);
 		expect(schema).not.toHaveProperty("additionalProperties");
-		expect(Object.keys(properties)).toEqual([
-			"note",
-			"intent",
-			"severity",
-			"findingKey",
-			"memory",
-		]);
+		expect(Object.keys(properties)).toEqual(["note", "intent", "severity", "findingKey", "memory"]);
 		expect(memory).not.toHaveProperty("additionalProperties");
 		expect(memory).not.toHaveProperty("required");
 		expect(tool).not.toHaveProperty("constrainedSampling");
@@ -111,25 +102,12 @@ describe("strict advise wire contract", () => {
 		expect(memory.additionalProperties).toBe(false);
 		expect(memory.required).toEqual(["text", "category", "basis"]);
 		expect(asRecord(properties.intent).type).toEqual(["string", "null"]);
-		expect(asRecord(properties.intent).enum).toEqual([
-			"review",
-			"memory-suggestion",
-			null,
-		]);
+		expect(asRecord(properties.intent).enum).toEqual(["review", "memory-suggestion", null]);
 		expect(asRecord(properties.severity).type).toEqual(["string", "null"]);
-		expect(asRecord(properties.severity).enum).toEqual([
-			"nit",
-			"concern",
-			"blocker",
-			null,
-		]);
+		expect(asRecord(properties.severity).enum).toEqual(["nit", "concern", "blocker", null]);
 		expect(asRecord(properties.findingKey).type).toEqual(["string", "null"]);
 		expect(asRecord(memoryProperties.text).type).toEqual(["string", "null"]);
-		expect(asRecord(memoryProperties.category).enum).toEqual([
-			"preference",
-			"project",
-			null,
-		]);
+		expect(asRecord(memoryProperties.category).enum).toEqual(["preference", "project", null]);
 		expect(asRecord(memoryProperties.basis).enum).toEqual([
 			"gate-milestone",
 			"human-correction",
@@ -219,9 +197,7 @@ describe("strict advise wire contract", () => {
 	it("retains local empty-note and finding-key bounds outside the strict provider schema", () => {
 		const tool = createStrictAdviseTool(DEFAULT_ADVISOR_CONFIG, collector());
 		expect(() => tool.prepareArguments?.({ note: "" })).toThrow();
-		expect(() =>
-			tool.prepareArguments?.({ note: "Material issue.", findingKey: "" }),
-		).toThrow();
+		expect(() => tool.prepareArguments?.({ note: "Material issue.", findingKey: "" })).toThrow();
 		expect(() =>
 			tool.prepareArguments?.({ note: "Material issue.", findingKey: "k".repeat(201) }),
 		).toThrow();
@@ -319,7 +295,10 @@ describe("strict advise wire contract", () => {
 	it.each([
 		{ label: "null memory", memory: null },
 		{ label: "missing text", memory: { category: "project", basis: "project-constraint" } },
-		{ label: "null text", memory: { text: null, category: "project", basis: "project-constraint" } },
+		{
+			label: "null text",
+			memory: { text: null, category: "project", basis: "project-constraint" },
+		},
 		{ label: "missing category", memory: { text: "durable", basis: "project-constraint" } },
 		{ label: "null basis", memory: { text: "durable", category: "project", basis: null } },
 		{
