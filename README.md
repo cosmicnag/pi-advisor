@@ -11,7 +11,8 @@ It stays silent when work is sound and delivers a bounded, actionable note when 
 > When Advisor is active, it sends bounded session content and allowed file content to the model provider you select, which can create additional usage and cost.
 
 > [!IMPORTANT]
-> Pi Advisor 0.2.2 requires Pi (`@earendil-works/pi-coding-agent`) **0.81.1 or newer within 0.81.x**.
+> Pi Advisor 0.2.2 requires Pi (`@earendil-works/pi-coding-agent`) **>=0.81.1 <0.83.0**.
+> Pi 0.82.0 is the primary tested Pi release, with compatibility coverage retained for Pi 0.81.1.
 > Pi 0.80.x is not supported by this release.
 > On Pi 0.80.7, install the pinned legacy release `npm:@ribbons-digital/pi-advisor@0.1.3` instead.
 
@@ -35,12 +36,14 @@ _Pi Advisor reviewing a synthetic cache implementation in a privacy-safe demo se
 
 ## Requirements
 
-- Node.js 22 or later.
-- Pi (`@earendil-works/pi-coding-agent`) 0.81.1 or newer within 0.81.x.
+- Node.js >=22.19.0.
+- Pi (`@earendil-works/pi-coding-agent`) >=0.81.1 <0.83.0.
 
-Declared compatibility range: >=0.81.1 <0.82.0
+Declared compatibility range: >=0.81.1 <0.83.0
 
-Tested Pi release: 0.81.1
+Primary tested Pi release: 0.82.0
+
+Compatibility-tested Pi release: 0.81.1
 
 Pi 0.80.x is not compatible with Pi Advisor 0.2.2.
 Pi Advisor 0.1.3 is the legacy release for Pi 0.80.7.
@@ -70,7 +73,12 @@ Start Pi and run:
 /advisor configure
 ```
 
-The configuration flow selects an authenticated model, reasoning effort, approved read-only tools, and User instructions.
+The configuration flow selects an authenticated model, an independent Advisor reasoning level, approved read-only tools, and User instructions.
+Advisor reasoning choices are derived from the selected model's supported levels, and unsupported levels are omitted.
+A model without reasoning support offers only `off`.
+If the current Advisor reasoning level is unsupported by the selected model, the flow warns and requires a new supported selection.
+On Pi 0.82, the reasoning prompt also shows the current Executor reasoning level as supplementary context, but the Advisor selection remains independent and is not automatically coupled to it.
+The Pi 0.81 compatibility path omits that supplementary Executor text without changing configuration behavior.
 In the TUI, the model picker is focused immediately and fuzzy-searches provider, model ID, and display name as you type; RPC clients retain their standard selection dialog.
 It shows a summary and asks for confirmation before atomically saving `~/.pi/agent/WATCHDOG.yml`.
 

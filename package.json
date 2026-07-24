@@ -59,15 +59,16 @@
 		"test:integration": "vitest run tests/integration",
 		"test:e2e": "vitest run tests/e2e",
 		"verify": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test",
+		"compat:0.81.1": "bash scripts/verify-pi-compat.sh 0.81.1",
 		"pack:inspect": "pnpm --silent pack --json",
 		"pack:prepare": "pnpm --silent pack --out pi-advisor-package.tgz --json > pack.json && tsx scripts/validate-pack.ts pack.json",
 		"pack:validate": "pnpm pack:prepare && rm pack.json pi-advisor-package.tgz"
 	},
 	"peerDependencies": {
-		"@earendil-works/pi-agent-core": ">=0.81.1 <0.82.0",
-		"@earendil-works/pi-ai": ">=0.81.1 <0.82.0",
-		"@earendil-works/pi-coding-agent": ">=0.81.1 <0.82.0",
-		"@earendil-works/pi-tui": ">=0.81.1 <0.82.0"
+		"@earendil-works/pi-agent-core": ">=0.81.1 <0.83.0",
+		"@earendil-works/pi-ai": ">=0.81.1 <0.83.0",
+		"@earendil-works/pi-coding-agent": ">=0.81.1 <0.83.0",
+		"@earendil-works/pi-tui": ">=0.81.1 <0.83.0"
 	},
 	"peerDependenciesMeta": {
 		"@earendil-works/pi-agent-core": {
@@ -81,14 +82,14 @@
 		}
 	},
 	"engines": {
-		"node": ">=22"
+		"node": ">=22.19.0"
 	},
 	"packageManager": "pnpm@10.0.0+sha512.b8fef5494bd3fe4cbd4edabd0745df2ee5be3e4b0b8b08fa643aa3e4c6702ccc0f00d68fa8a8c9858a735a0032485a44990ed2810526c875e416f001b17df12b",
 	"devDependencies": {
-		"@earendil-works/pi-agent-core": "0.81.1",
-		"@earendil-works/pi-ai": "0.81.1",
-		"@earendil-works/pi-coding-agent": "0.81.1",
-		"@earendil-works/pi-tui": "0.81.1",
+		"@earendil-works/pi-agent-core": "0.82.0",
+		"@earendil-works/pi-ai": "0.82.0",
+		"@earendil-works/pi-coding-agent": "0.82.0",
+		"@earendil-works/pi-tui": "0.82.0",
 		"@eslint/js": "9.39.2",
 		"@types/node": "24.10.1",
 		"eslint": "9.39.2",

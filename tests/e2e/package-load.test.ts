@@ -24,6 +24,12 @@ interface PackResult {
 
 const projectRoot = process.cwd();
 const piExecutable = join(projectRoot, "node_modules", ".bin", "pi");
+const projectManifest = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf8")) as {
+	devDependencies?: Record<string, string>;
+};
+const expectedPiVersion =
+	process.env.PI_EXPECTED_VERSION ??
+	projectManifest.devDependencies?.["@earendil-works/pi-coding-agent"];
 
 function runPi(args: string[], cwd: string, env: NodeJS.ProcessEnv, input?: string) {
 	return spawnSync(piExecutable, args, {
@@ -35,6 +41,18 @@ function runPi(args: string[], cwd: string, env: NodeJS.ProcessEnv, input?: stri
 }
 
 describe("packed Pi package", () => {
+	it("uses the intended installed Pi version", () => {
+		expect(expectedPiVersion).toMatch(/^0\.8[12]\.\d+$/);
+		const installedManifest = JSON.parse(
+			readFileSync(
+				join(projectRoot, "node_modules", "@earendil-works", "pi-coding-agent", "package.json"),
+				"utf8",
+			),
+		) as { version?: string };
+		expect(installedManifest.version).toBe(expectedPiVersion);
+		expect(existsSync(piExecutable)).toBe(true);
+	});
+
 	it("installs through Pi and applies WATCHDOG activation only in approved run modes", () => {
 		const root = mkdtempSync(join(tmpdir(), "pi-advisor-packed-e2e-"));
 		const unpacked = join(root, "unpacked");
