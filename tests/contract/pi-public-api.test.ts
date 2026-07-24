@@ -76,7 +76,7 @@ function expectMethod(target: object, name: string): void {
 	expect(typeof (target as Record<string, unknown>)[name]).toBe("function");
 }
 
-describe("pinned Pi 0.81.1 public API contract", () => {
+describe("supported Pi public API contract", () => {
 	it("exports the required SDK constructors and methods", () => {
 		expect(createAgentSession).toBeTypeOf("function");
 		expect(calculateContextTokens).toBeTypeOf("function");

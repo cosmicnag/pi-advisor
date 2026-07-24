@@ -1,3 +1,4 @@
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import {
 	getAgentDir,
 	type ExtensionAPI,
@@ -50,11 +51,16 @@ function publishConfigurationWarnings(
 export const CONFIGURATION_REFERENCE =
 	"docs/configuration.md (https://github.com/ribbons-digital/pi-advisor/blob/main/docs/configuration.md)";
 
+type AdvisorPickerContext = Pick<ExtensionCommandContext, "mode" | "modelRegistry" | "ui"> & {
+	thinkingLevel?: AdvisorConfig["effort"];
+};
+
 export async function pickAdvisorModelAndEffort(
-	ctx: Pick<ExtensionCommandContext, "mode" | "modelRegistry" | "ui">,
+	ctx: AdvisorPickerContext,
 	current?: Pick<AdvisorConfig, "model" | "effort">,
 ): Promise<{ model: string; effort: AdvisorConfig["effort"] } | undefined> {
-	const models = advisorModelOptions(ctx.modelRegistry.getAvailable(), current?.model);
+	const availableModels = ctx.modelRegistry.getAvailable();
+	const models = advisorModelOptions(availableModels, current?.model);
 	if (models.length === 0) {
 		ctx.ui.notify(
 			"No authenticated Advisor models are available. Configure provider credentials, then retry.",
@@ -62,7 +68,7 @@ export async function pickAdvisorModelAndEffort(
 		);
 		return undefined;
 	}
-	const model =
+	const modelReference =
 		ctx.mode === "tui"
 			? await ctx.ui.custom<string | undefined>(
 					(tui, theme, keybindings, done) =>
@@ -72,23 +78,30 @@ export async function pickAdvisorModelAndEffort(
 					"Select Advisor model",
 					models.map((candidate) => candidate.reference),
 				);
-	if (model === undefined) return undefined;
-	const effortOptions: AdvisorConfig["effort"][] = [
-		"off",
-		"minimal",
-		"low",
-		"medium",
-		"high",
-		"xhigh",
-		"max",
-	];
+	if (modelReference === undefined) return undefined;
+	const selectedModel = availableModels.find(
+		(model) => `${model.provider}/${model.id}` === modelReference,
+	);
+	if (selectedModel === undefined) return undefined;
+
+	const effortOptions = getSupportedThinkingLevels(selectedModel) as AdvisorConfig["effort"][];
 	if (current !== undefined) {
 		const index = effortOptions.indexOf(current.effort);
 		if (index > 0) effortOptions.unshift(...effortOptions.splice(index, 1));
+		if (index < 0) {
+			ctx.ui.notify(
+				`Current Advisor reasoning level "${current.effort}" is not supported by ${modelReference}. Choose a supported level.`,
+				"warning",
+			);
+		}
 	}
-	const effort = await ctx.ui.select("Select Advisor reasoning level", effortOptions);
+	const reasoningPrompt =
+		ctx.thinkingLevel === undefined
+			? "Select Advisor reasoning level"
+			: `Select Advisor reasoning level (current Executor reasoning: ${ctx.thinkingLevel}; Advisor selection is independent)`;
+	const effort = await ctx.ui.select(reasoningPrompt, effortOptions);
 	if (effort === undefined) return undefined;
-	return { model, effort: effort as AdvisorConfig["effort"] };
+	return { model: modelReference, effort: effort as AdvisorConfig["effort"] };
 }
 
 const TOOL_DESCRIPTIONS: Record<ReadOnlyToolName, string> = {
@@ -151,7 +164,7 @@ async function pickAdvisorInstructions(
 }
 
 export async function pickAdvisorInteractiveConfiguration(
-	ctx: Pick<ExtensionCommandContext, "mode" | "modelRegistry" | "ui">,
+	ctx: AdvisorPickerContext,
 	current: AdvisorConfig,
 ): Promise<AdvisorConfig | undefined> {
 	const modelAndEffort = await pickAdvisorModelAndEffort(ctx, current);

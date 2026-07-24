@@ -2,6 +2,7 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -34,49 +35,125 @@ afterEach(async () => {
 	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
+function availableModel(
+	provider: string,
+	id: string,
+	overrides: Partial<Model<Api>> = {},
+): Model<Api> {
+	return {
+		provider,
+		id,
+		name: id,
+		api: "openai-responses",
+		baseUrl: "https://example.test",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 100_000,
+		maxTokens: 10_000,
+		...overrides,
+	};
+}
+
 describe("WATCHDOG configuration", () => {
 	it("detects Pi-assigned coexistence command suffixes without false positives", () => {
 		expect(hasAdvisorCommandCollision([{ name: "advisor:1" }, { name: "advisor:2" }])).toBe(true);
 		expect(hasAdvisorCommandCollision([{ name: "advisor" }, { name: "other" }])).toBe(false);
 	});
 
-	it("offers only available registry models and approved reasoning levels", async () => {
+	it("derives normal and opt-in reasoning levels from the selected Pi model", async () => {
 		const select = vi
 			.fn<ExtensionCommandContext["ui"]["select"]>()
 			.mockResolvedValueOnce("alpha/model-a")
-			.mockResolvedValueOnce("xhigh");
+			.mockResolvedValueOnce("max");
 		const result = await pickAdvisorModelAndEffort({
 			mode: "rpc",
 			modelRegistry: {
 				getAvailable: () => [
-					{ provider: "zeta", id: "model-z" },
-					{ provider: "alpha", id: "model-a" },
+					availableModel("zeta", "model-z"),
+					availableModel("alpha", "model-a", {
+						thinkingLevelMap: { minimal: null, high: null, xhigh: "xhigh", max: "max" },
+					}),
 				],
 			} as ExtensionCommandContext["modelRegistry"],
 			ui: { select, notify: vi.fn() } as unknown as ExtensionCommandContext["ui"],
 		});
-		expect(result).toEqual({ model: "alpha/model-a", effort: "xhigh" });
+		expect(result).toEqual({ model: "alpha/model-a", effort: "max" });
 		expect(select.mock.calls[0]?.[1]).toEqual(["alpha/model-a", "zeta/model-z"]);
-		expect(select.mock.calls[1]?.[1]).toEqual([
-			"off",
-			"minimal",
-			"low",
-			"medium",
-			"high",
-			"xhigh",
-			"max",
-		]);
+		expect(select.mock.calls[1]?.[1]).toEqual(["off", "low", "medium", "xhigh", "max"]);
 	});
 
-	it("uses custom model search only in TUI mode and keeps later dialogs unchanged", async () => {
+	it("offers only off for a non-reasoning model", async () => {
+		const select = vi
+			.fn<ExtensionCommandContext["ui"]["select"]>()
+			.mockResolvedValueOnce("alpha/plain")
+			.mockResolvedValueOnce("off");
+		const result = await pickAdvisorModelAndEffort({
+			mode: "rpc",
+			modelRegistry: {
+				getAvailable: () => [availableModel("alpha", "plain", { reasoning: false })],
+			} as ExtensionCommandContext["modelRegistry"],
+			ui: { select, notify: vi.fn() } as unknown as ExtensionCommandContext["ui"],
+		});
+		expect(result).toEqual({ model: "alpha/plain", effort: "off" });
+		expect(select.mock.calls[1]?.[1]).toEqual(["off"]);
+	});
+
+	it("prioritizes a supported current effort and explains independent Executor reasoning", async () => {
+		const select = vi
+			.fn<ExtensionCommandContext["ui"]["select"]>()
+			.mockResolvedValueOnce("alpha/model-a")
+			.mockResolvedValueOnce("high");
+		const notify = vi.fn();
+		const result = await pickAdvisorModelAndEffort(
+			{
+				mode: "rpc",
+				thinkingLevel: "low",
+				modelRegistry: {
+					getAvailable: () => [availableModel("alpha", "model-a")],
+				} as ExtensionCommandContext["modelRegistry"],
+				ui: { select, notify } as unknown as ExtensionCommandContext["ui"],
+			},
+			{ model: "other/old", effort: "high" },
+		);
+		expect(result).toEqual({ model: "alpha/model-a", effort: "high" });
+		expect(select.mock.calls[1]?.[1]).toEqual(["high", "off", "minimal", "low", "medium"]);
+		expect(select.mock.calls[1]?.[0]).toContain("current Executor reasoning: low");
+		expect(select.mock.calls[1]?.[0]).toContain("Advisor selection is independent");
+		expect(notify).not.toHaveBeenCalled();
+	});
+
+	it("warns when current effort is unsupported and does not offer it", async () => {
+		const select = vi
+			.fn<ExtensionCommandContext["ui"]["select"]>()
+			.mockResolvedValueOnce("alpha/model-a")
+			.mockResolvedValueOnce("medium");
+		const notify = vi.fn();
+		await pickAdvisorModelAndEffort(
+			{
+				mode: "rpc",
+				modelRegistry: {
+					getAvailable: () => [
+						availableModel("alpha", "model-a", { thinkingLevelMap: { high: null } }),
+					],
+				} as ExtensionCommandContext["modelRegistry"],
+				ui: { select, notify } as unknown as ExtensionCommandContext["ui"],
+			},
+			{ model: "other/old", effort: "high" },
+		);
+		expect(select.mock.calls[1]?.[1]).toEqual(["off", "minimal", "low", "medium"]);
+		expect(select.mock.calls[1]?.[0]).toBe("Select Advisor reasoning level");
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("not supported"), "warning");
+	});
+
+	it("preserves TUI search and cancellation at both picker steps", async () => {
+		const model = availableModel("alpha", "model-a", { name: "Alpha" });
 		const custom = vi.fn().mockResolvedValue("alpha/model-a");
 		const select = vi.fn().mockResolvedValue("high");
 		const result = await pickAdvisorModelAndEffort(
 			{
 				mode: "tui",
-				modelRegistry: {
-					getAvailable: () => [{ provider: "alpha", id: "model-a", name: "Alpha" }],
-				} as ExtensionCommandContext["modelRegistry"],
+				modelRegistry: { getAvailable: () => [model] } as ExtensionCommandContext["modelRegistry"],
 				ui: { custom, select, notify: vi.fn() } as unknown as ExtensionCommandContext["ui"],
 			},
 			{ model: "alpha/model-a", effort: "high" },
@@ -84,7 +161,30 @@ describe("WATCHDOG configuration", () => {
 		expect(result).toEqual({ model: "alpha/model-a", effort: "high" });
 		expect(custom).toHaveBeenCalledOnce();
 		expect(select).toHaveBeenCalledOnce();
-		expect(select).toHaveBeenCalledWith("Select Advisor reasoning level", expect.any(Array));
+
+		const cancelModel = vi.fn().mockResolvedValue(undefined);
+		expect(
+			await pickAdvisorModelAndEffort({
+				mode: "tui",
+				modelRegistry: { getAvailable: () => [model] } as ExtensionCommandContext["modelRegistry"],
+				ui: {
+					custom: cancelModel,
+					select,
+					notify: vi.fn(),
+				} as unknown as ExtensionCommandContext["ui"],
+			}),
+		).toBeUndefined();
+		const cancelEffort = vi
+			.fn()
+			.mockResolvedValueOnce("alpha/model-a")
+			.mockResolvedValueOnce(undefined);
+		expect(
+			await pickAdvisorModelAndEffort({
+				mode: "rpc",
+				modelRegistry: { getAvailable: () => [model] } as ExtensionCommandContext["modelRegistry"],
+				ui: { select: cancelEffort, notify: vi.fn() } as unknown as ExtensionCommandContext["ui"],
+			}),
+		).toBeUndefined();
 	});
 
 	it("selects only approved read-only tools", async () => {

@@ -20,7 +20,11 @@ External edits are not watched and remain unapplied until Pi `/reload` or a conf
 ## Interactive configuration
 
 Run `/advisor` or `/advisor configure` in a dialog-capable TUI or RPC client.
-The workflow selects an authenticated model, reasoning effort, any subset of the four approved read-only tools, and optional User instructions.
+The workflow selects an authenticated model, an independent Advisor reasoning level, any subset of the four approved read-only tools, and optional User instructions.
+Advisor reasoning choices are derived from the selected model's supported levels, so unsupported levels are omitted and a model without reasoning support offers only `off`.
+If the current Advisor reasoning level is unsupported by the selected model, the workflow warns and requires a new supported selection.
+On Pi 0.82, the reasoning prompt shows the current Executor reasoning level as supplementary context for the user, but the Advisor selection remains independent and is not automatically coupled to it.
+The Pi 0.81 compatibility path omits the supplementary Executor text without changing selection or runtime behavior.
 The TUI model step starts focused and fuzzy-searches provider, model ID, and display name while RPC clients keep the standard selection dialog.
 After tool selection, a separate instructions step lets users continue without custom instructions or explicitly open the multiline editor to add them.
 When instructions already exist, that step offers deliberate keep, edit, and clear choices, and only edit opens the multiline editor.
@@ -44,7 +48,9 @@ Protected paths, activation, limits, Memory suggestions, persistence, and other 
 | `/advisor off`         | Disables this session   | Disables this session   | Available only where commands are processed | Available only where commands are processed | None               |
 
 Activation never chooses a model automatically.
-Pi Advisor 0.2.2 requires Pi `>=0.81.1 <0.82.0`; Pi Advisor 0.1.3 remains the legacy release for Pi 0.80.7.
+Pi Advisor 0.2.2 requires Node.js `>=22.19.0` and Pi `>=0.81.1 <0.83.0`.
+Pi 0.82.0 is the primary tested Pi release, with compatibility coverage retained for Pi 0.81.1.
+Pi Advisor 0.1.3 remains the legacy release for Pi 0.80.7.
 A missing model, unavailable model, missing credentials, incompatible critical Pi API, or provider parity that cannot be verified leaves Advisor inactive without fallback.
 Project configuration can never activate Advisor.
 

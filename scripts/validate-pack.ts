@@ -20,6 +20,7 @@ interface PackageManifest {
 	pi?: { extensions?: string[] };
 	peerDependencies?: Record<string, string>;
 	dependencies?: Record<string, string>;
+	engines?: { node?: string };
 }
 
 const inputPath = process.argv[2] ?? "pack.json";
@@ -55,9 +56,12 @@ for (const name of [
 	"@earendil-works/pi-coding-agent",
 	"@earendil-works/pi-tui",
 ] as const) {
-	if (manifest.peerDependencies?.[name] !== ">=0.81.1 <0.82.0") {
+	if (manifest.peerDependencies?.[name] !== ">=0.81.1 <0.83.0") {
 		throw new Error(`Unsupported or missing Pi peer range for ${name}`);
 	}
+}
+if (manifest.engines?.node !== ">=22.19.0") {
+	throw new Error("Node engine must be >=22.19.0");
 }
 for (const name of ["typebox", "yaml"] as const) {
 	if (manifest.dependencies?.[name] === undefined) {
