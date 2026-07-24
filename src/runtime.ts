@@ -25,6 +25,7 @@ import {
 	adviceDedupeKey,
 	BoundedAdviceDedupe,
 	createAdviseTool,
+	createStrictAdviseTool,
 	formatAdviceForDelivery,
 	type AcceptedAdvice,
 	type AdviceCollector,
@@ -39,6 +40,10 @@ import {
 	resolveAdvisorModelRuntime,
 	type ResolvedAdvisorModelRuntime,
 } from "./compatibility/model-runtime.js";
+import {
+	resolveAdviseSchemaMode,
+	type AdviseSchemaMode,
+} from "./compatibility/constrained-sampling.js";
 import { isMemorySuggestionBasis, isMemorySuggestionCategory } from "./memory-suggestions.js";
 import { HARD_LIMITS, normalizeAdvisorConfig, type AdvisorConfig } from "./config.js";
 import {
@@ -337,6 +342,7 @@ export interface AdvisorRuntimeStatus {
 	inactiveReason?: string;
 	pauseReason?: string;
 	model?: string;
+	adviseSchemaMode?: AdviseSchemaMode;
 	effort: AdvisorConfig["effort"];
 	backlog: boolean;
 	pendingTranscriptBytes: number;
@@ -660,6 +666,7 @@ export function formatAdvisorDiagnosticsDump(
 		hasInactiveReason: status.inactiveReason !== undefined,
 		hasPauseReason: status.pauseReason !== undefined,
 		model: status.model ?? null,
+		adviseSchemaMode: status.adviseSchemaMode ?? null,
 		effort: status.effort,
 		backlog: status.backlog,
 		pendingTranscriptBytes: status.pendingTranscriptBytes,
@@ -1718,7 +1725,22 @@ export class AdvisorRuntime {
 				model,
 			});
 			if (!this.activationStillCurrent(ctx, activationEpoch)) return;
-			await this.createNestedSession(ctx, resolved.model, resolved.modelRuntime);
+			let adviseSchemaMode: AdviseSchemaMode = "portable";
+			try {
+				const resolvedMode: unknown = await resolveAdviseSchemaMode(resolved.model);
+				if (resolvedMode === "strict" || resolvedMode === "portable") {
+					adviseSchemaMode = resolvedMode;
+				}
+			} catch {
+				// Schema selection is diagnostic only and must fail closed without blocking Advisor.
+			}
+			if (!this.activationStillCurrent(ctx, activationEpoch)) return;
+			await this.createNestedSession(
+				ctx,
+				resolved.model,
+				resolved.modelRuntime,
+				adviseSchemaMode,
+			);
 			if (!this.activationStillCurrent(ctx, activationEpoch)) {
 				await this.disposeNestedSession();
 				return;
@@ -1743,6 +1765,7 @@ export class AdvisorRuntime {
 		ctx: ExtensionContext,
 		model: Model<Api>,
 		modelRuntime: ResolvedAdvisorModelRuntime["modelRuntime"],
+		adviseSchemaMode: AdviseSchemaMode,
 	): Promise<void> {
 		await this.disposeNestedSession();
 		const contextLimitTokens = advisorContextLimit(model, this.config);
@@ -1788,9 +1811,11 @@ export class AdvisorRuntime {
 					: result;
 			};
 		}
+		const createSelectedAdviseTool =
+			adviseSchemaMode === "strict" ? createStrictAdviseTool : createAdviseTool;
 		const customTools = [
 			...protectedTools,
-			createAdviseTool(this.config, this.collector, (toolCallId) => {
+			createSelectedAdviseTool(this.config, this.collector, (toolCallId) => {
 				const run = this.currentRun;
 				if (
 					run !== undefined &&
@@ -1814,6 +1839,7 @@ export class AdvisorRuntime {
 			tools: activeTools,
 		});
 		this.session = result.session;
+		this.status.adviseSchemaMode = adviseSchemaMode;
 		this.status.nestedExtensionCount = result.extensionsResult.extensions.length;
 		this.status.nestedActiveTools = result.session.getActiveToolNames();
 		if (
@@ -3311,6 +3337,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 	}
 
 	private async disposeNestedSession(): Promise<void> {
+		delete this.status.adviseSchemaMode;
 		this.clearAdviseExecutionMarkers();
 		this.clearCadenceTimer();
 		delete this.submittedProjectContext;
@@ -3381,6 +3408,7 @@ export function formatAdvisorStatus(status: AdvisorRuntimeStatus): string {
 	const lines = [
 		`Advisor: ${state}`,
 		`Model: ${status.model ?? "not configured"}`,
+		`Advise schema: ${status.adviseSchemaMode ?? "unavailable"}`,
 		`Effort: ${status.effort}`,
 		`Backlog: ${String(status.pendingTranscriptBytes)} bytes${status.retryPending ? `, retry pending for ${String(status.retryDelayMs)} ms` : ""}`,
 		`Context estimate: ${String(status.contextEstimateTokens)}/${String(status.contextLimitTokens)} tokens (${String(status.contextUsageTokens)} reported + ${String(status.contextTrailingEstimateTokens)} estimated, ${status.contextEstimateSource})`,
