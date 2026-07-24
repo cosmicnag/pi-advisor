@@ -54,6 +54,16 @@ Pi Advisor 0.1.3 remains the legacy release for Pi 0.80.7.
 A missing model, unavailable model, missing credentials, incompatible critical Pi API, or provider parity that cannot be verified leaves Advisor inactive without fallback.
 Project configuration can never activate Advisor.
 
+## Advise schema selection
+
+Pi Advisor automatically selects strict constrained sampling only on Pi 0.82 or later when the selected model has an explicit compatible provider capability flag.
+Pi 0.81.x and models without that explicit capability continue to use the portable schema.
+The selected mode is shown by `/advisor status` and is runtime-only; configuration and lifecycle state do not persist it.
+
+Strict mode uses Pi's `prefer` policy, which permits ordinary tool-calling fallback when the provider cannot enforce the schema and therefore never guarantees provider-side enforcement.
+Pi Advisor's local structural and semantic validation remains authoritative in both modes.
+Private generated `advise` arguments are not added to diagnostics, activity records, or lifecycle persistence.
+
 ## Ownership and merge rules
 
 | Area                      | User authority                     | Trusted Project authority                | Project attempt outside authority                                        |

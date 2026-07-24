@@ -118,7 +118,13 @@ describe("packed Pi package", () => {
 					{
 						private: true,
 						packageManager: "pnpm@10.0.0",
-						dependencies: { "@ribbons-digital/pi-advisor": `file:${archive}` },
+						dependencies: {
+							"@earendil-works/pi-agent-core": `file:${join(projectRoot, "node_modules", "@earendil-works", "pi-agent-core")}`,
+							"@earendil-works/pi-ai": `file:${join(projectRoot, "node_modules", "@earendil-works", "pi-ai")}`,
+							"@earendil-works/pi-coding-agent": `file:${join(projectRoot, "node_modules", "@earendil-works", "pi-coding-agent")}`,
+							"@earendil-works/pi-tui": `file:${join(projectRoot, "node_modules", "@earendil-works", "pi-tui")}`,
+							"@ribbons-digital/pi-advisor": `file:${archive}`,
+						},
 					},
 					null,
 					2,
@@ -141,6 +147,62 @@ describe("packed Pi package", () => {
 				const dependencyEntry = installedRequire.resolve(dependency);
 				expect(existsSync(dependencyEntry)).toBe(true);
 				expect(dependencyEntry).not.toContain(projectRoot);
+			}
+
+			const compatibilityUrl = pathToFileURL(
+				join(realpathSync(installedPackageDir), "src", "compatibility", "constrained-sampling.ts"),
+			).href;
+			const adviceUrl = pathToFileURL(
+				join(realpathSync(installedPackageDir), "src", "advice.ts"),
+			).href;
+			const configUrl = pathToFileURL(
+				join(realpathSync(installedPackageDir), "src", "config.ts"),
+			).href;
+			const packagedProbe = JSON.parse(
+				execFileSync(
+					join(projectRoot, "node_modules", ".bin", "tsx"),
+					[
+						"--eval",
+						`void (async () => {
+const compatibility = await import(${JSON.stringify(compatibilityUrl)});
+const advice = await import(${JSON.stringify(adviceUrl)});
+const { DEFAULT_ADVISOR_CONFIG } = await import(${JSON.stringify(configUrl)});
+const model = { api: "anthropic-messages", compat: { supportsStrictTools: true } };
+const mode = await compatibility.resolveAdviseSchemaMode(model);
+const tool = mode === "strict"
+  ? advice.createStrictAdviseTool(DEFAULT_ADVISOR_CONFIG, { validCalls: 0, suppressedCalls: 0, memoryPolicySuppressedCalls: 0, memoryLimitSuppressedCalls: 0 })
+  : advice.createAdviseTool(DEFAULT_ADVISOR_CONFIG, { validCalls: 0, suppressedCalls: 0, memoryPolicySuppressedCalls: 0, memoryLimitSuppressedCalls: 0 });
+process.stdout.write(JSON.stringify({ mode, constrainedSampling: tool.constrainedSampling, parameters: tool.parameters }));
+})();`,
+					],
+					{ cwd: installDir, encoding: "utf8" },
+				),
+			) as {
+				mode: string;
+				constrainedSampling?: unknown;
+				parameters: Record<string, unknown>;
+			};
+			if (expectedPiVersion === "0.81.1") {
+				expect(packagedProbe.mode).toBe("portable");
+				expect(packagedProbe).not.toHaveProperty("constrainedSampling");
+				expect(packagedProbe.parameters).not.toHaveProperty("additionalProperties");
+				expect(packagedProbe.parameters).toMatchObject({
+					type: "object",
+					required: ["note"],
+					properties: {
+						note: { type: "string", minLength: 1 },
+						intent: { type: "string", enum: ["review", "memory-suggestion"] },
+					},
+				});
+			} else {
+				expect(packagedProbe.mode).toBe("strict");
+				expect(packagedProbe.constrainedSampling).toEqual({
+					type: "json_schema",
+					strict: "prefer",
+				});
+				expect(packagedProbe.parameters).toMatchObject({
+					required: ["note", "intent", "severity", "findingKey", "memory"],
+				});
 			}
 
 			const install = runPi(["install", installedPackageDir, "--approve"], root, env);
@@ -194,6 +256,7 @@ describe("packed Pi package", () => {
 			const userYaml = join(agentDir, "WATCHDOG.yml");
 			const scriptedExtension = join(root, "packed-scripted-provider.ts");
 			const requestMarker = join(root, "packed-scripted-requests.txt");
+			const adviseToolMarker = join(root, "packed-advise-tool.json");
 			const piAiEntry = pathToFileURL(
 				realpathSync(
 					join(projectRoot, "node_modules", "@earendil-works", "pi-ai", "dist", "index.js"),
@@ -252,9 +315,11 @@ export default function(pi) {
     baseUrl: "https://packed-scripted.invalid",
     apiKey: "packed-scripted-key",
     api: "packed-scripted-api",
-    streamSimple(model) {
+    streamSimple(model, context) {
       appendFileSync(${JSON.stringify(requestMarker)}, model.id + "\\n");
       if (model.id === "advisor") {
+        const advise = context.tools?.find((tool) => tool.name === "advise");
+        if (advise) appendFileSync(${JSON.stringify(adviseToolMarker)}, JSON.stringify(advise));
         advisorCalls++;
         return advisorCalls === 1
           ? emit(model, [{
@@ -295,6 +360,17 @@ export default function(pi) {
         contextWindow: 32000,
         maxTokens: 2000,
       },
+      {
+        id: "advisor-portable",
+        name: "Packed portable advisor",
+        api: "packed-scripted-api",
+        baseUrl: "https://packed-scripted.invalid",
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 32000,
+        maxTokens: 2000,
+      },
     ],
   });
 }
@@ -323,16 +399,76 @@ export default function(pi) {
 				],
 				root,
 				env,
-				`${JSON.stringify({ id: "review", type: "prompt", message: "Run one review." })}\n`,
+				`${JSON.stringify({ id: "review", type: "prompt", message: "Run one review." })}\n${JSON.stringify({ id: "schema-status", type: "prompt", message: "/advisor status" })}\n`,
 			);
 			expect(activeReview.status, activeReview.stderr).toBe(0);
 			expect(activeReview.stdout).toContain('"statusText":"Advisor active"');
+			expect(activeReview.stdout).toContain("Advise schema: portable");
 			expect(activeReview.stdout).toContain('"kind":"review-outcome"');
 			expect(activeReview.stdout).toContain('"outcome":"accepted"');
 			expect(activeReview.stdout).toContain(
 				"Packed nested review completed through the scripted provider.",
 			);
 			expect(readFileSync(requestMarker, "utf8")).toContain("advisor");
+			const adviseTool = JSON.parse(readFileSync(adviseToolMarker, "utf8")) as Record<
+				string,
+				unknown
+			>;
+			const adviseParameters = adviseTool.parameters as Record<string, unknown>;
+			expect(adviseTool).not.toHaveProperty("constrainedSampling");
+			expect(adviseParameters).toMatchObject({
+				type: "object",
+				required: ["note"],
+			});
+			expect(adviseParameters.properties).toMatchObject({
+				note: { type: "string", minLength: 1 },
+				intent: { type: "string", enum: ["review", "memory-suggestion"] },
+			});
+			const persistedStates = activeReview.stdout
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line) as Record<string, unknown>)
+				.filter((record) => {
+					const entry = record.entry;
+					return (
+						typeof entry === "object" &&
+						entry !== null &&
+						(entry as Record<string, unknown>).customType === "pi-advisor-runtime-state"
+					);
+				});
+			expect(persistedStates.length).toBeGreaterThan(0);
+			for (const state of persistedStates) {
+				const serialized = JSON.stringify(state);
+				expect(serialized).not.toMatch(/adviseSchemaMode|schemaMode|schemaVariant/iu);
+			}
+
+			if (expectedPiVersion !== "0.81.1") {
+				writeFileSync(
+					userYaml,
+					"version: 1\ndefaultEnabled: true\nmodel: packed-scripted/advisor-portable\neffort: off\ntools: []\n",
+				);
+				const portableModel = runPi(
+					[
+						"--mode",
+						"rpc",
+						"--no-session",
+						"--no-context-files",
+						"--no-skills",
+						"--no-prompt-templates",
+						"--no-themes",
+						"--no-tools",
+						"--extension",
+						scriptedExtension,
+						"--model",
+						"packed-scripted/primary",
+					],
+					root,
+					env,
+					`${JSON.stringify({ id: "portable-status", type: "prompt", message: "/advisor status" })}\n`,
+				);
+				expect(portableModel.status, portableModel.stderr).toBe(0);
+				expect(portableModel.stdout).toContain("Advise schema: portable");
+			}
 
 			const defaultRecordingConfig =
 				"version: 1\ndefaultEnabled: true\nmodel: missing/provider\neffort: low\n";
