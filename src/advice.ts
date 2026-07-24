@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { StringEnum, validateToolArguments } from "@earendil-works/pi-ai";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
+import { Check } from "typebox/value";
 
 import { HARD_LIMITS, type AdvisorConfig } from "./config.js";
 import {
@@ -105,6 +106,55 @@ export const ADVISE_WIRE_SCHEMA = Type.Object({
 
 export type AdviseWireInput = Static<typeof ADVISE_WIRE_SCHEMA>;
 
+const STRICT_MEMORY_ARGUMENT_GUIDANCE =
+	"When intent is memory-suggestion, provide memory.text, memory.category, and memory.basis. Otherwise use null for memory.";
+
+const STRICT_ADVISE_WIRE_SCHEMA_SHAPE = Type.Object(
+	{
+		note: Type.Unsafe<unknown>({
+			type: "string",
+			description: "Concise rationale for the review finding or Memory suggestion.",
+		}),
+		intent: Type.Unsafe<unknown>({
+			type: ["string", "null"],
+			enum: ["review", "memory-suggestion", null],
+			description: STRICT_MEMORY_ARGUMENT_GUIDANCE,
+		}),
+		severity: Type.Unsafe<unknown>({
+			type: ["string", "null"],
+			enum: ["nit", "concern", "blocker", null],
+		}),
+		findingKey: Type.Unsafe<unknown>({
+			type: ["string", "null"],
+			description:
+				"Canonical identity for exactly one concrete underlying defect. Reuse it for paraphrases or severity changes of that defect; never reuse it for a materially different defect. Use null when absent.",
+		}),
+		memory: Type.Unsafe<unknown>({
+			type: ["object", "null"],
+			additionalProperties: false,
+			required: ["text", "category", "basis"],
+			properties: {
+				text: { type: ["string", "null"] },
+				category: {
+					type: ["string", "null"],
+					enum: [...MEMORY_SUGGESTION_CATEGORIES, null],
+				},
+				basis: {
+					type: ["string", "null"],
+					enum: [...MEMORY_SUGGESTION_BASES, null],
+				},
+			},
+			description: STRICT_MEMORY_ARGUMENT_GUIDANCE,
+		}),
+	},
+	{ additionalProperties: false },
+);
+
+/** Provider-compatible, closed schema used only when constrained sampling is available. */
+export const STRICT_ADVISE_WIRE_SCHEMA = Type.Unsafe<unknown>(
+	STRICT_ADVISE_WIRE_SCHEMA_SHAPE,
+);
+
 const ADVISE_WIRE_VALIDATION_TOOL = {
 	name: "advise",
 	description: "Validate internal Advisor wire input.",
@@ -128,6 +178,14 @@ export type ParsedAdviceInput = ParsedReviewAdviceInput | ParsedMemorySuggestion
 
 function isOptionalEnum(value: unknown, values: readonly string[]): boolean {
 	return value === undefined || (typeof value === "string" && values.includes(value));
+}
+
+function hasValidLocalStringBounds(input: Readonly<Record<string, unknown>>): boolean {
+	return (
+		(typeof input.note !== "string" || Check(ADVISE_WIRE_SCHEMA.properties.note, input.note)) &&
+		(typeof input.findingKey !== "string" ||
+			Check(ADVISE_WIRE_SCHEMA.properties.findingKey, input.findingKey))
+	);
 }
 
 export function isAdviseWireInput(input: unknown): input is AdviseWireInput {
@@ -154,6 +212,7 @@ export function isAdviseWireInput(input: unknown): input is AdviseWireInput {
 			return false;
 		}
 	}
+	if (!hasValidLocalStringBounds(wire)) return false;
 	try {
 		validateToolArguments(ADVISE_WIRE_VALIDATION_TOOL, {
 			type: "toolCall",
@@ -528,6 +587,50 @@ export function formatAdviceForDelivery(
 	return `<advisor-note ${attributes.join(" ")}>\n<note>${escapeXmlText(advice.note)}</note>\n<guidance>${escapeXmlText(`${resumeWarning}${guidance}`)}</guidance>\n</advisor-note>`;
 }
 
+function executeAdviseWireInput(
+	id: string,
+	params: AdviseWireInput,
+	config: AdvisorConfig,
+	collector: AdviceCollector,
+	onExecutionStart?: (toolCallId: string) => void,
+) {
+	onExecutionStart?.(id);
+	collector.validCalls++;
+	const input = parseAdviseWireInput(params);
+	if (input === undefined) {
+		suppressMemory(collector, "policy");
+	} else if (input.intent === "memory-suggestion") {
+		if (collector.accepted?.intent === "review") {
+			suppressMemory(collector, "policy");
+		} else if (collector.accepted !== undefined) {
+			collector.suppressedCalls++;
+		} else {
+			const accepted = acceptMemorySuggestion(input, config, collector);
+			if (accepted !== undefined) collector.accepted = accepted;
+		}
+	} else if (isContentFreeAdvice(input.note)) {
+		collector.suppressedCalls++;
+	} else if (collector.accepted?.intent === "review") {
+		collector.suppressedCalls++;
+	} else {
+		if (collector.accepted?.intent === "memory-suggestion") {
+			suppressMemory(collector, "policy");
+		}
+		const semanticHash =
+			input.findingKey === undefined ? undefined : findingKeyHash(input.findingKey);
+		collector.accepted = {
+			...boundAdvice(input.note, config),
+			severity: input.severity ?? "concern",
+			...(semanticHash === undefined ? {} : { findingKeyHash: semanticHash }),
+		};
+	}
+	return Promise.resolve({
+		content: [{ type: "text" as const, text: "Recorded." }],
+		details: {},
+		terminate: true,
+	});
+}
+
 export function createAdviseTool(
 	config: AdvisorConfig,
 	collector: AdviceCollector,
@@ -545,41 +648,146 @@ export function createAdviseTool(
 			return args;
 		},
 		execute(id, params) {
-			onExecutionStart?.(id);
-			collector.validCalls++;
-			const input = parseAdviseWireInput(params);
-			if (input === undefined) {
-				suppressMemory(collector, "policy");
-			} else if (input.intent === "memory-suggestion") {
-				if (collector.accepted?.intent === "review") {
-					suppressMemory(collector, "policy");
-				} else if (collector.accepted !== undefined) {
-					collector.suppressedCalls++;
-				} else {
-					const accepted = acceptMemorySuggestion(input, config, collector);
-					if (accepted !== undefined) collector.accepted = accepted;
-				}
-			} else if (isContentFreeAdvice(input.note)) {
-				collector.suppressedCalls++;
-			} else if (collector.accepted?.intent === "review") {
-				collector.suppressedCalls++;
-			} else {
-				if (collector.accepted?.intent === "memory-suggestion") {
-					suppressMemory(collector, "policy");
-				}
-				const semanticHash =
-					input.findingKey === undefined ? undefined : findingKeyHash(input.findingKey);
-				collector.accepted = {
-					...boundAdvice(input.note, config),
-					severity: input.severity ?? "concern",
-					...(semanticHash === undefined ? {} : { findingKeyHash: semanticHash }),
-				};
+			return executeAdviseWireInput(id, params, config, collector, onExecutionStart);
+		},
+	};
+}
+
+function isObjectRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function selectedOwnValue(
+	input: Readonly<Record<string, unknown>>,
+	key: string,
+	fallback: unknown,
+): unknown {
+	return Object.hasOwn(input, key) ? input[key] : fallback;
+}
+
+function isNullableEnum<const Values extends readonly string[]>(
+	value: unknown,
+	values: Values,
+): value is Values[number] | null {
+	return value === null || (typeof value === "string" && values.includes(value));
+}
+
+function isStrictSemanticArguments(input: Readonly<Record<string, unknown>>): boolean {
+	const { note, intent, severity, findingKey, memory } = input;
+	if (
+		typeof note !== "string" ||
+		!isNullableEnum(intent, ["review", "memory-suggestion"]) ||
+		!isNullableEnum(severity, ["nit", "concern", "blocker"]) ||
+		(findingKey !== null && typeof findingKey !== "string") ||
+		(memory !== null && !isObjectRecord(memory)) ||
+		!hasValidLocalStringBounds(input)
+	) {
+		return false;
+	}
+	if (memory === null) return true;
+	return (
+		(memory.text === null || typeof memory.text === "string") &&
+		isNullableEnum(memory.category, MEMORY_SUGGESTION_CATEGORIES) &&
+		isNullableEnum(memory.basis, MEMORY_SUGGESTION_BASES)
+	);
+}
+
+function prepareStrictAdviseArguments(raw: unknown): unknown {
+	if (!isObjectRecord(raw)) {
+		throw new Error("Advise arguments did not match the internal schema");
+	}
+	const rawMemory = selectedOwnValue(raw, "memory", null);
+	const memory = isObjectRecord(rawMemory)
+		? {
+				text: selectedOwnValue(rawMemory, "text", null),
+				category: selectedOwnValue(rawMemory, "category", null),
+				basis: selectedOwnValue(rawMemory, "basis", null),
 			}
-			return Promise.resolve({
-				content: [{ type: "text" as const, text: "Recorded." }],
-				details: {},
-				terminate: true,
-			});
+		: rawMemory;
+	const prepared: Readonly<Record<string, unknown>> = {
+		note: selectedOwnValue(raw, "note", undefined),
+		intent: selectedOwnValue(raw, "intent", null),
+		severity: selectedOwnValue(raw, "severity", null),
+		findingKey: selectedOwnValue(raw, "findingKey", null),
+		memory,
+	};
+	if (!isStrictSemanticArguments(prepared)) {
+		throw new Error("Advise arguments did not match the internal schema");
+	}
+
+	// TypeBox 1.1.38 compiles [object, null] property checks without a null guard.
+	// The local gate above is authoritative; this equivalent encoding keeps Pi validation safe.
+	return memory === null
+		? { ...prepared, memory: { text: null, category: null, basis: null } }
+		: prepared;
+}
+
+function normalizeStrictAdviseWireInput(input: unknown): AdviseWireInput {
+	if (!isObjectRecord(input)) {
+		throw new Error("Advise arguments did not match the internal schema");
+	}
+	const { note, intent, severity, findingKey, memory } = input;
+	if (
+		typeof note !== "string" ||
+		!isNullableEnum(intent, ["review", "memory-suggestion"]) ||
+		!isNullableEnum(severity, ["nit", "concern", "blocker"]) ||
+		(findingKey !== null && typeof findingKey !== "string") ||
+		(memory !== null && !isObjectRecord(memory)) ||
+		!hasValidLocalStringBounds(input)
+	) {
+		throw new Error("Advise arguments did not match the internal schema");
+	}
+
+	let normalizedMemory: AdviseWireInput["memory"];
+	if (memory !== null) {
+		const { text, category, basis } = memory;
+		if (
+			(text !== null && typeof text !== "string") ||
+			!isNullableEnum(category, MEMORY_SUGGESTION_CATEGORIES) ||
+			!isNullableEnum(basis, MEMORY_SUGGESTION_BASES)
+		) {
+			throw new Error("Advise arguments did not match the internal schema");
+		}
+		if (text !== null || category !== null || basis !== null) {
+			normalizedMemory = {
+				...(text === null ? {} : { text }),
+				...(category === null ? {} : { category }),
+				...(basis === null ? {} : { basis }),
+			};
+		}
+	}
+
+	return {
+		note,
+		intent: intent ?? "review",
+		...(severity === null ? {} : { severity }),
+		...(findingKey === null ? {} : { findingKey }),
+		...(normalizedMemory === undefined ? {} : { memory: normalizedMemory }),
+	};
+}
+
+export function createStrictAdviseTool(
+	config: AdvisorConfig,
+	collector: AdviceCollector,
+	onExecutionStart?: (toolCallId: string) => void,
+): ToolDefinition<typeof STRICT_ADVISE_WIRE_SCHEMA> {
+	return {
+		name: "advise",
+		label: "advise",
+		description: `Record at most one concise material review note or eligible durable Memory suggestion. Do not call this tool when the Executor is on track. ${STRICT_MEMORY_ARGUMENT_GUIDANCE}`,
+		parameters: STRICT_ADVISE_WIRE_SCHEMA,
+		constrainedSampling: { type: "json_schema", strict: "prefer" },
+		prepareArguments(args) {
+			return prepareStrictAdviseArguments(args);
+		},
+		execute(id, params) {
+			return executeAdviseWireInput(
+				id,
+				normalizeStrictAdviseWireInput(params),
+				config,
+				collector,
+				onExecutionStart,
+			);
 		},
 	};
 }
