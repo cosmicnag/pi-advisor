@@ -14,6 +14,12 @@ No redaction or path policy can guarantee that every secret is excluded.
 Use `tools: []` or a narrower tool set when the selected provider should not read repository files.
 Add sensitive repository locations to `security.additionalProtectedPaths`.
 
+On Pi 0.82 or later, Advisor automatically requests strict constrained sampling only for models with an explicit compatible provider capability flag.
+Pi 0.81.x and other models retain the portable schema.
+The strict request uses Pi's `prefer` policy, so provider-side enforcement is not guaranteed and may fall back to ordinary tool calling.
+Local structural and semantic validation remains authoritative regardless of the selected mode.
+Private generated `advise` arguments are not added to diagnostics or persistence.
+
 ## Protected targets
 
 Advisor blocks normalized requested paths and canonical existing targets for:
