@@ -65,3 +65,4 @@ pnpm typecheck
 pnpm lint
 pnpm test
 pnpm test:e2e
+pnpm pack:validate
