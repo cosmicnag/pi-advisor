@@ -44,6 +44,7 @@ export interface MemorySuggestionConfig {
 export interface AdvisorUserConfig {
 	version: typeof ADVISOR_CONFIG_VERSION;
 	defaultEnabled: boolean;
+	autoEnableInTasks: boolean;
 	model?: string;
 	effort: AdvisorEffort;
 	tools: ReadOnlyToolName[];
@@ -84,6 +85,7 @@ function deepFreeze<T>(value: T): T {
 const CANONICAL_DEFAULT_ADVISOR_CONFIG: AdvisorConfig = deepFreeze({
 	version: ADVISOR_CONFIG_VERSION,
 	defaultEnabled: false,
+	autoEnableInTasks: false,
 	effort: "high",
 	tools: [...READ_ONLY_TOOL_NAMES],
 	instructions: "",
@@ -166,6 +168,8 @@ export function normalizeAdvisorConfig(input: AdvisorConfig): AdvisorConfig {
 	return {
 		...input,
 		version: ADVISOR_CONFIG_VERSION,
+		defaultEnabled: Boolean(input.defaultEnabled),
+		autoEnableInTasks: Boolean(input.autoEnableInTasks),
 		tools,
 		context: {
 			maxFraction: Math.min(

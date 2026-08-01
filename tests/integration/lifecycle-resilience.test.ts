@@ -1238,7 +1238,7 @@ describe.sequential("Slice 3A branch, compaction, and persistence lifecycle", ()
 			});
 			expect(resumedRuntime?.getStatus()).toMatchObject({
 				memorySuggestionsDelivered: 1,
-				memorySuggestionsRemaining: 510,
+				memorySuggestionsRemaining: 0,
 				deferredNotesPending: persisted.deferredAdvice.length,
 			});
 		} finally {
@@ -1771,8 +1771,8 @@ describe.sequential("Slice 3A branch, compaction, and persistence lifecycle", ()
 		try {
 			expect(runtime?.getStatus()).toMatchObject({
 				memorySuggestionsDelivered: 1,
-				memorySuggestionsRemaining: 0,
-				memorySuggestionNextEligibleTurn: 12,
+				memorySuggestionsRemaining: 4,
+				memorySuggestionNextEligibleTurn: 20,
 			});
 			await harness.session.prompt("same session must retain its cap");
 			await waitFor(() => runtime?.getStatus().reviewsCompleted === 1);
@@ -1822,12 +1822,12 @@ describe.sequential("Slice 3A branch, compaction, and persistence lifecycle", ()
 		try {
 			expect(newRuntime?.getStatus()).toMatchObject({
 				memorySuggestionsDelivered: 0,
-				memorySuggestionsRemaining: 1,
+				memorySuggestionsRemaining: 5,
 			});
 			await newHarness.session.prompt("new session gets a fresh Memory allowance");
 			await waitFor(() => newRuntime?.getStatus().memorySuggestionsDelivered === 1);
 			expect(newRuntime?.getStatus()).toMatchObject({
-				memorySuggestionsRemaining: 0,
+				memorySuggestionsRemaining: 4,
 				memorySuggestionsLimitSuppressed: 0,
 			});
 		} finally {

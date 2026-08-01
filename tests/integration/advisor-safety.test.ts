@@ -632,6 +632,8 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 				mode,
 			});
 			try {
+				// /advisor on arms for task branches; simulate entering task
+				harness.sessionManager.appendCustomEntry("task-start", {});
 				await harness.session.prompt("/advisor on");
 				expect(runtime?.getStatus()).toMatchObject({ active: true });
 				await harness.session.prompt(`finish ${mode} turn`);

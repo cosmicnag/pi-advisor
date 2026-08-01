@@ -247,11 +247,26 @@ export function hasAdvisorCommandCollision(commands: readonly { name: string }[]
 	);
 }
 
+function branchHasTaskStart(ctx: ExtensionContext): boolean {
+	const branch = ctx.sessionManager.getBranch();
+	let seenTaskStart = false;
+	for (const entry of branch) {
+		if (entry.type === "custom" && entry.customType === "task-start") {
+			seenTaskStart = true;
+		}
+		if (entry.type === "custom" && entry.customType === "task-done") {
+			seenTaskStart = false;
+		}
+	}
+	return seenTaskStart;
+}
+
 function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions): void {
 	const fallbackUserConfig = normalizeAdvisorConfig(
 		structuredClone(options.config ?? DEFAULT_ADVISOR_CONFIG),
 	);
 	let statusContext: Parameters<AdvisorRuntime["startSession"]>[0] | undefined;
+	let armed = fallbackUserConfig.autoEnableInTasks;
 	const runtime = new AdvisorRuntime(pi, fallbackUserConfig, {
 		...options.hooks,
 		onStatus: (status) => {
@@ -286,18 +301,47 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 				return;
 			}
 			if (command === "on") {
-				const previous = runtime.getStatus();
-				const resetBudget = previous.paused;
-				await runtime.enable(ctx, "session-command", resetBudget);
-				ctx.ui.notify(
-					formatAdvisorEnableStatus(previous, runtime.getStatus(), resetBudget),
-					"info",
-				);
+				const loaded = await loadAdvisorConfiguration({
+					agentDir: getAgentDir(),
+					cwd: ctx.cwd,
+					projectTrusted: ctx.isProjectTrusted(),
+					fallbackUserConfig,
+				});
+				publishConfigurationWarnings(ctx, loaded.warnings);
+				const nextUserConfig = { ...loaded.userConfig, autoEnableInTasks: true };
+				await saveUserConfigurationAtomic(loaded.paths.userYaml, nextUserConfig);
+				armed = true;
+				const applied = await loadAdvisorConfiguration({
+					agentDir: getAgentDir(),
+					cwd: ctx.cwd,
+					projectTrusted: ctx.isProjectTrusted(),
+					fallbackUserConfig,
+				});
+				publishConfigurationWarnings(ctx, applied.warnings);
+				await runtime.applyConfiguration(applied.effectiveConfig, ctx, applied.projectInstructions);
+				console.log("[DEBUG] branchHasTaskStart:", branchHasTaskStart(ctx), "branch length:", ctx.sessionManager.getBranch().length);
+				if (branchHasTaskStart(ctx)) {
+					console.log("[DEBUG] Enabling runtime in /advisor on");
+					await runtime.enable(ctx, "session-command");
+					console.log("[DEBUG] Runtime status after enable:", runtime.getStatus().enabled);
+					ctx.ui.notify("Advisor armed and enabled in current task.", "info");
+				} else {
+					ctx.ui.notify("Advisor armed. Auto-enables in push-task leaf branches.", "info");
+				}
 				return;
 			}
 			if (command === "off") {
+				const loaded = await loadAdvisorConfiguration({
+					agentDir: getAgentDir(),
+					cwd: ctx.cwd,
+					projectTrusted: ctx.isProjectTrusted(),
+					fallbackUserConfig,
+				});
+				const nextUserConfig = { ...loaded.userConfig, autoEnableInTasks: false };
+				await saveUserConfigurationAtomic(loaded.paths.userYaml, nextUserConfig);
+				armed = false;
 				await runtime.disable();
-				ctx.ui.notify("Advisor is off for this session.", "info");
+				ctx.ui.notify("Advisor is off.", "info");
 				return;
 			}
 			if (command === "status") {
@@ -325,16 +369,17 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 			);
 		}
 		let configuredDefault = fallbackUserConfig.defaultEnabled;
+		let loadedConfig: Awaited<ReturnType<typeof loadAdvisorConfiguration>>;
 		try {
-			const loaded = await loadAdvisorConfiguration({
+			loadedConfig = await loadAdvisorConfiguration({
 				agentDir: getAgentDir(),
 				cwd: ctx.cwd,
 				projectTrusted: ctx.isProjectTrusted(),
 				fallbackUserConfig,
 			});
-			configuredDefault = loaded.effectiveConfig.defaultEnabled;
-			runtime.setConfigurationBeforeSession(loaded.effectiveConfig, loaded.projectInstructions);
-			publishConfigurationWarnings(ctx, loaded.warnings);
+			configuredDefault = loadedConfig.effectiveConfig.defaultEnabled;
+			runtime.setConfigurationBeforeSession(loadedConfig.effectiveConfig, loadedConfig.projectInstructions);
+			publishConfigurationWarnings(ctx, loadedConfig.warnings);
 		} catch {
 			configuredDefault = false;
 			runtime.setConfigurationBeforeSession(DEFAULT_ADVISOR_CONFIG);
@@ -345,11 +390,13 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 				);
 			}
 		}
+		armed = loadedConfig?.userConfig.autoEnableInTasks ?? false;
 		await runtime.startSession(ctx);
 		const cliEnabled = pi.getFlag("advisor") === true;
 		const defaultEnabled = configuredDefault && (ctx.mode === "tui" || ctx.mode === "rpc");
 		if (cliEnabled) await runtime.enable(ctx, "cli-flag");
 		else if (defaultEnabled) await runtime.enable(ctx, "user-default");
+		else if (armed && branchHasTaskStart(ctx)) await runtime.enable(ctx, "user-default");
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {
@@ -361,6 +408,9 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 
 	pi.on("turn_end", (event, ctx) => {
 		void runtime.observeTurn(event, ctx);
+		if (armed && branchHasTaskStart(ctx) && !runtime.getStatus().enabled) {
+			void runtime.enable(ctx, "user-default");
+		}
 	});
 
 	pi.on("message_end", (event) => {
@@ -371,7 +421,12 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 	pi.on("session_before_compact", (_event, ctx) => runtime.handleLifecycleHint(ctx));
 	pi.on("session_compact", (_event, ctx) => runtime.handleBranchChange(ctx));
 	pi.on("session_before_tree", (_event, ctx) => runtime.handleLifecycleHint(ctx));
-	pi.on("session_tree", (_event, ctx) => runtime.handleBranchChange(ctx));
+	pi.on("session_tree", (_event, ctx) => {
+		runtime.handleBranchChange(ctx);
+		if (!branchHasTaskStart(ctx) && runtime.getStatus().enabled) {
+			void runtime.disable();
+		}
+	});
 	pi.on("session_shutdown", async (_event, ctx) => {
 		if (ctx.hasUI) ctx.ui.setStatus("pi-advisor", undefined);
 		statusContext = undefined;

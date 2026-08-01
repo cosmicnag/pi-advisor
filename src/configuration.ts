@@ -93,6 +93,7 @@ const UserSchema = Type.Object(
 	{
 		version: Type.Literal(ADVISOR_CONFIG_VERSION),
 		defaultEnabled: Type.Optional(Type.Boolean()),
+		autoEnableInTasks: Type.Optional(Type.Boolean()),
 		model: Type.Optional(Type.String({ pattern: "^[^/\\s]+/.+$" })),
 		effort: Type.Optional(Type.Union(effortValues.map((value) => Type.Literal(value)))),
 		tools: Type.Optional(Type.Array(Type.Union(toolValues.map((value) => Type.Literal(value))))),
@@ -131,6 +132,7 @@ const projectValidator = Compile(ProjectSchema);
 const USER_KEYS = new Set([
 	"version",
 	"defaultEnabled",
+	"autoEnableInTasks",
 	"model",
 	"effort",
 	"tools",
@@ -349,6 +351,9 @@ function mergeUserConfig(base: AdvisorConfig, document: Record<string, unknown>)
 		...(document.defaultEnabled === undefined
 			? {}
 			: { defaultEnabled: document.defaultEnabled as boolean }),
+		...(document.autoEnableInTasks === undefined
+			? {}
+			: { autoEnableInTasks: document.autoEnableInTasks as boolean }),
 		...(document.model === undefined ? {} : { model: document.model as string }),
 		...(document.effort === undefined ? {} : { effort: document.effort as AdvisorEffort }),
 		...(document.tools === undefined ? {} : { tools: document.tools as ReadOnlyToolName[] }),

@@ -280,16 +280,34 @@ describe.sequential("Slice 1 automatic Advisor core", () => {
 		const primary = createPrimaryProvider([{ content: [{ type: "text", text: "answer" }] }]);
 		const advisor = createAdvisorProvider([{ content: [] }]);
 		let runtime: AdvisorRuntime | undefined;
+		let hostContext: any;
 		const harness = await createSessionHarness({
 			provider: primary,
 			advisorProvider: advisor,
-			extensions: [advisorExtension(configFor(advisor), (value) => (runtime = value))],
+			extensions: [
+				{
+					name: "context-probe",
+					factory: (pi) => {
+						pi.on("session_start", (_event, ctx) => {
+							hostContext = ctx;
+						});
+					},
+				},
+				advisorExtension(configFor(advisor), (value) => (runtime = value)),
+			],
 			tools: [],
 			mode: "json",
 		});
 		try {
 			expect(runtime?.getStatus()).toMatchObject({ enabled: false, active: false });
+			// /advisor on arms for task branches; in main it does not enable
 			await harness.session.prompt("/advisor on");
+			expect(runtime?.getStatus()).toMatchObject({ enabled: false, active: false });
+			// Simulate entering a task branch with task-start entry
+			harness.sessionManager.appendCustomEntry("task-start", {});
+			// Directly enable runtime to verify it works in task context
+			if (hostContext === undefined) throw new Error("Expected captured extension context");
+			await runtime?.enable(hostContext, "user-default");
 			expect(runtime?.getStatus()).toMatchObject({ enabled: true, active: true });
 			await harness.session.prompt("review after explicit JSON activation");
 			await waitFor(() => runtime?.getStatus().reviewsCompleted === 1);

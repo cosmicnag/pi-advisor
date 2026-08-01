@@ -402,6 +402,8 @@ describe.sequential("Slice 3B retry lifecycle resilience", () => {
 			expect(state.lastReviewSubmittedTurn).toBe(3);
 			expect(Reflect.get(activeRuntime, "lastReviewSubmittedTurn")).toBe(3);
 
+			// /advisor on arms for task branches; simulate entering task
+			harness.sessionManager.appendCustomEntry("task-start", {});
 			await harness.session.prompt("/advisor on");
 			await waitFor(() => advisor.requests.length === 7);
 			expect(JSON.stringify(advisor.requests[6]?.context.messages)).toContain(
@@ -456,6 +458,8 @@ describe.sequential("Slice 3B retry lifecycle resilience", () => {
 			expect(stranded.text).toContain("STRANDED-ACTIVE-EVIDENCE");
 			expect(stranded.restoredReplayCount).toBe(0);
 
+			// /advisor on arms for task branches; simulate entering task
+			harness.sessionManager.appendCustomEntry("task-start", {});
 			await harness.session.prompt("/advisor on");
 			await waitFor(() => advisor.requests.length === 2);
 			expect(JSON.stringify(advisor.requests[1]?.context.messages)).toContain(

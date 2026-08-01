@@ -986,7 +986,7 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 			await waitFor(() => runtime?.getStatus().reviewsCompleted === 2);
 			expect(runtime?.getStatus()).toMatchObject({
 				memorySuggestionsDelivered: 1,
-				memorySuggestionsRemaining: 0,
+				memorySuggestionsRemaining: 4,
 				memorySuggestionsLimitSuppressed: 1,
 			});
 		} finally {
@@ -1028,7 +1028,7 @@ describe.sequential("Slice 2 Batch C Memory suggestions", () => {
 			await waitFor(() => runtime?.getStatus().reviewsCompleted === 2);
 			expect(runtime?.getStatus()).toMatchObject({
 				memorySuggestionsDelivered: 1,
-				memorySuggestionsRemaining: 0,
+				memorySuggestionsRemaining: 4,
 				memorySuggestionsLimitSuppressed: 1,
 			});
 		} finally {
