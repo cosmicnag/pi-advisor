@@ -418,6 +418,7 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 
 		if (isTerminal) {
 			await runtime.observeTurn(event, ctx);
+			await runtime.waitForReview();
 		} else {
 			void runtime.observeTurn(event, ctx);
 		}

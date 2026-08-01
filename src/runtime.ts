@@ -2200,6 +2200,13 @@ export class AdvisorRuntime {
 		}
 	}
 
+	async waitForReview(timeoutMs = 120_000): Promise<void> {
+		const start = Date.now();
+		while (this.activeReview !== undefined && Date.now() - start < timeoutMs) {
+			await new Promise((resolve) => setTimeout(resolve, 500));
+		}
+	}
+
 	private memorySuggestionPolicyInstructions(): string {
 		return `<memory-suggestion-policy>
 Memory suggestions are optional and lower priority than ordinary material review advice.
