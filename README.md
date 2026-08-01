@@ -5,6 +5,85 @@ Automatic, isolated secondary review for [Pi](https://pi.dev).
 Pi Advisor observes meaningful completed turns from your primary Pi agent, called the Executor, and reviews them with a separate model that you choose.
 It stays silent when work is sound and delivers a bounded, actionable note when it finds a material correctness, safety, verification, or workflow issue.
 
+## Leaf-Branch Auto-Enable (Fork-Specific)
+
+This fork adds automatic advisor activation in push-task leaf branches, controlled by an explicit user arm flag. Designed for workflows using [pi-supergsd](https://github.com/coctostan/pi-supergsd) where advisor review is most valuable inside isolated task branches, not the main session.
+
+### Rationale
+
+- Advisor review is most valuable where implementation happens: inside push-task leaf branches during TDD loops, code changes, and focused work.
+- Main session (overseer/planning) doesn't need continuous review — mistakes are cheap to catch in leaves.
+- User explicitly arms the advisor via `/advisor on`; it auto-enables only when entering a task leaf, auto-disables on return.
+- Respects explicit `/advisor off` — if disabled, stays off even in leaves.
+
+### How It Works
+
+- `/advisor on` writes `autoEnableInTasks: true` to `~/.pi/agent/WATCHDOG.yml` (arm flag, global across projects).
+- On `turn_end`, if armed AND current branch contains a `task-start` entry → advisor auto-enables.
+- On `session_tree` (branch switch), if new branch has no `task-start` → advisor auto-disables.
+- On `session_start` (resume), if armed AND in task branch → advisor re-enables (covers process restart mid-task).
+- **Only manual `/advisor on/off` writes the config flag.** Auto-enable/disable never touch config — prevents race conditions during branch transitions.
+
+### Usage
+
+```text
+# Arm advisor (enables only in task leaves, not main)
+/advisor on
+
+# Start a push-task — advisor auto-enables inside the leaf
+/start-task
+
+# Inside leaf: advisor reviews turns automatically
+# Check status
+/advisor status  # shows "Advisor: active"
+
+# Disable advisor (persists across future tasks)
+/advisor off
+
+# Finish task — returns to main with advisor off
+/finish-task
+
+# Future tasks stay off until you re-arm
+/start-task  # advisor remains off
+/advisor on  # re-arm for next task
+```
+
+### Config
+
+In `~/.pi/agent/WATCHDOG.yml`:
+
+```yaml
+autoEnableInTasks: true    # arm flag — set by /advisor on/off
+model: llama-cpp/sidecar-ornith-9b
+effort: medium             # recommended for smaller sidecar models
+```
+
+### Key Differences from Upstream
+
+| Behavior | Upstream | This Fork |
+|----------|----------|----------|
+| Auto-enable on `session_start` | Yes (if `defaultEnabled: true`) | Only if armed AND in task branch |
+| Enable in main session | Yes (when enabled) | No — arm-only in main, enables in leaves |
+| Auto-disable on branch switch | No | Yes — disables when leaving task branch |
+| Config flag for leaf behavior | None | `autoEnableInTasks` |
+| Detection mechanism | `session_start` only | `turn_end` (main) + `session_start` (resume) + `session_tree` (disable) |
+
+### Install
+
+Path-load from this fork:
+
+```json
+// ~/.pi/agent/settings.json
+{
+  "packages": [
+    // ... other packages ...
+    "extensions/pi-advisor/src/index.ts"
+  ]
+}
+```
+
+Or clone this fork to `~/.pi/agent/extensions/pi-advisor` and register as above.
+
 > [!WARNING]
 > Pi extensions run with your full system permissions.
 > Review this package before installing it.
