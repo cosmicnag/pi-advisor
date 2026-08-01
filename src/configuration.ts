@@ -133,6 +133,7 @@ const USER_KEYS = new Set([
 	"version",
 	"defaultEnabled",
 	"autoEnableInTasks",
+	"blockOnTerminalTurns",
 	"model",
 	"effort",
 	"tools",
