@@ -131,15 +131,34 @@ describe("Advisor presentation and diagnostics through Slice 5", () => {
 	it("renders a compact active, queued, paused, or hidden footer status", () => {
 		const status = runtimeStatus();
 		expect(formatAdvisorFooterStatus(status)).toBe("Advisor active");
+		expect(formatAdvisorFooterStatus({ ...status, modelName: "Grok 4.5" })).toBe(
+			"Advisor active (Grok 4.5)",
+		);
 		expect(formatAdvisorFooterStatus({ ...status, backlog: true, pendingTranscriptBytes: 1 })).toBe(
 			"Advisor active · 1 byte queued",
 		);
+		expect(
+			formatAdvisorFooterStatus({
+				...status,
+				modelName: "Grok 4.5",
+				backlog: true,
+				pendingTranscriptBytes: 2048,
+			}),
+		).toBe("Advisor active (Grok 4.5) · 2048 bytes queued");
 		expect(
 			formatAdvisorFooterStatus({ ...status, backlog: true, pendingTranscriptBytes: 2048 }),
 		).toBe("Advisor active · 2048 bytes queued");
 		expect(formatAdvisorFooterStatus({ ...status, active: false, paused: true })).toBe(
 			"Advisor paused",
 		);
+		expect(
+			formatAdvisorFooterStatus({
+				...status,
+				active: false,
+				paused: true,
+				modelName: "Grok 4.5",
+			}),
+		).toBe("Advisor paused (Grok 4.5)");
 		expect(formatAdvisorFooterStatus({ ...status, enabled: false, active: false })).toBeUndefined();
 	});
 

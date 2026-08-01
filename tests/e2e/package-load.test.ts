@@ -402,7 +402,7 @@ export default function(pi) {
 				`${JSON.stringify({ id: "review", type: "prompt", message: "Run one review." })}\n${JSON.stringify({ id: "schema-status", type: "prompt", message: "/advisor status" })}\n`,
 			);
 			expect(activeReview.status, activeReview.stderr).toBe(0);
-			expect(activeReview.stdout).toContain('"statusText":"Advisor active"');
+			expect(activeReview.stdout).toContain('"statusText":"Advisor active (Packed advisor)"');
 			expect(activeReview.stdout).toContain("Advise schema: portable");
 			expect(activeReview.stdout).toContain('"kind":"review-outcome"');
 			expect(activeReview.stdout).toContain('"outcome":"accepted"');
