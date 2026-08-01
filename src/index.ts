@@ -392,9 +392,6 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 			}
 		}
 		armed = loadedConfig?.userConfig.autoEnableInTasks ?? false;
-		if (ctx.hasUI) {
-			ctx.ui.notify(`[DEBUG] loadedConfig.userConfig.blockOnTerminalTurns=${loadedConfig?.userConfig.blockOnTerminalTurns} effectiveConfig.blockOnTerminalTurns=${loadedConfig?.effectiveConfig.blockOnTerminalTurns}`);
-		}
 		await runtime.startSession(ctx);
 		const cliEnabled = pi.getFlag("advisor") === true;
 		const defaultEnabled = configuredDefault && (ctx.mode === "tui" || ctx.mode === "rpc");
@@ -421,6 +418,9 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 
 		if (isTerminal) {
 			await runtime.observeTurn(event, ctx);
+			if (ctx.hasUI) {
+				ctx.ui.notify("Waiting for advisor review before continuing...", "info");
+			}
 			await runtime.waitForReview();
 		} else {
 			void runtime.observeTurn(event, ctx);
