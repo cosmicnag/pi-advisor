@@ -59,6 +59,25 @@ model: llama-cpp/sidecar-ornith-9b
 effort: medium                  # recommended for smaller sidecar models
 ```
 
+### Sync vs Async Review Modes
+
+**Async (default, `blockOnTerminalTurns: false`):**
+- Executor runs turn N, advisor reviews after the fact.
+- Advice delivered to turn N+1 via follow-up or steer.
+- Executor never blocks — fastest throughput, no added latency.
+- Best for: exploratory work, rapid iteration, non-critical tasks.
+
+**Sync (`blockOnTerminalTurns: true`):**
+- On terminal turns (assistant message with no tool calls), executor pauses and waits for advisor review.
+- Status bar shows "Waiting for advisor review..." during the wait.
+- Review completes before executor continues — catches issues before they compound.
+- Timeout: 120 seconds (executor resumes if advisor doesn't respond).
+- Best for: TDD loops, critical decisions, code review gates, when mistakes are expensive.
+
+**Terminal turn:** an assistant message that issued no tool calls (e.g., a summary, explanation, or final answer). Turns with tool calls always run async — only terminal turns can block.
+
+Set `blockOnTerminalTurns` in `WATCHDOG.yml` or via `/advisor configure` to toggle modes.
+
 ### Key Differences from Upstream
 
 | Behavior | Upstream | This Fork |
