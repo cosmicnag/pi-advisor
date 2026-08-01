@@ -5,6 +5,16 @@ Automatic, isolated secondary review for [Pi](https://pi.dev).
 Pi Advisor observes meaningful completed turns from your primary Pi agent, called the Executor, and reviews them with a separate model that you choose.
 It stays silent when work is sound and delivers a bounded, actionable note when it finds a material correctness, safety, verification, or workflow issue.
 
+## Fork-Specific Features (cosmicnag/pi-advisor)
+
+This fork extends upstream ribbons-digital/pi-advisor with three features designed for push-task workflows and isolated leaf-branch development:
+
+1. **Leaf-branch auto-enable:** Advisor arms globally via `/advisor on`, then auto-enables only inside push-task leaf branches (detected via `task-start` entries). Auto-disables on return to main. Respects explicit `/advisor off` — stays off even in leaves until re-armed.
+2. **Sync review mode:** Optional `blockOnTerminalTurns` pauses the executor on terminal turns (no tool calls) and waits for advisor review before continuing. Status bar shows progress. 120s timeout. Async mode remains default for non-critical turns.
+3. **Status bar feedback:** Uses Pi's status bar (`ctx.ui.setStatus`) for transient blocking feedback instead of notifications — no popup spam, no transcript noise.
+
+Upstream behavior (cost governors, isolated review session, bounded delivery, memory suggestions, security model) is preserved unchanged. See [Leaf-Branch Auto-Enable](#leaf-branch-auto-enable-fork-specific) and [Sync vs Async Review Modes](#sync-vs-async-review-modes) for details.
+
 ## Leaf-Branch Auto-Enable (Fork-Specific)
 
 This fork adds automatic advisor activation in push-task leaf branches, controlled by an explicit user arm flag. Designed for workflows using [pi-supergsd](https://github.com/coctostan/pi-supergsd) where advisor review is most valuable inside isolated task branches, not the main session.
@@ -118,6 +128,54 @@ Or clone this fork to `~/.pi/agent/extensions/pi-advisor` and register as above.
 ![Pi Advisor surfaces a concern about stale cache data after reviewing an Executor response](docs/assets/advisor-in-action.png)
 
 _Pi Advisor reviewing a synthetic cache implementation in a privacy-safe demo session._
+
+## Sync vs Async Review Modes
+
+Pi Advisor operates in two modes, controlled by `blockOnTerminalTurns` in `~/.pi/agent/WATCHDOG.yml`.
+
+### Async Mode (Default)
+
+```yaml
+blockOnTerminalTurns: false
+```
+
+- Executor completes turn N and continues immediately.
+- Advisor reviews turn N in the background (isolated session).
+- Advice delivered to turn N+1 via steering or follow-up.
+- Executor never waits — lowest latency, best for exploratory work.
+- Advisor may review turns that are already superseded by later work.
+
+### Sync Mode (Terminal Turns Only)
+
+```yaml
+blockOnTerminalTurns: true
+```
+
+- On terminal turns (assistant message with no tool calls), executor pauses after completing the turn.
+- Advisor reviews the turn synchronously.
+- Executor waits up to 120 seconds for review to complete.
+- Status bar shows "Waiting for advisor review..." during the wait.
+- Non-terminal turns (with tool calls) remain async — no blocking during active work.
+
+### When to Use Each
+
+| Use async when | Use sync when |
+|----------------|---------------|
+| Exploratory work, rapid iteration | Finalizing a solution before proceeding |
+| Executor is actively working (tool calls) | Executor reaches a decision point (no tool calls) |
+| Low-stakes turns | High-stakes decisions, safety-critical code |
+| You want maximum throughput | You want advisor to gate terminal decisions |
+
+### How It Works
+
+Sync mode detects terminal turns via the `turn_end` event: a turn is terminal when the assistant message has no tool calls. When `blockOnTerminalTurns` is true and a terminal turn completes, the executor:
+
+1. Submits the turn to advisor review.
+2. Waits for the review to start (polls active review state).
+3. Waits for the review to complete (up to 120s timeout).
+4. Resumes execution with any advisor feedback.
+
+If the timeout expires, the executor continues anyway — sync mode never hard-blocks indefinitely.
 
 ## Features
 
