@@ -94,6 +94,7 @@ const UserSchema = Type.Object(
 		version: Type.Literal(ADVISOR_CONFIG_VERSION),
 		defaultEnabled: Type.Optional(Type.Boolean()),
 		autoEnableInTasks: Type.Optional(Type.Boolean()),
+		blockOnTerminalTurns: Type.Optional(Type.Boolean()),
 		model: Type.Optional(Type.String({ pattern: "^[^/\\s]+/.+$" })),
 		effort: Type.Optional(Type.Union(effortValues.map((value) => Type.Literal(value)))),
 		tools: Type.Optional(Type.Array(Type.Union(toolValues.map((value) => Type.Literal(value))))),
