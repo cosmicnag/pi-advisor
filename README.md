@@ -53,9 +53,10 @@ This fork adds automatic advisor activation in push-task leaf branches, controll
 In `~/.pi/agent/WATCHDOG.yml`:
 
 ```yaml
-autoEnableInTasks: true    # arm flag — set by /advisor on/off
+autoEnableInTasks: true         # arm flag — set by /advisor on/off
+blockOnTerminalTurns: false     # async by default; true blocks terminal turns for review
 model: llama-cpp/sidecar-ornith-9b
-effort: medium             # recommended for smaller sidecar models
+effort: medium                  # recommended for smaller sidecar models
 ```
 
 ### Key Differences from Upstream

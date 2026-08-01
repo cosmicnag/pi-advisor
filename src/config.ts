@@ -45,6 +45,7 @@ export interface AdvisorUserConfig {
 	version: typeof ADVISOR_CONFIG_VERSION;
 	defaultEnabled: boolean;
 	autoEnableInTasks: boolean;
+	blockOnTerminalTurns: boolean;
 	model?: string;
 	effort: AdvisorEffort;
 	tools: ReadOnlyToolName[];
@@ -86,6 +87,7 @@ const CANONICAL_DEFAULT_ADVISOR_CONFIG: AdvisorConfig = deepFreeze({
 	version: ADVISOR_CONFIG_VERSION,
 	defaultEnabled: false,
 	autoEnableInTasks: false,
+	blockOnTerminalTurns: false,
 	effort: "high",
 	tools: [...READ_ONLY_TOOL_NAMES],
 	instructions: "",
@@ -170,6 +172,7 @@ export function normalizeAdvisorConfig(input: AdvisorConfig): AdvisorConfig {
 		version: ADVISOR_CONFIG_VERSION,
 		defaultEnabled: Boolean(input.defaultEnabled),
 		autoEnableInTasks: Boolean(input.autoEnableInTasks),
+		blockOnTerminalTurns: Boolean(input.blockOnTerminalTurns),
 		tools,
 		context: {
 			maxFraction: Math.min(

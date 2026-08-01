@@ -491,7 +491,7 @@ function addUsageTotals(target: AdvisorUsageTotals, usage: AdvisorUsageTotals): 
 	target.costUsd += usage.costUsd;
 }
 
-function hasToolCall(message: AssistantMessage): boolean {
+export function hasToolCall(message: AssistantMessage): boolean {
 	return message.content.some((content) => content.type === "toolCall");
 }
 
@@ -870,7 +870,11 @@ function messageIsAssistant(message: AgentMessage): message is AssistantMessage 
 }
 
 export class AdvisorRuntime {
-	private config: AdvisorConfig;
+	private _config: AdvisorConfig;
+
+	get config(): AdvisorConfig {
+		return this._config;
+	}
 	private projectInstructions: string;
 	private session?: AgentSession;
 	private sessionUnsubscribe?: () => void;
@@ -931,13 +935,13 @@ export class AdvisorRuntime {
 		private readonly hooks: AdvisorRuntimeHooks = {},
 		projectInstructions = "",
 	) {
-		this.config = normalizeAdvisorConfig(config);
+		this._config = normalizeAdvisorConfig(config);
 		this.projectInstructions = projectInstructions;
 		this.status = {
 			enabled: false,
 			active: false,
 			paused: false,
-			effort: this.config.effort,
+			effort: this._config.effort,
 			backlog: false,
 			pendingTranscriptBytes: 0,
 			maxPendingTranscriptBytesObserved: 0,
@@ -954,8 +958,8 @@ export class AdvisorRuntime {
 			compactionUsageUnavailable: 0,
 			contextReprimesCompleted: 0,
 			contextReprimeFailures: 0,
-			sessionTokenSoftCap: this.config.limits.sessionTokenSoftCap,
-			sessionCostSoftCapUsd: this.config.limits.sessionCostSoftCapUsd,
+			sessionTokenSoftCap: this._config.limits.sessionTokenSoftCap,
+			sessionCostSoftCapUsd: this._config.limits.sessionCostSoftCapUsd,
 			usage: emptyUsage(),
 			reviewRequests: 0,
 			reviewsCompleted: 0,
@@ -977,7 +981,7 @@ export class AdvisorRuntime {
 			memorySuggestionsDelivered: 0,
 			memorySuggestionsPolicySuppressed: 0,
 			memorySuggestionsLimitSuppressed: 0,
-			memorySuggestionsRemaining: this.config.memorySuggestions.sessionSuggestionCap,
+			memorySuggestionsRemaining: this._config.memorySuggestions.sessionSuggestionCap,
 			memorySuggestionNextEligibleTurn: 0,
 			memorySuggestionNextEligibleAt: 0,
 			redactions: 0,
@@ -985,7 +989,7 @@ export class AdvisorRuntime {
 			branchResets: 0,
 			staleQueuedMessagesDiscarded: 0,
 			warnings: 0,
-			transcriptPersistenceEnabled: this.config.persistence.transcript,
+			transcriptPersistenceEnabled: this._config.persistence.transcript,
 			transcriptRecordsPersisted: 0,
 			transcriptPersistenceFailures: 0,
 			restoredActiveReviewPending: false,
@@ -998,7 +1002,7 @@ export class AdvisorRuntime {
 			epoch: 0,
 			nestedActiveTools: [],
 		};
-		if (this.config.model !== undefined) this.status.model = this.config.model;
+		if (this._config.model !== undefined) this.status.model = this._config.model;
 	}
 
 	getStatus(): AdvisorRuntimeStatus {
@@ -1019,18 +1023,18 @@ export class AdvisorRuntime {
 		}
 		this.status.memorySuggestionCapability = capability;
 		this.status.memorySuggestionsEnabled =
-			this.config.memorySuggestions.enabled && capability.state === "available";
+			this._config.memorySuggestions.enabled && capability.state === "available";
 		this.status.memorySuggestionsRemaining = Math.max(
 			0,
-			this.config.memorySuggestions.sessionSuggestionCap - this.memorySuggestionAdmissions,
+			this._config.memorySuggestions.sessionSuggestionCap - this.memorySuggestionAdmissions,
 		);
 		this.status.memorySuggestionNextEligibleTurn =
-			(this.lastMemorySuggestionTurn ?? -this.config.memorySuggestions.minTurnsBetweenSuggestions) +
-			this.config.memorySuggestions.minTurnsBetweenSuggestions;
+			(this.lastMemorySuggestionTurn ?? -this._config.memorySuggestions.minTurnsBetweenSuggestions) +
+			this._config.memorySuggestions.minTurnsBetweenSuggestions;
 		this.status.memorySuggestionNextEligibleAt = Math.min(
 			8_640_000_000_000_000,
-			(this.lastMemorySuggestionAt ?? -this.config.memorySuggestions.minIntervalMs) +
-				this.config.memorySuggestions.minIntervalMs,
+			(this.lastMemorySuggestionAt ?? -this._config.memorySuggestions.minIntervalMs) +
+				this._config.memorySuggestions.minIntervalMs,
 		);
 		return capability;
 	}
@@ -1050,7 +1054,7 @@ export class AdvisorRuntime {
 	captureContextFiles(files: { path: string; content: string }[]): void {
 		const context = formatProjectContext(
 			files,
-			Math.max(1, Math.floor((this.config.context.maxUpdateTokens * 4) / 3)),
+			Math.max(1, Math.floor((this._config.context.maxUpdateTokens * 4) / 3)),
 		);
 		this.projectContext = context.text;
 		this.status.redactions += context.redactions;
@@ -1059,16 +1063,16 @@ export class AdvisorRuntime {
 
 	setConfigurationBeforeSession(config: AdvisorConfig, projectInstructions = ""): void {
 		if (this.sessionInitialized || this.status.enabled || this.disposed) return;
-		this.config = normalizeAdvisorConfig(config);
+		this._config = normalizeAdvisorConfig(config);
 		this.projectInstructions = projectInstructions;
-		this.status.effort = this.config.effort;
-		this.status.sessionTokenSoftCap = this.config.limits.sessionTokenSoftCap;
-		this.status.sessionCostSoftCapUsd = this.config.limits.sessionCostSoftCapUsd;
-		if (this.config.model === undefined) delete this.status.model;
-		else this.status.model = this.config.model;
+		this.status.effort = this._config.effort;
+		this.status.sessionTokenSoftCap = this._config.limits.sessionTokenSoftCap;
+		this.status.sessionCostSoftCapUsd = this._config.limits.sessionCostSoftCapUsd;
+		if (this._config.model === undefined) delete this.status.model;
+		else this.status.model = this._config.model;
 		delete this.status.modelName;
-		this.status.transcriptPersistenceEnabled = this.config.persistence.transcript;
-		this.status.memorySuggestionsRemaining = this.config.memorySuggestions.sessionSuggestionCap;
+		this.status.transcriptPersistenceEnabled = this._config.persistence.transcript;
+		this.status.memorySuggestionsRemaining = this._config.memorySuggestions.sessionSuggestionCap;
 	}
 
 	async startSession(ctx: ExtensionContext): Promise<void> {
@@ -1118,20 +1122,20 @@ export class AdvisorRuntime {
 		this.refreshDeferredAdviceStatus();
 		await this.disposeNestedSession();
 
-		this.config = normalizeAdvisorConfig(config);
+		this._config = normalizeAdvisorConfig(config);
 		this.projectInstructions = projectInstructions;
-		this.status.effort = this.config.effort;
-		this.status.sessionTokenSoftCap = this.config.limits.sessionTokenSoftCap;
-		this.status.sessionCostSoftCapUsd = this.config.limits.sessionCostSoftCapUsd;
-		this.status.transcriptPersistenceEnabled = this.config.persistence.transcript;
+		this.status.effort = this._config.effort;
+		this.status.sessionTokenSoftCap = this._config.limits.sessionTokenSoftCap;
+		this.status.sessionCostSoftCapUsd = this._config.limits.sessionCostSoftCapUsd;
+		this.status.transcriptPersistenceEnabled = this._config.persistence.transcript;
 		this.status.memorySuggestionsRemaining = Math.max(
 			0,
-			this.config.memorySuggestions.sessionSuggestionCap - this.memorySuggestionAdmissions,
+			this._config.memorySuggestions.sessionSuggestionCap - this.memorySuggestionAdmissions,
 		);
 		this.status.paused = false;
 		delete this.status.pauseReason;
-		if (this.config.model === undefined) delete this.status.model;
-		else this.status.model = this.config.model;
+		if (this._config.model === undefined) delete this.status.model;
+		else this.status.model = this._config.model;
 		delete this.status.modelName;
 		delete this.status.inactiveReason;
 		this.status.contextEstimateTokens = 0;
@@ -1161,7 +1165,7 @@ export class AdvisorRuntime {
 		if (session === undefined || contextEntries.length === 0) return;
 		let tokenBudget = Math.max(
 			1,
-			Math.min(this.config.limits.maxReprimeTokens, this.status.contextLimitTokens),
+			Math.min(this._config.limits.maxReprimeTokens, this.status.contextLimitTokens),
 		);
 		while (tokenBudget >= 1) {
 			const snapshot = renderAdvisorReprimeSnapshot(contextEntries, tokenBudget);
@@ -1270,7 +1274,7 @@ export class AdvisorRuntime {
 			this.throttledUpdate !== undefined ||
 			this.activeAdvice.length > 0;
 
-		const retentionMs = this.config.limits.deferredAdviceRetentionHours * 60 * 60 * 1_000;
+		const retentionMs = this._config.limits.deferredAdviceRetentionHours * 60 * 60 * 1_000;
 		const now = Date.now();
 		const discardedIdentities = new Set<string>();
 		for (const persisted of state.deferredAdvice) {
@@ -1304,7 +1308,7 @@ export class AdvisorRuntime {
 	}
 
 	private appendTranscriptRecord(record: PersistedAdvisorTranscriptRecordV2): void {
-		if (!this.config.persistence.transcript || this.disposed) return;
+		if (!this._config.persistence.transcript || this.disposed) return;
 		if (parsePersistedAdvisorTranscriptRecord(record, record.sessionId) === undefined) {
 			this.status.transcriptPersistenceFailures++;
 			return;
@@ -1378,7 +1382,7 @@ export class AdvisorRuntime {
 			this.status.restoredQueuedReviewPending = false;
 			this.status.restoredActiveDeliveriesPending = 0;
 		}
-		const retainDeferred = this.config.limits.deferredAdviceRetentionHours > 0;
+		const retainDeferred = this._config.limits.deferredAdviceRetentionHours > 0;
 		const deferredAdvice: PersistedDeferredAdvice[] = retainDeferred
 			? this.pendingAdvice.values().map((pending) => ({
 					advice: structuredClone(pending.advice),
@@ -1461,7 +1465,7 @@ export class AdvisorRuntime {
 					? {}
 					: { lastAdmittedAt: this.lastMemorySuggestionAt }),
 				sessionCapReached:
-					this.memorySuggestionAdmissions >= this.config.memorySuggestions.sessionSuggestionCap,
+					this.memorySuggestionAdmissions >= this._config.memorySuggestions.sessionSuggestionCap,
 			},
 			notesDelivered: this.status.notesDelivered,
 		};
@@ -1691,7 +1695,7 @@ export class AdvisorRuntime {
 			return;
 		}
 		const activationEpoch = this.status.epoch;
-		const modelReference = this.config.model;
+		const modelReference = this._config.model;
 		if (modelReference === undefined) {
 			this.status.active = false;
 			this.status.inactiveReason =
@@ -1772,8 +1776,8 @@ export class AdvisorRuntime {
 		const compactionReserveTokens = Math.max(
 			1,
 			Math.min(
-				this.config.context.reserveTokens || model.maxTokens,
-				model.maxTokens > 0 ? model.maxTokens : this.config.context.reserveTokens || 1,
+				this._config.context.reserveTokens || model.maxTokens,
+				model.maxTokens > 0 ? model.maxTokens : this._config.context.reserveTokens || 1,
 			),
 		);
 		const settingsManager = SettingsManager.inMemory({
@@ -1806,7 +1810,7 @@ export class AdvisorRuntime {
 			tool.execute = async (...arguments_) => {
 				const result = await execute(...arguments_);
 				const run = this.currentRun;
-				return run !== undefined && run.turns >= this.config.limits.maxAdvisorTurnsPerUpdate
+				return run !== undefined && run.turns >= this._config.limits.maxAdvisorTurnsPerUpdate
 					? { ...result, terminate: true }
 					: result;
 			};
@@ -1825,12 +1829,12 @@ export class AdvisorRuntime {
 				}
 			}),
 		];
-		const activeTools = [...this.config.tools, "advise"];
+		const activeTools = [...this._config.tools, "advise"];
 		const result = await createAgentSession({
 			cwd: ctx.cwd,
 			agentDir: getAgentDir(),
 			model,
-			thinkingLevel: this.config.effort,
+			thinkingLevel: this._config.effort,
 			modelRuntime,
 			settingsManager,
 			resourceLoader,
@@ -1867,7 +1871,7 @@ export class AdvisorRuntime {
 					}
 				} else {
 					run.toolCalls++;
-					if (run.toolCalls > this.config.limits.maxToolCallsPerUpdate) {
+					if (run.toolCalls > this._config.limits.maxToolCallsPerUpdate) {
 						run.governorFailure = "Advisor tool-call limit reached";
 						void this.session?.abort();
 					}
@@ -1876,7 +1880,7 @@ export class AdvisorRuntime {
 			if (event.type !== "turn_end" || !messageIsAssistant(event.message)) return;
 			addUsage(run.usage, event.message);
 			run.stopReason = event.message.stopReason;
-			if (this.config.persistence.transcript) {
+			if (this._config.persistence.transcript) {
 				const results = new Map(event.toolResults.map((result) => [result.toolCallId, result]));
 				for (const content of event.message.content) {
 					if (content.type !== "toolCall") continue;
@@ -1917,7 +1921,7 @@ export class AdvisorRuntime {
 							: ADVISOR_ARGUMENT_VALIDATION_FAILURE
 						: `An internal Advisor tool failed while executing.`;
 			}
-			if (run.turns >= this.config.limits.maxAdvisorTurnsPerUpdate && hasToolCall(event.message)) {
+			if (run.turns >= this._config.limits.maxAdvisorTurnsPerUpdate && hasToolCall(event.message)) {
 				run.governorFailure = "Advisor turn limit reached";
 				void this.session?.abort();
 			}
@@ -1930,17 +1934,17 @@ export class AdvisorRuntime {
 
 	private successfulMemoryTextByteBudget(): number {
 		return Math.floor(
-			this.config.limits.maxPendingTranscriptBytes * PENDING_MEMORY_METADATA_FRACTION,
+			this._config.limits.maxPendingTranscriptBytes * PENDING_MEMORY_METADATA_FRACTION,
 		);
 	}
 
 	private reviewCadenceEligible(turnNumber: number, now: number): boolean {
 		const turnsEligible =
 			this.lastReviewSubmittedTurn === undefined ||
-			turnNumber - this.lastReviewSubmittedTurn >= this.config.limits.minTurnsBetweenReviews;
+			turnNumber - this.lastReviewSubmittedTurn >= this._config.limits.minTurnsBetweenReviews;
 		const timeEligible =
 			this.lastReviewSubmittedAt === undefined ||
-			now - this.lastReviewSubmittedAt >= this.config.limits.minIntervalMs;
+			now - this.lastReviewSubmittedAt >= this._config.limits.minIntervalMs;
 		return turnsEligible && timeEligible;
 	}
 
@@ -1975,11 +1979,11 @@ export class AdvisorRuntime {
 			this.lastReviewSubmittedAt === undefined ||
 			(this.lastReviewSubmittedTurn !== undefined &&
 				update.turnNumber - this.lastReviewSubmittedTurn <
-					this.config.limits.minTurnsBetweenReviews)
+					this._config.limits.minTurnsBetweenReviews)
 		) {
 			return;
 		}
-		const remaining = this.config.limits.minIntervalMs - (Date.now() - this.lastReviewSubmittedAt);
+		const remaining = this._config.limits.minIntervalMs - (Date.now() - this.lastReviewSubmittedAt);
 		if (remaining <= 0) {
 			this.submitThrottledUpdate(Date.now());
 			return;
@@ -2064,7 +2068,7 @@ export class AdvisorRuntime {
 			this.persistState();
 			return;
 		}
-		const rendered = renderAdvisorDelta(entries, this.config.context.maxUpdateTokens);
+		const rendered = renderAdvisorDelta(entries, this._config.context.maxUpdateTokens);
 		this.status.redactions += rendered.redactions;
 		if (rendered.text.trim().length === 0) {
 			this.cursor = nextCursor;
@@ -2132,7 +2136,7 @@ export class AdvisorRuntime {
 		incoming: QueuedAdvisorUpdate,
 	): QueuedAdvisorUpdate {
 		const combined = current === undefined ? incoming.text : `${current.text}\n\n${incoming.text}`;
-		const maximum = this.config.limits.maxPendingTranscriptBytes;
+		const maximum = this._config.limits.maxPendingTranscriptBytes;
 		const successfulMemoryTexts = boundNewestTexts(
 			[...(current?.successfulMemoryTexts ?? []), ...incoming.successfulMemoryTexts],
 			this.successfulMemoryTextItemBudget(),
@@ -2212,7 +2216,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		if (this.projectContext.length === 0) return update;
 		const prefix = `${this.projectContext}\n\n<executor-update>\n`;
 		const suffix = "\n</executor-update>";
-		const maximumBytes = this.config.context.maxUpdateTokens * 4;
+		const maximumBytes = this._config.context.maxUpdateTokens * 4;
 		const executorBytes = Math.max(
 			1,
 			maximumBytes - Buffer.byteLength(prefix, "utf8") - Buffer.byteLength(suffix, "utf8"),
@@ -2239,7 +2243,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		this.collector.memoryPolicySuppressedCalls = 0;
 		this.collector.memoryLimitSuppressedCalls = 0;
 		this.collector.memoryPolicy = {
-			enabled: this.config.memorySuggestions.enabled,
+			enabled: this._config.memorySuggestions.enabled,
 			capabilityAvailable: capability.state === "available",
 			turnNumber: update.turnNumber,
 			now: Date.now(),
@@ -2462,7 +2466,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		const capability = this.refreshMemorySuggestionCapability();
 		const boundedUpdate = this.withProjectContext(update.text);
 		const submittedUpdate =
-			this.config.memorySuggestions.enabled && capability.state === "available"
+			this._config.memorySuggestions.enabled && capability.state === "available"
 				? `${this.memorySuggestionPolicyInstructions()}\n\n${boundedUpdate}`
 				: boundedUpdate;
 		const updatePrompt = `<advisor-update>\n${submittedUpdate}\n</advisor-update>`;
@@ -3201,12 +3205,12 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 	}
 
 	private applySessionSoftCaps(): void {
-		const tokenCap = this.config.limits.sessionTokenSoftCap;
+		const tokenCap = this._config.limits.sessionTokenSoftCap;
 		if (tokenCap !== "off" && this.status.usage.total >= tokenCap) {
 			this.pause("Advisor session token soft cap reached");
 			return;
 		}
-		const costCap = this.config.limits.sessionCostSoftCapUsd;
+		const costCap = this._config.limits.sessionCostSoftCapUsd;
 		if (costCap !== "off" && this.status.usage.costUsd >= costCap) {
 			this.pause("Advisor session cost soft cap reached");
 		}

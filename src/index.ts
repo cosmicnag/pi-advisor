@@ -30,6 +30,7 @@ import {
 	formatAdvisorEnableStatus,
 	formatAdvisorFooterStatus,
 	formatAdvisorStatus,
+	hasToolCall,
 	type AdvisorRuntimeHooks,
 } from "./runtime.js";
 
@@ -406,9 +407,22 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 		return message === undefined ? undefined : { message };
 	});
 
-	pi.on("turn_end", (event, ctx) => {
-		void runtime.observeTurn(event, ctx);
-		if (armed && branchHasTaskStart(ctx) && !runtime.getStatus().enabled) {
+	pi.on("turn_end", async (event, ctx) => {
+		const status = runtime.getStatus();
+		const isTerminal =
+			status.enabled &&
+			runtime.config.blockOnTerminalTurns &&
+			event.message.role === "assistant" &&
+			!hasToolCall(event.message) &&
+			event.message.stopReason !== "aborted";
+
+		if (isTerminal) {
+			await runtime.observeTurn(event, ctx);
+		} else {
+			void runtime.observeTurn(event, ctx);
+		}
+
+		if (armed && branchHasTaskStart(ctx) && !status.enabled) {
 			void runtime.enable(ctx, "user-default");
 		}
 	});
