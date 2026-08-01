@@ -416,6 +416,10 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 			!hasToolCall(event.message) &&
 			event.message.stopReason !== "aborted";
 
+		if (ctx.hasUI) {
+			ctx.ui.notify(`[DEBUG] turn_end: enabled=${status.enabled} blockOnTerminalTurns=${runtime.config.blockOnTerminalTurns} isTerminal=${isTerminal} role=${event.message.role} hasToolCall=${hasToolCall(event.message)} stopReason=${event.message.stopReason}`);
+		}
+
 		if (isTerminal) {
 			await runtime.observeTurn(event, ctx);
 			await runtime.waitForReview();
