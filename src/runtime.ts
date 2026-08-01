@@ -342,6 +342,7 @@ export interface AdvisorRuntimeStatus {
 	inactiveReason?: string;
 	pauseReason?: string;
 	model?: string;
+	modelName?: string;
 	adviseSchemaMode?: AdviseSchemaMode;
 	effort: AdvisorConfig["effort"];
 	backlog: boolean;
@@ -1065,6 +1066,7 @@ export class AdvisorRuntime {
 		this.status.sessionCostSoftCapUsd = this.config.limits.sessionCostSoftCapUsd;
 		if (this.config.model === undefined) delete this.status.model;
 		else this.status.model = this.config.model;
+		delete this.status.modelName;
 		this.status.transcriptPersistenceEnabled = this.config.persistence.transcript;
 		this.status.memorySuggestionsRemaining = this.config.memorySuggestions.sessionSuggestionCap;
 	}
@@ -1130,6 +1132,7 @@ export class AdvisorRuntime {
 		delete this.status.pauseReason;
 		if (this.config.model === undefined) delete this.status.model;
 		else this.status.model = this.config.model;
+		delete this.status.modelName;
 		delete this.status.inactiveReason;
 		this.status.contextEstimateTokens = 0;
 		this.status.contextUsageTokens = 0;
@@ -1697,6 +1700,7 @@ export class AdvisorRuntime {
 			return;
 		}
 		this.status.model = modelReference;
+		delete this.status.modelName;
 		const parsed = parseModelReference(modelReference);
 		if (parsed === undefined) {
 			this.status.active = false;
@@ -1750,6 +1754,7 @@ export class AdvisorRuntime {
 		this.model = model;
 		this.status.active = true;
 		this.status.model = `${model.provider}/${model.id}`;
+		this.status.modelName = model.name;
 		this.status.contextLimitTokens = advisorContextLimit(model, this.config);
 		await this.recoverRestoredWork(ctx);
 		this.resumeThrottledUpdate();
@@ -3388,8 +3393,10 @@ export function formatAdvisorEnableStatus(
 export function formatAdvisorFooterStatus(status: AdvisorRuntimeStatus): string | undefined {
 	if (!status.enabled) return undefined;
 	const state = status.paused ? "paused" : status.active ? "active" : "inactive";
+	const modelLabel =
+		status.modelName !== undefined && status.modelName.length > 0 ? ` (${status.modelName})` : "";
 	const queuedUnit = status.pendingTranscriptBytes === 1 ? "byte" : "bytes";
-	return `Advisor ${state}${status.backlog ? ` · ${String(status.pendingTranscriptBytes)} ${queuedUnit} queued` : ""}`;
+	return `Advisor ${state}${modelLabel}${status.backlog ? ` · ${String(status.pendingTranscriptBytes)} ${queuedUnit} queued` : ""}`;
 }
 
 export function formatAdvisorStatus(status: AdvisorRuntimeStatus): string {
