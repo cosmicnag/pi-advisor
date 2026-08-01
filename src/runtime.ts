@@ -2202,6 +2202,15 @@ export class AdvisorRuntime {
 
 	async waitForReview(timeoutMs = 120_000): Promise<void> {
 		const start = Date.now();
+		// wait for review to start
+		while (
+			this.activeReview === undefined &&
+			this.draining &&
+			Date.now() - start < timeoutMs
+		) {
+			await new Promise((resolve) => setTimeout(resolve, 200));
+		}
+		// wait for review to complete
 		while (this.activeReview !== undefined && Date.now() - start < timeoutMs) {
 			await new Promise((resolve) => setTimeout(resolve, 500));
 		}
