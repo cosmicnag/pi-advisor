@@ -356,6 +356,9 @@ function mergeUserConfig(base: AdvisorConfig, document: Record<string, unknown>)
 		...(document.autoEnableInTasks === undefined
 			? {}
 			: { autoEnableInTasks: document.autoEnableInTasks as boolean }),
+		...(document.blockOnTerminalTurns === undefined
+			? {}
+			: { blockOnTerminalTurns: document.blockOnTerminalTurns as boolean }),
 		...(document.model === undefined ? {} : { model: document.model as string }),
 		...(document.effort === undefined ? {} : { effort: document.effort as AdvisorEffort }),
 		...(document.tools === undefined ? {} : { tools: document.tools as ReadOnlyToolName[] }),
