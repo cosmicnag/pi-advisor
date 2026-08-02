@@ -355,7 +355,7 @@ describe.sequential("Slice 3A branch, compaction, and persistence lifecycle", ()
 			expect(runtime.getStatus().oldestDeferredAdviceAgeMs).toBeGreaterThanOrEqual(
 				2 * 60 * 60 * 1_000,
 			);
-			expect(formatAdvisorStatus(runtime.getStatus())).toContain("oldest deferred age");
+			expect(formatAdvisorStatus(runtime.getStatus(), false)).toContain("oldest deferred age");
 
 			await harness.session.prompt("resume and weigh retained advice");
 			const context = JSON.stringify(primary.requests[0]?.context);

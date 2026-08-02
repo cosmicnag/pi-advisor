@@ -28,7 +28,7 @@ This fork adds automatic advisor activation in push-task leaf branches, controll
 
 ### How It Works
 
-- `/advisor on` writes `autoEnableInTasks: true` to `~/.pi/agent/WATCHDOG.yml` (arm flag, global across projects).
+- `/advisor on` writes `armForTasks: true` to `~/.pi/agent/WATCHDOG.yml` (arm flag, global across projects).
 - On `turn_end`, if armed AND current branch contains a `task-start` entry → advisor auto-enables.
 - On `session_tree` (branch switch), if new branch has no `task-start` → advisor auto-disables.
 - On `session_start` (resume), if armed AND in task branch → advisor re-enables (covers process restart mid-task).
@@ -63,7 +63,7 @@ This fork adds automatic advisor activation in push-task leaf branches, controll
 In `~/.pi/agent/WATCHDOG.yml`:
 
 ```yaml
-autoEnableInTasks: true         # arm flag — set by /advisor on/off
+armForTasks: true               # arm flag — set by /advisor on/off
 blockOnTerminalTurns: false     # async by default; true blocks terminal turns for review
 model: llama-cpp/sidecar-ornith-9b
 effort: medium                  # recommended for smaller sidecar models
@@ -95,7 +95,7 @@ Set `blockOnTerminalTurns` in `WATCHDOG.yml` or via `/advisor configure` to togg
 | Auto-enable on `session_start` | Yes (if `defaultEnabled: true`) | Only if armed AND in task branch |
 | Enable in main session | Yes (when enabled) | No — arm-only in main, enables in leaves |
 | Auto-disable on branch switch | No | Yes — disables when leaving task branch |
-| Config flag for leaf behavior | None | `autoEnableInTasks` |
+| Config flag for leaf behavior | None | `armForTasks` |
 | Detection mechanism | `session_start` only | `turn_end` (main) + `session_start` (resume) + `session_tree` (disable) |
 
 ### Install

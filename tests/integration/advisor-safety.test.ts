@@ -646,7 +646,7 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 							(entry) => entry.type === "custom" && entry.customType === ADVISOR_LATE_ENTRY_TYPE,
 						),
 				).toBe(false);
-				expect(formatAdvisorStatus(runtime.getStatus())).toContain("Delivery failures: 0");
+				expect(formatAdvisorStatus(runtime.getStatus(), false)).toContain("Delivery failures: 0");
 
 				await harness.session.prompt(`deliver ${mode} advice`);
 				expect(JSON.stringify(primary.requests[1]?.context)).toContain(note);

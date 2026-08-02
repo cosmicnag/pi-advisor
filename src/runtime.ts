@@ -3409,7 +3409,7 @@ export function formatAdvisorEnableStatus(
 	current: AdvisorRuntimeStatus,
 	resetBudget: boolean,
 ): string {
-	const status = formatAdvisorStatus(current);
+	const status = formatAdvisorStatus(current, false);
 	if (!resetBudget) return status;
 	return `Previous Advisor budget before reset: ${String(previous.usage.total)} tokens, $${previous.usage.costUsd.toFixed(4)}${previous.pauseReason ? `, paused: ${previous.pauseReason}` : ""}\n${status}`;
 }
@@ -3423,14 +3423,16 @@ export function formatAdvisorFooterStatus(status: AdvisorRuntimeStatus): string 
 	return `Advisor ${state}${modelLabel}${status.backlog ? ` · ${String(status.pendingTranscriptBytes)} ${queuedUnit} queued` : ""}`;
 }
 
-export function formatAdvisorStatus(status: AdvisorRuntimeStatus): string {
-	const state = !status.enabled
-		? "off"
-		: status.paused
+export function formatAdvisorStatus(status: AdvisorRuntimeStatus, armForTasks: boolean): string {
+	const state = status.enabled
+		? status.paused
 			? "paused"
 			: status.active
 				? "active"
-				: "inactive";
+				: "inactive"
+		: armForTasks
+			? "armed"
+			: "off";
 	const lines = [
 		`Advisor: ${state}`,
 		`Model: ${status.model ?? "not configured"}`,

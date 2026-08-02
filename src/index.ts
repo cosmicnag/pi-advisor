@@ -267,7 +267,7 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 		structuredClone(options.config ?? DEFAULT_ADVISOR_CONFIG),
 	);
 	let statusContext: Parameters<AdvisorRuntime["startSession"]>[0] | undefined;
-	let armed = fallbackUserConfig.autoEnableInTasks;
+	let armed = fallbackUserConfig.armForTasks;
 	const runtime = new AdvisorRuntime(pi, fallbackUserConfig, {
 		...options.hooks,
 		onStatus: (status) => {
@@ -309,7 +309,7 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 					fallbackUserConfig,
 				});
 				publishConfigurationWarnings(ctx, loaded.warnings);
-				const nextUserConfig = { ...loaded.userConfig, autoEnableInTasks: true };
+				const nextUserConfig = { ...loaded.userConfig, armForTasks: true };
 				await saveUserConfigurationAtomic(loaded.paths.userYaml, nextUserConfig);
 				armed = true;
 				const applied = await loadAdvisorConfiguration({
@@ -325,7 +325,7 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 					console.log("[DEBUG] Enabling runtime in /advisor on");
 					await runtime.enable(ctx, "session-command");
 					console.log("[DEBUG] Runtime status after enable:", runtime.getStatus().enabled);
-					ctx.ui.notify("Advisor armed and enabled in current task.", "info");
+					ctx.ui.notify("Advisor active. Arm for tasks saved.", "info");
 				} else {
 					ctx.ui.notify("Advisor armed. Auto-enables in push-task leaf branches.", "info");
 				}
@@ -338,15 +338,21 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 					projectTrusted: ctx.isProjectTrusted(),
 					fallbackUserConfig,
 				});
-				const nextUserConfig = { ...loaded.userConfig, autoEnableInTasks: false };
+				const nextUserConfig = { ...loaded.userConfig, armForTasks: false };
 				await saveUserConfigurationAtomic(loaded.paths.userYaml, nextUserConfig);
 				armed = false;
 				await runtime.disable();
-				ctx.ui.notify("Advisor is off.", "info");
+				ctx.ui.notify("Advisor off. Arm for tasks cleared.", "info");
 				return;
 			}
 			if (command === "status") {
-				ctx.ui.notify(formatAdvisorStatus(runtime.getStatus()), "info");
+				const loaded = await loadAdvisorConfiguration({
+						agentDir: getAgentDir(),
+						cwd: ctx.cwd,
+						projectTrusted: ctx.isProjectTrusted(),
+						fallbackUserConfig,
+					});
+					ctx.ui.notify(formatAdvisorStatus(runtime.getStatus(), loaded.userConfig.armForTasks), "info");
 				return;
 			}
 			if (command === "dump") {
@@ -391,7 +397,7 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 				);
 			}
 		}
-		armed = loadedConfig?.userConfig.autoEnableInTasks ?? false;
+		armed = loadedConfig?.userConfig.armForTasks ?? false;
 		await runtime.startSession(ctx);
 		const cliEnabled = pi.getFlag("advisor") === true;
 		const defaultEnabled = configuredDefault && (ctx.mode === "tui" || ctx.mode === "rpc");

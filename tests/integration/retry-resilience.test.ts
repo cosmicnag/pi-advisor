@@ -539,8 +539,8 @@ describe.sequential("Slice 3B retry lifecycle resilience", () => {
 			if (pending === undefined) throw new Error("Expected Advisor status");
 			expect(pending).toMatchObject({ backlog: true, retryPending: true });
 			expect(pending.pendingTranscriptBytes).toBeGreaterThan(0);
-			expect(formatAdvisorStatus(pending)).toContain("retry pending");
-			expect(formatAdvisorStatus(pending)).toContain("0 consecutive failed updates");
+			expect(formatAdvisorStatus(pending, false)).toContain("retry pending");
+			expect(formatAdvisorStatus(pending, false)).toContain("0 consecutive failed updates");
 
 			await waitFor(() => runtime?.getStatus().reviewsCompleted === 2);
 			expect(JSON.stringify(advisor.requests[2]?.context.messages)).toContain(

@@ -93,7 +93,7 @@ const UserSchema = Type.Object(
 	{
 		version: Type.Literal(ADVISOR_CONFIG_VERSION),
 		defaultEnabled: Type.Optional(Type.Boolean()),
-		autoEnableInTasks: Type.Optional(Type.Boolean()),
+		armForTasks: Type.Optional(Type.Boolean()),
 		blockOnTerminalTurns: Type.Optional(Type.Boolean()),
 		model: Type.Optional(Type.String({ pattern: "^[^/\\s]+/.+$" })),
 		effort: Type.Optional(Type.Union(effortValues.map((value) => Type.Literal(value)))),
@@ -133,7 +133,7 @@ const projectValidator = Compile(ProjectSchema);
 const USER_KEYS = new Set([
 	"version",
 	"defaultEnabled",
-	"autoEnableInTasks",
+	"armForTasks",
 	"blockOnTerminalTurns",
 	"model",
 	"effort",
@@ -353,9 +353,9 @@ function mergeUserConfig(base: AdvisorConfig, document: Record<string, unknown>)
 		...(document.defaultEnabled === undefined
 			? {}
 			: { defaultEnabled: document.defaultEnabled as boolean }),
-		...(document.autoEnableInTasks === undefined
+		...(document.armForTasks === undefined
 			? {}
-			: { autoEnableInTasks: document.autoEnableInTasks as boolean }),
+			: { armForTasks: document.armForTasks as boolean }),
 		...(document.blockOnTerminalTurns === undefined
 			? {}
 			: { blockOnTerminalTurns: document.blockOnTerminalTurns as boolean }),

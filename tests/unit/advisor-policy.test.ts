@@ -370,7 +370,7 @@ describe("Slice 1 configuration and emission policy", () => {
 		status.transcriptPersistenceEnabled = true;
 		status.transcriptRecordsPersisted = 9;
 		status.transcriptPersistenceFailures = 1;
-		const output = formatAdvisorStatus(status);
+		const output = formatAdvisorStatus(status, false);
 		expect(output).toContain("2 operations with usage unavailable through Pi public APIs");
 		expect(output).toContain("Context re-prime: 2 completed, 1 failed");
 		expect(output).toContain(
