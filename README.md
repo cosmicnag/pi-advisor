@@ -155,6 +155,7 @@ blockOnTerminalTurns: true
 - Advisor reviews the turn synchronously.
 - Executor waits up to 180 seconds for review to complete.
 - Status bar shows "Waiting for advisor review..." during the wait.
+- Pressing Escape cancels the wait and aborts the active Advisor review.
 - Non-terminal turns (with tool calls) remain async — no blocking during active work.
 
 ### When to Use Each

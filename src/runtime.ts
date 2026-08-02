@@ -2200,23 +2200,69 @@ export class AdvisorRuntime {
 		}
 	}
 
-	async waitForReview(timeoutMs = 180_000): Promise<void> {
+	private async cancelActiveReview(): Promise<void> {
+		this.status.epoch++;
+		this.clearAdviseExecutionMarkers();
+		this.status.retryPending = false;
+		this.status.retryDelayMs = 0;
+		this.clearCadenceTimer();
+		delete this.activeReview;
+		delete this.pendingUpdate;
+		delete this.throttledUpdate;
+		delete this.configurationReprimeSnapshot;
+		delete this.lastReviewSubmittedTurn;
+		delete this.lastReviewSubmittedAt;
+		this.status.restoredActiveReviewPending = false;
+		this.status.restoredQueuedReviewPending = false;
+		const session = this.session;
+		if (session !== undefined) {
+			session.abortCompaction();
+			if (session.isStreaming) {
+				try {
+					await session.abort();
+				} catch {
+					// Cancellation remains authoritative.
+				}
+			}
+		}
+		this.updateBacklogStatus();
+		this.persistState();
+		this.publishStatus();
+	}
+
+	async waitForReview(timeoutMs = 180_000, signal?: AbortSignal): Promise<void> {
 		const start = Date.now();
 		const targetTurn = this.lastReviewSubmittedTurn;
 		if (targetTurn === undefined) return;
-		// wait for review for target turn to start
-		while (
-			this.activeReview?.turnNumber !== targetTurn &&
-			Date.now() - start < timeoutMs
-		) {
-			await new Promise((resolve) => setTimeout(resolve, 200));
-		}
-		// wait for that review to complete
-		while (
-			this.activeReview?.turnNumber === targetTurn &&
-			Date.now() - start < timeoutMs
-		) {
-			await new Promise((resolve) => setTimeout(resolve, 500));
+		let cancellation: Promise<void> | undefined;
+		const cancel = (): void => {
+			cancellation ??= this.cancelActiveReview();
+		};
+		if (signal?.aborted) cancel();
+		else signal?.addEventListener("abort", cancel, { once: true });
+		try {
+			// wait for review for target turn to start
+			while (
+				!signal?.aborted &&
+				this.activeReview?.turnNumber !== targetTurn &&
+				Date.now() - start < timeoutMs
+			) {
+				await new Promise((resolve) => setTimeout(resolve, 200));
+			}
+			// wait for that review to complete
+			while (
+				!signal?.aborted &&
+				this.activeReview?.turnNumber === targetTurn &&
+				Date.now() - start < timeoutMs
+			) {
+				await new Promise((resolve) => setTimeout(resolve, 500));
+			}
+		} finally {
+			signal?.removeEventListener("abort", cancel);
+			if (signal?.aborted) {
+				cancel();
+				await cancellation;
+			}
 		}
 	}
 

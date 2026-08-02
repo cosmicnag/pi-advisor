@@ -427,9 +427,12 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 			if (ctx.hasUI) {
 				ctx.ui.setStatus("pi-advisor", "Waiting for advisor review...");
 			}
-			await runtime.waitForReview();
-			if (ctx.hasUI) {
-				ctx.ui.setStatus("pi-advisor", undefined);
+			try {
+				await runtime.waitForReview(180_000, ctx.signal);
+			} finally {
+				if (ctx.hasUI) {
+					ctx.ui.setStatus("pi-advisor", undefined);
+				}
 			}
 		} else {
 			void runtime.observeTurn(event, ctx);
