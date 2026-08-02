@@ -2200,7 +2200,7 @@ export class AdvisorRuntime {
 		}
 	}
 
-	async waitForReview(timeoutMs = 120_000): Promise<void> {
+	async waitForReview(timeoutMs = 180_000): Promise<void> {
 		const start = Date.now();
 		const targetTurn = this.lastReviewSubmittedTurn;
 		if (targetTurn === undefined) return;

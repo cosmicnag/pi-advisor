@@ -10,7 +10,7 @@ It stays silent when work is sound and delivers a bounded, actionable note when 
 This fork extends upstream ribbons-digital/pi-advisor with three features designed for push-task workflows and isolated leaf-branch development:
 
 1. **Leaf-branch auto-enable:** Advisor arms globally via `/advisor on`, then auto-enables only inside push-task leaf branches (detected via `task-start` entries). Auto-disables on return to main. Respects explicit `/advisor off` — stays off even in leaves until re-armed.
-2. **Sync review mode:** Optional `blockOnTerminalTurns` pauses the executor on terminal turns (no tool calls) and waits for advisor review before continuing. Status bar shows progress. 120s timeout. Async mode remains default for non-critical turns.
+2. **Sync review mode:** Optional `blockOnTerminalTurns` pauses the executor on terminal turns (no tool calls) and waits for advisor review before continuing. Status bar shows progress. 180s timeout. Async mode remains default for non-critical turns.
 3. **Status bar feedback:** Uses Pi's status bar (`ctx.ui.setStatus`) for transient blocking feedback instead of notifications — no popup spam, no transcript noise.
 
 Upstream behavior (cost governors, isolated review session, bounded delivery, memory suggestions, security model) is preserved unchanged. See [Leaf-Branch Auto-Enable](#leaf-branch-auto-enable-fork-specific) and [Sync vs Async Review Modes](#sync-vs-async-review-modes) for details.
@@ -81,7 +81,7 @@ effort: medium                  # recommended for smaller sidecar models
 - On terminal turns (assistant message with no tool calls), executor pauses and waits for advisor review.
 - Status bar shows "Waiting for advisor review..." during the wait.
 - Review completes before executor continues — catches issues before they compound.
-- Timeout: 120 seconds (executor resumes if advisor doesn't respond).
+- Timeout: 180 seconds (executor resumes if advisor doesn't respond).
 - Best for: TDD loops, critical decisions, code review gates, when mistakes are expensive.
 
 **Terminal turn:** an assistant message that issued no tool calls (e.g., a summary, explanation, or final answer). Turns with tool calls always run async — only terminal turns can block.
@@ -153,7 +153,7 @@ blockOnTerminalTurns: true
 
 - On terminal turns (assistant message with no tool calls), executor pauses after completing the turn.
 - Advisor reviews the turn synchronously.
-- Executor waits up to 120 seconds for review to complete.
+- Executor waits up to 180 seconds for review to complete.
 - Status bar shows "Waiting for advisor review..." during the wait.
 - Non-terminal turns (with tool calls) remain async — no blocking during active work.
 
@@ -172,7 +172,7 @@ Sync mode detects terminal turns via the `turn_end` event: a turn is terminal wh
 
 1. Submits the turn to advisor review.
 2. Waits for the review to start (polls active review state).
-3. Waits for the review to complete (up to 120s timeout).
+3. Waits for the review to complete (up to 180s timeout).
 4. Resumes execution with any advisor feedback.
 
 If the timeout expires, the executor continues anyway — sync mode never hard-blocks indefinitely.
