@@ -1,10 +1,10 @@
 import {
 	defineTool,
+	SessionManager,
 	type CustomEntry,
 	type CustomMessageEntry,
 	type ExtensionContext,
 	type InlineExtension,
-	type SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
@@ -28,7 +28,7 @@ import {
 	type AdvisorRuntimeHooks,
 } from "../../src/index.js";
 import { runtimeInternals } from "../fixtures/runtime-internals.js";
-import { createSessionHarness } from "../fixtures/session-harness.js";
+import { createSessionHarness, simulatePushTaskBranch } from "../fixtures/session-harness.js";
 import {
 	createAdvisorProvider,
 	createPrimaryProvider,
@@ -679,6 +679,8 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 				mode,
 			});
 			try {
+				// /advisor on arms for push-task branches; simulate entering a task branch
+				simulatePushTaskBranch(harness.sessionManager);
 				await harness.session.prompt("/advisor on");
 				expect(runtime?.getStatus()).toMatchObject({ active: true });
 				await harness.session.prompt(`finish ${mode} turn`);
@@ -700,6 +702,120 @@ describe.sequential("Advisor delivery and safety behavior through Slice 2 Batch 
 			}
 		},
 	);
+
+	it("withdraws session-start arm activation when returning from a task branch", async () => {
+		// Restart/resume lands the session directly inside the task leaf: this is
+		// the session_start arm-enable path, which must be marked as arm-scoped so
+		// navigating back out withdraws it (leak regression).
+		const advisor = createAdvisorProvider([{ content: [] }]);
+		let runtime: AdvisorRuntime | undefined;
+		const manager = SessionManager.inMemory("/tmp/pi-advisor-arm-resume");
+		const mainLeaf = manager.appendCustomEntry("resume-seed", { part: "main" });
+		manager.appendCustomEntry("task-start", {
+			title: "restart-inside-task",
+			returnTo: mainLeaf,
+		});
+		const harness = await createSessionHarness({
+			provider: createPrimaryProvider([{ content: [{ type: "text", text: "terminal answer" }] }]),
+			advisorProvider: advisor,
+			sessionManager: manager,
+			extensions: [
+				extensionFor(
+					configFor(advisor, (config) => {
+						config.defaultEnabled = false;
+						config.armForTasks = true;
+					}),
+					(value) => (runtime = value),
+				),
+			],
+			tools: [],
+			mode: "rpc",
+		});
+		try {
+			if (runtime === undefined) throw new Error("Expected Advisor runtime");
+			const activeRuntime = runtime;
+			// session_start enabled the armed activation inside the task leaf.
+			await waitFor(() => activeRuntime.getStatus().enabled);
+			expect(activeRuntime.getStatus()).toMatchObject({ active: true });
+			// Leaving the branch withdraws the arm-scoped activation.
+			await harness.session.navigateTree(mainLeaf, { summarize: false });
+			await waitFor(() => !activeRuntime.getStatus().enabled);
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("does not treat a push-task tool call in the main branch as a task branch", async () => {
+		// Regression: the push-task toolCall lives in the MAIN session lineage,
+		// so matching it would flag the main branch of any session that has used
+		// push-task as a task branch — the arm would enable outside every task
+		// branch and never withdraw. The task-start custom entry is the only
+		// reliable task-branch signal.
+		const primary = createPrimaryProvider([
+			{
+				content: [
+					{
+						type: "toolCall" as const,
+						id: "push-1",
+						name: "push-task",
+						arguments: { title: "t" },
+					},
+				],
+				stopReason: "toolUse" as const,
+			},
+			{ content: [{ type: "text", text: "done in main branch" }] },
+			{ content: [{ type: "text", text: "terminal answer" }] },
+		]);
+		const advisor = createAdvisorProvider([{ content: [] }]);
+		const pushTask = defineTool({
+			name: "push-task",
+			label: "push-task",
+			description: "Store a task prompt for a user-started navigation branch.",
+			parameters: Type.Object({ title: Type.String() }),
+			execute: () =>
+				Promise.resolve({ content: [{ type: "text" as const, text: "stored" }], details: {} }),
+		});
+		let runtime: AdvisorRuntime | undefined;
+		const harness = await createSessionHarness({
+			provider: primary,
+			advisorProvider: advisor,
+			customTools: [pushTask],
+			tools: ["push-task"],
+			extensions: [
+				extensionFor(
+					configFor(advisor, (config) => {
+						config.defaultEnabled = false;
+						config.armForTasks = true;
+					}),
+					(value) => (runtime = value),
+				),
+			],
+			mode: "rpc",
+		});
+		try {
+			await harness.session.prompt("dispatch a task from the main branch");
+			// The main branch now carries the push-task tool call.
+			expect(
+				harness.sessionManager
+					.getEntries()
+					.some(
+						(entry) =>
+							entry.type === "message" &&
+							entry.message.role === "assistant" &&
+							entry.message.content.some(
+								(content) => content.type === "toolCall" && content.name === "push-task",
+							),
+					),
+			).toBe(true);
+			// Still not a task branch: the armed activation must not fire, and
+			// must stay off after a full neutral turn.
+			await harness.session.prompt("continue in the main branch");
+			if (runtime === undefined) throw new Error("Expected Advisor runtime");
+			expect(runtime.getStatus().enabled).toBe(false);
+		} finally {
+			await harness.dispose();
+		}
+	});
 
 	it("counts a failed late-card append once and keeps next-turn delivery available", async () => {
 		const note = "Preserve delivery after the late card fails.";

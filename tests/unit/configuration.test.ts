@@ -640,6 +640,60 @@ describe("WATCHDOG configuration", () => {
 		});
 	});
 
+	it("maps the activation switch onto the legacy enablement fields", async () => {
+		const { agentDir, cwd } = await fixture();
+		const cases = [
+			["always", true, false],
+			["task-branch", false, true],
+			["off", false, false],
+		] as const;
+		for (const [activation, defaultEnabled, armForTasks] of cases) {
+			await writeFile(
+				join(agentDir, "WATCHDOG.yml"),
+				["version: 1", `activation: ${activation}`].join("\n"),
+			);
+			const loaded = await loadAdvisorConfiguration({ agentDir, cwd, projectTrusted: false });
+			expect(loaded.warnings, activation).toEqual([]);
+			expect(loaded.userConfig, activation).toMatchObject({ defaultEnabled, armForTasks });
+		}
+	});
+
+	it("lets activation override legacy enablement fields", async () => {
+		const { agentDir, cwd } = await fixture();
+		await writeFile(
+			join(agentDir, "WATCHDOG.yml"),
+			["version: 1", "activation: task-branch", "defaultEnabled: true"].join("\n"),
+		);
+		const loaded = await loadAdvisorConfiguration({ agentDir, cwd, projectTrusted: false });
+		expect(loaded.warnings).toEqual([]);
+		expect(loaded.userConfig).toMatchObject({ defaultEnabled: false, armForTasks: true });
+	});
+
+	it("serializes the activation switch in place of the legacy booleans", async () => {
+		const { agentDir, cwd } = await fixture();
+		await writeFile(
+			join(agentDir, "WATCHDOG.yml"),
+			["version: 1", "activation: task-branch"].join("\n"),
+		);
+		const loaded = await loadAdvisorConfiguration({ agentDir, cwd, projectTrusted: false });
+		expect(loaded.userConfig).toMatchObject({ defaultEnabled: false, armForTasks: true });
+		const savedPath = join(agentDir, "saved.yml");
+		await saveUserConfigurationAtomic(savedPath, loaded.userConfig, undefined, "task-branch");
+		const saved = await readFile(savedPath, "utf8");
+		expect(saved).toContain("activation: task-branch");
+		expect(saved).not.toMatch(/defaultEnabled|armForTasks/u);
+		// A reload of the saved document lands on the same enablement fields.
+		const { agentDir: reloadDir } = await fixture();
+		await writeFile(join(reloadDir, "WATCHDOG.yml"), saved);
+		const reloaded = await loadAdvisorConfiguration({
+			agentDir: reloadDir,
+			cwd,
+			projectTrusted: false,
+		});
+		expect(reloaded.warnings).toEqual([]);
+		expect(reloaded.userConfig).toMatchObject({ defaultEnabled: false, armForTasks: true });
+	});
+
 	it("loads and serializes default-off cumulative caps", async () => {
 		const { agentDir, cwd } = await fixture();
 		await writeFile(

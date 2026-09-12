@@ -43,12 +43,14 @@ Protected paths, activation, limits, Memory suggestions, persistence, and other 
 
 ## Activation by run mode
 
-| Control                | TUI                     | RPC                     | JSON                                        | Print                                       | Persistence effect |
-| ---------------------- | ----------------------- | ----------------------- | ------------------------------------------- | ------------------------------------------- | ------------------ |
-| `defaultEnabled: true` | Activates a new session | Activates a new session | Ignored for activation                      | Ignored for activation                      | User YAML only     |
-| `/advisor on`          | Activates this session  | Activates this session  | Available only where commands are processed | Available only where commands are processed | None               |
-| `--advisor`            | Activates this launch   | Activates this launch   | Activates this launch                       | Activates this launch                       | None               |
-| `/advisor off`         | Disables this session   | Disables this session   | Available only where commands are processed | Available only where commands are processed | None               |
+| Control                   | TUI                               | RPC                               | JSON                                                    | Print                                                   | Persistence effect |
+| ------------------------- | --------------------------------- | --------------------------------- | ------------------------------------------------------- | ------------------------------------------------------- | ------------------ |
+| `defaultEnabled: true`    | Activates a new session           | Activates a new session           | Ignored for activation                                  | Ignored for activation                                  | User YAML only     |
+| `activation: always`      | Activates a new session           | Activates a new session           | Ignored for activation                                  | Ignored for activation                                  | User YAML only     |
+| `activation: task-branch` | Activates a push-task leaf branch | Activates a push-task leaf branch | Available where commands are processed, within branches | Available where commands are processed, within branches | User YAML only     |
+| `/advisor on`             | Activates this session            | Activates this session            | Available only where commands are processed             | Available only where commands are processed             | None               |
+| `--advisor`               | Activates this launch             | Activates this launch             | Activates this launch                                   | Activates this launch                                   | None               |
+| `/advisor off`            | Disables this session             | Disables this session             | Available only where commands are processed             | Available only where commands are processed             | None               |
 
 Activation never chooses a model automatically.
 Pi Advisor 0.4.1 requires Node.js `>=22.19.0` and Pi `>=0.81.1 <0.85.0`.
@@ -104,14 +106,16 @@ An external edit affects no running extension instance until `/reload` or config
 
 ### Top-level fields
 
-| YAML path        | Type and accepted values                                     | Release default | Scope and Project merge           | Effect                                                                                                      |
-| ---------------- | ------------------------------------------------------------ | --------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `version`        | Integer literal `1`                                          | Required `1`    | User and Project                  | Selects the schema and rejects unsupported versions.                                                        |
-| `defaultEnabled` | Boolean                                                      | `false`         | User only                         | Controls new TUI and RPC sessions only and never activates JSON or print runs.                              |
-| `model`          | `provider/model` string                                      | Unset           | User only                         | Selects the only Advisor provider model and therefore its provider network and pricing.                     |
-| `effort`         | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` | `high`          | User only                         | Controls provider reasoning effort and can change latency, shared reasoning, tokens, and cost.              |
-| `tools`          | Unique subset of `read`, `grep`, `find`, and `ls`            | All four        | User approves; Project intersects | Controls which protected read-only tools the Advisor can call. An empty list allows only internal `advise`. |
-| `instructions`   | String                                                       | Empty           | User and Project                  | Adds review focus under the fixed policy. Project text is tagged below User text.                           |
+| YAML path        | Type and accepted values                                     | Release default | Scope and Project merge           | Effect                                                                                                                                                                                                                                                                        |
+| ---------------- | ------------------------------------------------------------ | --------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version`        | Integer literal `1`                                          | Required `1`    | User and Project                  | Selects the schema and rejects unsupported versions.                                                                                                                                                                                                                          |
+| `defaultEnabled` | Boolean                                                      | `false`         | User only                         | Controls new TUI and RPC sessions only and never activates JSON or print runs.                                                                                                                                                                                                |
+| `armForTasks`    | Boolean                                                      | `false`         | User only                         | Arms auto-enable inside push-task leaf branches and disables again when the branch is left. Enabled and cleared by `/advisor on` / `/advisor off`.                                                                                                                            |
+| `activation`     | `"off"`, `"always"`, or `"task-branch"`                      | `"off"`         | User only                         | High-level enablement switch: `"always"` = `defaultEnabled: true`, `"task-branch"` = `armForTasks: true`, `"off"` = both `false`. Wins over the legacy boolean fields when both are present. Chosen interactively by `/advisor activation` and saved as the `activation` key. |
+| `model`          | `provider/model` string                                      | Unset           | User only                         | Selects the only Advisor provider model and therefore its provider network and pricing.                                                                                                                                                                                       |
+| `effort`         | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` | `high`          | User only                         | Controls provider reasoning effort and can change latency, shared reasoning, tokens, and cost.                                                                                                                                                                                |
+| `tools`          | Unique subset of `read`, `grep`, `find`, and `ls`            | All four        | User approves; Project intersects | Controls which protected read-only tools the Advisor can call. An empty list allows only internal `advise`.                                                                                                                                                                   |
+| `instructions`   | String                                                       | Empty           | User and Project                  | Adds review focus under the fixed policy. Project text is tagged below User text.                                                                                                                                                                                             |
 
 Example tool selection:
 
@@ -119,6 +123,19 @@ Example tool selection:
 version: 1
 tools: [read, grep]
 ```
+
+`armForTasks: true` enables fork-style automatic activation: with a normal default-off setup, Advisor stays off in ordinary sessions and auto-enables only inside push-task leaf branches, then disables again when you navigate back out. A branch counts as a task branch only when it carries a `task-start` custom entry (pi-supergsd appends one after navigating to its fresh task target); the `push-task` tool call itself stays in the main session lineage and is deliberately not used as a signal, because it would also match the main branch. `/advisor on` saves the arm (and enables immediately when already inside a task branch); `/advisor off` clears it. The arm state is read from the User file at session start and survives restarts and resumes.
+
+For a single switch instead of the two boolean fields, prefer `activation`:
+
+```yaml
+version: 1
+activation: always # Advisor active in every TUI/RPC session
+# activation: task-branch # Advisor active only inside push-task leaf branches
+# activation: off         # Inactive unless explicitly enabled
+```
+
+`activation` always wins over `defaultEnabled`/`armForTasks` when both appear in the same document. `activation: task-branch` behaves exactly like `armForTasks: true` above, including the push-task arm, `/advisor on` / `/advisor off` persistence, and withdrawal when the branch is left.
 
 ### Context fields
 

@@ -39,6 +39,19 @@ export interface SessionHarness {
 	dispose(): Promise<void>;
 }
 
+export function simulatePushTaskBranch(sessionManager: SessionManager): string {
+	// Real pi-supergsd flow (src/index.ts:432-448): navigateTree to a fresh
+	// target, append a task-start custom entry, then send the prompt. The
+	// push-task toolCall itself stays in the MAIN session — never in the leaf
+	// branch — so the leaf is marked by the task-start custom entry alone.
+	// Mirror pi-supergsd's startEntryData shape ({ title, returnTo }).
+	sessionManager.appendCustomEntry("task-start", {
+		title: "t",
+		returnTo: undefined,
+	});
+	return "push-task-call";
+}
+
 export async function createSessionHarness(
 	options: SessionHarnessOptions,
 ): Promise<SessionHarness> {
@@ -46,6 +59,12 @@ export async function createSessionHarness(
 	const cwd = join(root, "project");
 	const agentDir = join(root, "agent");
 	let session: AgentSession | undefined;
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	const restoreEnv = () => {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	};
 
 	try {
 		await mkdir(cwd, { recursive: true });
@@ -121,11 +140,13 @@ export async function createSessionHarness(
 				if (disposed) return;
 				disposed = true;
 				session?.dispose();
+				restoreEnv();
 				await rm(root, { recursive: true, force: true });
 			},
 		};
 	} catch (error) {
 		session?.dispose();
+		restoreEnv();
 		await rm(root, { recursive: true, force: true });
 		throw error;
 	}

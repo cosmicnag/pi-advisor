@@ -30,6 +30,7 @@ _Pi Advisor reviewing a synthetic cache implementation in a privacy-safe demo se
 - Protected and bounded `read`, `grep`, `find`, and `ls` tools, with no mutating Advisor tools.
 - Context, update, tool-call, turn, pending-byte, and opt-in cumulative token and reported-cost governors.
 - Branch, compaction, session replacement, retry, and compatible-resume handling.
+- Optional push-task arming: auto-enables only inside push-task leaf branches and withdraws when you leave them.
 - Optional capability-based Memory suggestions without a [Memory Lane](https://github.com/ribbons-digital/memory-lane) dependency.
 - Local redacted activity records enabled by default, with metadata-only review, tool-order, outcome, usage, and cost details.
 - No product telemetry or automatic crash reporting.
@@ -106,21 +107,42 @@ See the [complete configuration reference](docs/configuration.md) for every fiel
 
 ## Commands
 
-| Command                            | Effect                                                                                                                                    |
-| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `/advisor` or `/advisor configure` | Opens a section menu (model and reasoning, tools, instructions, apply, cancel) in a dialog-capable TUI or RPC client.                     |
-| `/advisor on`                      | Enables Advisor for the current session without changing the persisted default.                                                           |
-| `/advisor off`                     | Disables Advisor for the current session and invalidates in-flight review work.                                                           |
-| `/advisor status`                  | Shows a short summary: state, model and effort, queued reviews, note counts and last note, session spend and caps, and Memory capability. |
-| `/advisor status full`             | Shows the complete activation, model, backlog, context, usage, cost, delivery, persistence, and failure status.                           |
-| `/advisor mute <id>`               | Silences a delivered finding by its 8-to-64-character hex ID (shown on the Advice card).                                                  |
-| `/advisor unmute <id>`             | Removes a mute by the same prefix rule; `/advisor mute list` shows the muted findings.                                                    |
-| `/advisor mute list`               | Lists each muted finding with its short ID and display label.                                                                             |
-| `/advisor dump`                    | Produces an explicit redacted diagnostic snapshot bounded to 16 KiB.                                                                      |
-| `--advisor`                        | Requests activation for the launched Pi session, including JSON and print modes.                                                          |
+| Command                            | Effect                                                                                                                                                                                                                                    |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/advisor` or `/advisor configure` | Opens a section menu (model and reasoning, tools, instructions, apply, cancel) in a dialog-capable TUI or RPC client.                                                                                                                     |
+| `/advisor activation`              | Picks the enablement regime (Off / Always / Task branches only) in a dialog-capable TUI or RPC client, saves it as the `activation` field in `WATCHDOG.yml`, and applies it to the current session immediately.                           |
+| `/advisor on`                      | Enables Advisor for the current session without changing the persisted default. Inside a push-task leaf branch it also saves `armForTasks: true`; outside one it saves the arm passively for later branches (see Automatic arming below). |
+| `/advisor off`                     | Disables Advisor for the current session, invalidates in-flight review work, and clears the persisted push-task arm.                                                                                                                      |
+| `/advisor status`                  | Shows a short summary: state, model and effort, queued reviews, note counts and last note, session spend and caps, Memory capability, and whether Advisor is armed for push-task leaf branches.                                           |
+| `/advisor status full`             | Shows the complete activation, model, backlog, context, usage, cost, delivery, persistence, and failure status.                                                                                                                           |
+| `/advisor mute <id>`               | Silences a delivered finding by its 8-to-64-character hex ID (shown on the Advice card).                                                                                                                                                  |
+| `/advisor unmute <id>`             | Removes a mute by the same prefix rule; `/advisor mute list` shows the muted findings.                                                                                                                                                    |
+| `/advisor mute list`               | Lists each muted finding with its short ID and display label.                                                                                                                                                                             |
+| `/advisor dump`                    | Produces an explicit redacted diagnostic snapshot bounded to 16 KiB.                                                                                                                                                                      |
+| `--advisor`                        | Requests activation for the launched Pi session, including JSON and print modes.                                                                                                                                                          |
 
 Persisted `defaultEnabled: true` applies only to new TUI and RPC sessions.
 JSON and print runs always require explicit activation.
+
+## Automatic arming for push-task branches
+
+The recommended way to pick the activation regime is the `activation` User
+WATCHDOG field: `activation: always` starts Advisor in every new TUI/RPC session,
+`activation: task-branch` limits it to push-task leaf branches below, and
+`activation: off` (the default) leaves it inactive unless explicitly enabled.
+`activation` wins over the legacy `defaultEnabled`/`armForTasks` booleans when
+both are present; each task-branch behavior below is identical to
+`armForTasks: true`.
+
+With `armForTasks` (or `activation: task-branch`, a User WATCHDOG field, default `false`), Advisor stays off in ordinary sessions and auto-enables only inside push-task leaf branches:
+
+- `/advisor on` inside a task branch enables Advisor immediately and saves `armForTasks: true`.
+- `/advisor on` outside one saves the arm and leaves Advisor off until a task branch is entered.
+- While armed, entering a task branch auto-enables at session start or the next turn end; leaving the branch disables the armed activation again.
+- `/advisor off` disables Advisor and clears the persisted arm.
+- `/advisor status` shows `Armed for push-task leaf branches: yes|no`.
+
+A branch is recognized as a task branch only when it carries a `task-start` custom entry (pi-supergsd appends one after navigating to a fresh task target). The `push-task` tool call itself stays in the main session lineage, so it is deliberately not used as a signal. The arm lives in the User WATCHDOG file and survives restarts, resumes, and `/reload`.
 
 ## Upgrade
 

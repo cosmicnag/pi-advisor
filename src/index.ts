@@ -4,6 +4,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type ExtensionFactory,
+	type SessionManager,
 } from "@earendil-works/pi-coding-agent";
 
 import {
@@ -16,6 +17,8 @@ import {
 import {
 	loadAdvisorConfiguration,
 	saveUserConfigurationAtomic,
+	advisorActivationOf,
+	type AdvisorActivation,
 	type ConfigurationWarning,
 } from "./configuration.js";
 import {
@@ -27,7 +30,6 @@ import { AdvisorModelPicker, advisorModelOptions } from "./model-picker.js";
 import { ADVISOR_CUSTOM_TYPE } from "./transcript.js";
 import {
 	AdvisorRuntime,
-	formatAdvisorEnableStatus,
 	formatAdvisorFooterStatus,
 	formatAdvisorStatus,
 	formatAdvisorStatusShort,
@@ -169,6 +171,27 @@ async function pickAdvisorInstructions(
 	return edited?.trim();
 }
 
+const ADVISOR_ACTIVATION_OPTIONS: { value: AdvisorActivation; label: string }[] = [
+	{ value: "off", label: "Off: inactive unless explicitly enabled" },
+	{ value: "always", label: "Always: active in every TUI/RPC session" },
+	{
+		value: "task-branch",
+		label: "Task branches only: active inside push-task leaf branches",
+	},
+];
+
+async function pickAdvisorActivation(
+	ctx: Pick<ExtensionCommandContext, "ui">,
+	current: AdvisorActivation,
+): Promise<AdvisorActivation | undefined> {
+	const choices = ADVISOR_ACTIVATION_OPTIONS.map(({ value, label }) =>
+		value === current ? `${label} (current)` : label,
+	);
+	const picked = await ctx.ui.select("Advisor activation", choices);
+	if (picked === undefined) return undefined;
+	return ADVISOR_ACTIVATION_OPTIONS.find(({ label }) => picked.startsWith(label))?.value;
+}
+
 export async function pickAdvisorInteractiveConfiguration(
 	ctx: AdvisorPickerContext,
 	current: AdvisorConfig,
@@ -282,6 +305,24 @@ export function hasAdvisorCommandCollision(commands: readonly { name: string }[]
 	);
 }
 
+/**
+ * True when the current branch is a task leaf branch: pi-supergsd marks it with
+ * a task-start custom entry (appended after navigating to the fresh target,
+ * src/index.ts:442). The push-task tool call itself stays in the MAIN session
+ * — it sits in the shared lineage of both the main branch and the task leaf,
+ * so checking for it would match the main branch too and the arm would never
+ * withdraw. The task-start marker is the only reliable signal and mirrors
+ * pi-supergsd's own currentTask()/pendingTask() semantics (customType probe,
+ * src/index.ts:646).
+ * ponytail: O(n) scan per event; fine at session scale.
+ */
+function branchHasTaskStart(ctx: { sessionManager: Pick<SessionManager, "getBranch"> }): boolean {
+	for (const entry of ctx.sessionManager.getBranch()) {
+		if (entry.type === "custom" && entry.customType === "task-start") return true;
+	}
+	return false;
+}
+
 const ADVISOR_FOOTER_STATUS_KEY = "pi-advisor";
 const ADVISOR_REVIEW_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 const ADVISOR_REVIEW_SPINNER_INTERVAL_MS = 80;
@@ -313,6 +354,8 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 		structuredClone(options.config ?? DEFAULT_ADVISOR_CONFIG),
 	);
 	let statusContext: Parameters<AdvisorRuntime["startSession"]>[0] | undefined;
+	let armed = fallbackUserConfig.armForTasks;
+	let armedSessionEnabled = false;
 	let latestFooterStatus: Parameters<typeof formatAdvisorFooterStatus>[0] | undefined;
 	let reviewSpinnerTimer: NodeJS.Timeout | undefined;
 	let reviewSpinnerFrame = 0;
@@ -363,7 +406,7 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 
 	let coexistenceWarningPublished = false;
 	pi.registerCommand("advisor", {
-		description: "Control automatic Advisor review: configure, on, off, status, dump",
+		description: "Control automatic Advisor review: configure, activation, on, off, status, dump",
 		handler: async (args, ctx) => {
 			const command = args.trim().toLocaleLowerCase("en-US");
 			if (command.length === 0 || command === "configure") {
@@ -371,26 +414,130 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 				return;
 			}
 			if (command === "on") {
-				const previous = runtime.getStatus();
-				const resetBudget = previous.paused;
-				await runtime.enable(ctx, "session-command", resetBudget);
+				try {
+					const loaded = await loadAdvisorConfiguration({
+						agentDir: getAgentDir(),
+						cwd: ctx.cwd,
+						projectTrusted: ctx.isProjectTrusted(),
+						fallbackUserConfig,
+					});
+					publishConfigurationWarnings(ctx, loaded.warnings);
+					await saveUserConfigurationAtomic(
+						loaded.paths.userYaml,
+						{ ...loaded.userConfig, armForTasks: true },
+						loaded.userUnknownTopLevel,
+					);
+				} catch {
+					ctx.ui.notify("Advisor arming could not be saved to WATCHDOG.yml.", "error");
+					return;
+				}
+				armed = true;
+				if (branchHasTaskStart(ctx)) {
+					armedSessionEnabled = true;
+					const previous = runtime.getStatus();
+					await runtime.enable(ctx, "session-command", previous.paused);
+					ctx.ui.notify("Advisor active. Arm for push-task branches saved.", "info");
+				} else {
+					ctx.ui.notify("Advisor armed. It will auto-enable in push-task leaf branches.", "info");
+				}
+				return;
+			}
+			if (command === "off") {
+				try {
+					const loaded = await loadAdvisorConfiguration({
+						agentDir: getAgentDir(),
+						cwd: ctx.cwd,
+						projectTrusted: ctx.isProjectTrusted(),
+						fallbackUserConfig,
+					});
+					await saveUserConfigurationAtomic(
+						loaded.paths.userYaml,
+						{ ...loaded.userConfig, armForTasks: false },
+						loaded.userUnknownTopLevel,
+					);
+				} catch {
+					ctx.ui.notify("Advisor arming could not be saved to WATCHDOG.yml.", "error");
+					return;
+				}
+				armed = false;
+				armedSessionEnabled = false;
+				await runtime.disable();
+				ctx.ui.notify("Advisor off. Arm for push-task branches cleared.", "info");
+				return;
+			}
+			if (command === "activation") {
+				try {
+					const loaded = await loadAdvisorConfiguration({
+						agentDir: getAgentDir(),
+						cwd: ctx.cwd,
+						projectTrusted: ctx.isProjectTrusted(),
+						fallbackUserConfig,
+					});
+					publishConfigurationWarnings(ctx, loaded.warnings);
+					const picked = await pickAdvisorActivation(ctx, advisorActivationOf(loaded.userConfig));
+					if (picked === undefined) return;
+					try {
+						await saveUserConfigurationAtomic(
+							loaded.paths.userYaml,
+							loaded.userConfig,
+							loaded.userUnknownTopLevel,
+							picked,
+						);
+					} catch {
+						ctx.ui.notify("Advisor activation could not be saved to WATCHDOG.yml.", "error");
+						return;
+					}
+					if (picked === "always") {
+						armed = false;
+						armedSessionEnabled = false;
+						const previous = runtime.getStatus();
+						if (!previous.enabled) {
+							await runtime.enable(ctx, "user-default", previous.paused);
+						}
+						ctx.ui.notify("Advisor activation saved: always. Advisor is active.", "info");
+					} else if (picked === "task-branch") {
+						armed = true;
+						if (branchHasTaskStart(ctx)) {
+							armedSessionEnabled = true;
+							const previous = runtime.getStatus();
+							if (!previous.enabled) {
+								await runtime.enable(ctx, "user-default", previous.paused);
+							}
+						} else {
+							armedSessionEnabled = false;
+							await runtime.disable();
+						}
+						ctx.ui.notify(
+							"Advisor activation saved: task branches. Advisor enables itself inside push-task leaf branches.",
+							"info",
+						);
+					} else {
+						armed = false;
+						armedSessionEnabled = false;
+						await runtime.disable();
+						ctx.ui.notify("Advisor activation saved: off. Advisor is inactive.", "info");
+					}
+				} catch {
+					ctx.ui.notify(
+						"Advisor activation could not be read. The WATCHDOG.yml could not be loaded.",
+						"error",
+					);
+					return;
+				}
+				return;
+			}
+			if (command === "status") {
 				ctx.ui.notify(
-					formatAdvisorEnableStatus(previous, runtime.getStatus(), resetBudget),
+					`${formatAdvisorStatusShort(runtime.getStatus())}\nArmed for push-task leaf branches: ${armed ? "yes" : "no"}`,
 					"info",
 				);
 				return;
 			}
-			if (command === "off") {
-				await runtime.disable();
-				ctx.ui.notify("Advisor is off for this session.", "info");
-				return;
-			}
-			if (command === "status") {
-				ctx.ui.notify(formatAdvisorStatusShort(runtime.getStatus()), "info");
-				return;
-			}
 			if (command === "status full") {
-				ctx.ui.notify(formatAdvisorStatus(runtime.getStatus()), "info");
+				ctx.ui.notify(
+					`${formatAdvisorStatus(runtime.getStatus())}\nArmed for push-task leaf branches: ${armed ? "yes" : "no"}`,
+					"info",
+				);
 				return;
 			}
 			if (command === "dump") {
@@ -461,7 +608,7 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 				return;
 			}
 			ctx.ui.notify(
-				"Usage: /advisor configure | /advisor on | /advisor off | /advisor status [full] | /advisor dump | /advisor mute <id> | /advisor unmute <id> | /advisor mute list",
+				"Usage: /advisor configure | /advisor activation | /advisor on | /advisor off | /advisor status [full] | /advisor dump | /advisor mute <id> | /advisor unmute <id> | /advisor mute list",
 				"info",
 			);
 		},
@@ -469,6 +616,7 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 
 	pi.on("session_start", async (_event, ctx) => {
 		statusContext = ctx;
+		armedSessionEnabled = false;
 		if (!coexistenceWarningPublished && ctx.hasUI && hasAdvisorCommandCollision(pi.getCommands())) {
 			coexistenceWarningPublished = true;
 			ctx.ui.notify(
@@ -485,6 +633,7 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 				fallbackUserConfig,
 			});
 			configuredDefault = loaded.effectiveConfig.defaultEnabled;
+			armed = loaded.userConfig.armForTasks;
 			runtime.setConfigurationBeforeSession(loaded.effectiveConfig, loaded.projectInstructions);
 			publishConfigurationWarnings(ctx, loaded.warnings);
 		} catch {
@@ -502,6 +651,13 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 		const defaultEnabled = configuredDefault && (ctx.mode === "tui" || ctx.mode === "rpc");
 		if (cliEnabled) await runtime.enable(ctx, "cli-flag");
 		else if (defaultEnabled) await runtime.enable(ctx, "user-default");
+		else if (armed && branchHasTaskStart(ctx)) {
+			// Restart/resume inside a push-task leaf branch follows the same
+			// arm-mode scope as a live entry: mark the activation so session_tree
+			// withdraws it when the branch is left.
+			armedSessionEnabled = true;
+			await runtime.enable(ctx, "user-default");
+		}
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {
@@ -513,6 +669,10 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 
 	pi.on("turn_end", (event, ctx) => {
 		void runtime.observeTurn(event, ctx);
+		if (armed && branchHasTaskStart(ctx) && !runtime.getStatus().enabled) {
+			armedSessionEnabled = true;
+			void runtime.enable(ctx, "user-default");
+		}
 	});
 
 	pi.on("message_end", (event) => {
@@ -523,7 +683,16 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 	pi.on("session_before_compact", (_event, ctx) => runtime.handleLifecycleHint(ctx));
 	pi.on("session_compact", (_event, ctx) => runtime.handleBranchChange(ctx));
 	pi.on("session_before_tree", (_event, ctx) => runtime.handleLifecycleHint(ctx));
-	pi.on("session_tree", (_event, ctx) => runtime.handleBranchChange(ctx));
+	pi.on("session_tree", (_event, ctx) => {
+		runtime.handleBranchChange(ctx);
+		// The arm-mode auto-enable is scoped to push-task leaf branches: leaving
+		// the task branch (or entering a non-task branch) withdraws it. Sessions
+		// enabled by user-default or the CLI flag stay up across navigation.
+		if (armedSessionEnabled && !branchHasTaskStart(ctx)) {
+			armedSessionEnabled = false;
+			void runtime.disable();
+		}
+	});
 	pi.on("session_shutdown", async (_event, ctx) => {
 		stopReviewSpinner();
 		latestFooterStatus = undefined;

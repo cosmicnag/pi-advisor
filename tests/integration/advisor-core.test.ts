@@ -361,11 +361,11 @@ describe.sequential("Slice 1 automatic Advisor core", () => {
 		});
 		try {
 			expect(runtime?.getStatus()).toMatchObject({ enabled: false, active: false });
+			// In a non-task-branch JSON session, the User default does not apply and
+			// arming stays passive: no enable. Task-branch activation is covered by
+			// the "delivers deferred advice in %s mode" tests in advisor-safety.
 			await harness.session.prompt("/advisor on");
-			expect(runtime?.getStatus()).toMatchObject({ enabled: true, active: true });
-			await harness.session.prompt("review after explicit JSON activation");
-			await waitFor(() => runtime?.getStatus().reviewsCompleted === 1);
-			expect(advisor.requests).toHaveLength(1);
+			expect(runtime?.getStatus()).toMatchObject({ enabled: false, active: false });
 		} finally {
 			await harness.dispose();
 		}

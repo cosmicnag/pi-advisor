@@ -142,6 +142,10 @@ const UserSchema = Type.Object(
 	{
 		version: Type.Literal(ADVISOR_CONFIG_VERSION),
 		defaultEnabled: Type.Optional(Type.Boolean()),
+		armForTasks: Type.Optional(Type.Boolean()),
+		activation: Type.Optional(
+			Type.Union([Type.Literal("off"), Type.Literal("always"), Type.Literal("task-branch")]),
+		),
 		model: Type.Optional(Type.String({ pattern: "^[^/\\s]+/.+$" })),
 		effort: Type.Optional(Type.Union(effortValues.map((value) => Type.Literal(value)))),
 		tools: Type.Optional(Type.Array(Type.Union(toolValues.map((value) => Type.Literal(value))))),
@@ -186,6 +190,8 @@ const projectValidator = Compile(ProjectSchema);
 interface ValidatedUserDocument {
 	version: AdvisorConfig["version"];
 	defaultEnabled?: boolean;
+	armForTasks?: boolean;
+	activation?: AdvisorActivation;
 	model?: string;
 	effort?: AdvisorConfig["effort"];
 	tools?: AdvisorConfig["tools"];
@@ -207,6 +213,8 @@ type ConfigFieldName = keyof ValidatedUserDocument;
 interface UnvalidatedConfigRecord {
 	version?: unknown;
 	defaultEnabled?: unknown;
+	armForTasks?: unknown;
+	activation?: unknown;
 	model?: unknown;
 	effort?: unknown;
 	tools?: unknown;
@@ -227,6 +235,8 @@ interface UnvalidatedConfigRecord {
 const USER_KEY_NAMES: readonly ConfigFieldName[] = [
 	"version",
 	"defaultEnabled",
+	"armForTasks",
+	"activation",
 	"model",
 	"effort",
 	"tools",
@@ -274,6 +284,19 @@ export interface ConfigurationWarning {
 	source: "user" | "project";
 	path: string;
 	message: string;
+}
+
+/**
+ * High-level enablement regime. `always` and `task-branch` are sugar for the
+ * legacy `defaultEnabled` / `armForTasks` booleans; `activation` wins when both
+ * forms appear in the same document.
+ */
+export type AdvisorActivation = "off" | "always" | "task-branch";
+
+/** Derive the activation regime a loaded configuration expresses. */
+export function advisorActivationOf(config: AdvisorConfig): AdvisorActivation {
+	if (config.defaultEnabled) return "always";
+	return config.armForTasks ? "task-branch" : "off";
 }
 
 export interface PreservedYamlMapping {
@@ -603,6 +626,15 @@ function mergeUserConfig(base: AdvisorConfig, document: ValidatedUserDocument): 
 	};
 	if (document.defaultEnabled !== undefined) {
 		merged.defaultEnabled = document.defaultEnabled;
+	}
+	if (document.armForTasks !== undefined) {
+		merged.armForTasks = document.armForTasks;
+	}
+	// activation is the higher-level enablement switch: it always wins over the
+	// legacy boolean fields when both are present, and maps directly onto them.
+	if (document.activation !== undefined) {
+		merged.defaultEnabled = document.activation === "always";
+		merged.armForTasks = document.activation === "task-branch";
 	}
 	if (document.model !== undefined) merged.model = document.model;
 	if (document.effort !== undefined) merged.effort = document.effort;
@@ -972,12 +1004,24 @@ export async function loadAdvisorConfiguration(options: {
 export function serializeUserConfiguration(
 	config: AdvisorConfig,
 	unknownTopLevel?: PreservedUnknownConfig,
+	activation?: AdvisorActivation,
 ): string {
 	const normalized = normalizeAdvisorConfig(structuredClone(config));
-	const merged = {
-		...unknownTopLevel,
-		...normalized,
-	};
+	// Writing `activation` replaces the two booleans it stands for, so the file
+	// keeps exactly one source of truth instead of repeating derived values.
+	const merged =
+		activation === undefined
+			? { ...unknownTopLevel, ...normalized }
+			: {
+					...unknownTopLevel,
+					version: normalized.version,
+					activation,
+					...Object.fromEntries(
+						Object.entries(normalized).filter(
+							([key]) => key !== "defaultEnabled" && key !== "armForTasks",
+						),
+					),
+				};
 	const serialized = stringify(merged, { lineWidth: 0 });
 	if (
 		Buffer.byteLength(serialized, "utf8") > MAX_WATCHDOG_YAML_BYTES &&
@@ -985,7 +1029,7 @@ export function serializeUserConfiguration(
 	) {
 		// Never write a file the next load would reject as oversized; drop the
 		// preserved unknown top-level fields instead of failing the whole save.
-		return stringify(normalized, { lineWidth: 0 });
+		return stringify(activation === undefined ? normalized : merged, { lineWidth: 0 });
 	}
 	return serialized;
 }
@@ -1045,13 +1089,14 @@ export async function saveUserConfigurationAtomic(
 	path: string,
 	config: AdvisorConfig,
 	unknownTopLevel?: PreservedUnknownConfig,
+	activation?: AdvisorActivation,
 ): Promise<void> {
 	const destination = await resolveAtomicWriteDestination(path);
 	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
 	await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
 	const temporary = join(dirname(destination), `.${WATCHDOG_YAML_NAME}.${randomUUID()}.tmp`);
 	try {
-		await writeFile(temporary, serializeUserConfiguration(config, unknownTopLevel), {
+		await writeFile(temporary, serializeUserConfiguration(config, unknownTopLevel, activation), {
 			encoding: "utf8",
 			mode: 0o600,
 		});

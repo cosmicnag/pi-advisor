@@ -14,7 +14,7 @@ import {
 	type PersistedAdvisorRuntimeState,
 } from "../../src/index.js";
 import { runtimeInternals } from "../fixtures/runtime-internals.js";
-import { createSessionHarness } from "../fixtures/session-harness.js";
+import { createSessionHarness, simulatePushTaskBranch } from "../fixtures/session-harness.js";
 import {
 	createAdvisorProvider,
 	createPrimaryProvider,
@@ -401,6 +401,8 @@ describe.sequential("Slice 3B retry lifecycle resilience", () => {
 			expect(state.lastReviewSubmittedTurn).toBe(3);
 			expect(internals.lastReviewSubmittedTurn).toBe(3);
 
+			// /advisor on enables immediately inside a push-task branch
+			simulatePushTaskBranch(harness.sessionManager);
 			await harness.session.prompt("/advisor on");
 			await waitFor(() => advisor.requests.length === 7);
 			expect(JSON.stringify(advisor.requests[6]?.context.messages)).toContain(
@@ -455,6 +457,8 @@ describe.sequential("Slice 3B retry lifecycle resilience", () => {
 			expect(stranded.text).toContain("STRANDED-ACTIVE-EVIDENCE");
 			expect(stranded.restoredReplayCount).toBe(0);
 
+			// /advisor on enables immediately inside a push-task branch
+			simulatePushTaskBranch(harness.sessionManager);
 			await harness.session.prompt("/advisor on");
 			await waitFor(() => advisor.requests.length >= 2);
 			expect(JSON.stringify(advisor.requests[1]?.context.messages)).toContain(

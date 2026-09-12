@@ -9,6 +9,9 @@ process.env.PI_ADVISOR_VITEST_AGENT_DIR = testAgentDir;
 
 export default defineConfig({
 	test: {
+		// The harness repoints PI_CODING_AGENT_DIR per session; serialize files
+		// so one file's harness never observes another file's agent dir.
+		fileParallelism: false,
 		env: {
 			PI_CODING_AGENT_DIR: testAgentDir,
 		},

@@ -70,6 +70,7 @@ export interface MemorySuggestionConfig {
 export interface AdvisorUserConfig {
 	version: typeof ADVISOR_CONFIG_VERSION;
 	defaultEnabled: boolean;
+	armForTasks: boolean;
 	model?: string;
 	effort: AdvisorEffort;
 	tools: ReadOnlyToolName[];
@@ -125,6 +126,7 @@ function deepFreeze<T>(value: T): T {
 const CANONICAL_DEFAULT_ADVISOR_CONFIG: AdvisorConfig = deepFreeze({
 	version: ADVISOR_CONFIG_VERSION,
 	defaultEnabled: false,
+	armForTasks: false,
 	effort: "high",
 	tools: [...READ_ONLY_TOOL_NAMES],
 	instructions: "",
