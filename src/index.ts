@@ -33,6 +33,7 @@ import {
 	formatAdvisorFooterStatus,
 	formatAdvisorStatus,
 	formatAdvisorStatusShort,
+	hasToolCall,
 	shouldAnimateAdvisorFooter,
 	type AdvisorRuntimeHooks,
 } from "./runtime.js";
@@ -307,20 +308,26 @@ export function hasAdvisorCommandCollision(commands: readonly { name: string }[]
 
 /**
  * True when the current branch is a task leaf branch: pi-supergsd marks it with
- * a task-start custom entry (appended after navigating to the fresh target,
- * src/index.ts:442). The push-task tool call itself stays in the MAIN session
- * — it sits in the shared lineage of both the main branch and the task leaf,
- * so checking for it would match the main branch too and the arm would never
- * withdraw. The task-start marker is the only reliable signal and mirrors
- * pi-supergsd's own currentTask()/pendingTask() semantics (customType probe,
- * src/index.ts:646).
+ * a task-start custom entry appended after navigating to the fresh target. The
+ * push-task tool call itself stays in the MAIN session — it sits in the shared
+ * lineage of both the main branch and the task leaf, so checking for it would
+ * match the main branch too and the arm would never withdraw. The task-start
+ * marker is the only reliable signal and mirrors pi-supergsd's own
+ * currentTask()/pendingTask() semantics: a later task-done marker clears it,
+ * so a completed task leaf is treated like an ordinary branch.
  * ponytail: O(n) scan per event; fine at session scale.
  */
 function branchHasTaskStart(ctx: { sessionManager: Pick<SessionManager, "getBranch"> }): boolean {
+	let seenTaskStart = false;
 	for (const entry of ctx.sessionManager.getBranch()) {
-		if (entry.type === "custom" && entry.customType === "task-start") return true;
+		if (entry.type === "custom" && entry.customType === "task-start") {
+			seenTaskStart = true;
+		}
+		if (entry.type === "custom" && entry.customType === "task-done") {
+			seenTaskStart = false;
+		}
 	}
-	return false;
+	return seenTaskStart;
 }
 
 const ADVISOR_FOOTER_STATUS_KEY = "pi-advisor";
@@ -535,7 +542,7 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 			}
 			if (command === "status full") {
 				ctx.ui.notify(
-					`${formatAdvisorStatus(runtime.getStatus())}\nArmed for push-task leaf branches: ${armed ? "yes" : "no"}`,
+					`${formatAdvisorStatus(runtime.getStatus(), armed)}\nArmed for push-task leaf branches: ${armed ? "yes" : "no"}`,
 					"info",
 				);
 				return;
@@ -625,17 +632,21 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 			);
 		}
 		let configuredDefault = fallbackUserConfig.defaultEnabled;
+		let loadedConfig: Awaited<ReturnType<typeof loadAdvisorConfiguration>> | undefined = undefined;
 		try {
-			const loaded = await loadAdvisorConfiguration({
+			loadedConfig = await loadAdvisorConfiguration({
 				agentDir: getAgentDir(),
 				cwd: ctx.cwd,
 				projectTrusted: ctx.isProjectTrusted(),
 				fallbackUserConfig,
 			});
-			configuredDefault = loaded.effectiveConfig.defaultEnabled;
-			armed = loaded.userConfig.armForTasks;
-			runtime.setConfigurationBeforeSession(loaded.effectiveConfig, loaded.projectInstructions);
-			publishConfigurationWarnings(ctx, loaded.warnings);
+			configuredDefault = loadedConfig.effectiveConfig.defaultEnabled;
+			armed = loadedConfig.userConfig.armForTasks;
+			runtime.setConfigurationBeforeSession(
+				loadedConfig.effectiveConfig,
+				loadedConfig.projectInstructions,
+			);
+			publishConfigurationWarnings(ctx, loadedConfig.warnings);
 		} catch {
 			configuredDefault = false;
 			runtime.setConfigurationBeforeSession(DEFAULT_ADVISOR_CONFIG);
@@ -646,6 +657,7 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 				);
 			}
 		}
+		armed = loadedConfig?.userConfig.armForTasks ?? false;
 		await runtime.startSession(ctx);
 		const cliEnabled = pi.getFlag("advisor") === true;
 		const defaultEnabled = configuredDefault && (ctx.mode === "tui" || ctx.mode === "rpc");
@@ -667,10 +679,34 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 		return message === undefined ? undefined : { message };
 	});
 
-	pi.on("turn_end", (event, ctx) => {
-		void runtime.observeTurn(event, ctx);
+	pi.on("turn_end", async (event, ctx) => {
+		const status = runtime.getStatus();
+		const isTerminal =
+			status.enabled &&
+			runtime.config.blockOnTerminalTurns &&
+			event.message.role === "assistant" &&
+			!hasToolCall(event.message) &&
+			event.message.stopReason !== "aborted";
+
+		if (isTerminal) {
+			await runtime.observeTurn(event, ctx);
+			if (ctx.hasUI) {
+				ctx.ui.setStatus("pi-advisor", "Waiting for advisor review...");
+			}
+			try {
+				await runtime.waitForReview(180_000, ctx.signal);
+			} finally {
+				if (ctx.hasUI) {
+					ctx.ui.setStatus("pi-advisor", undefined);
+				}
+			}
+		} else {
+			void runtime.observeTurn(event, ctx);
+		}
+
 		if (armed && branchHasTaskStart(ctx) && !runtime.getStatus().enabled) {
 			armedSessionEnabled = true;
+
 			void runtime.enable(ctx, "user-default");
 		}
 	});

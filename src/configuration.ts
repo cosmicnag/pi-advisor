@@ -146,6 +146,7 @@ const UserSchema = Type.Object(
 		activation: Type.Optional(
 			Type.Union([Type.Literal("off"), Type.Literal("always"), Type.Literal("task-branch")]),
 		),
+		blockOnTerminalTurns: Type.Optional(Type.Boolean()),
 		model: Type.Optional(Type.String({ pattern: "^[^/\\s]+/.+$" })),
 		effort: Type.Optional(Type.Union(effortValues.map((value) => Type.Literal(value)))),
 		tools: Type.Optional(Type.Array(Type.Union(toolValues.map((value) => Type.Literal(value))))),
@@ -191,6 +192,7 @@ interface ValidatedUserDocument {
 	version: AdvisorConfig["version"];
 	defaultEnabled?: boolean;
 	armForTasks?: boolean;
+	blockOnTerminalTurns?: boolean;
 	activation?: AdvisorActivation;
 	model?: string;
 	effort?: AdvisorConfig["effort"];
@@ -214,6 +216,7 @@ interface UnvalidatedConfigRecord {
 	version?: unknown;
 	defaultEnabled?: unknown;
 	armForTasks?: unknown;
+	blockOnTerminalTurns?: unknown;
 	activation?: unknown;
 	model?: unknown;
 	effort?: unknown;
@@ -237,6 +240,7 @@ const USER_KEY_NAMES: readonly ConfigFieldName[] = [
 	"defaultEnabled",
 	"armForTasks",
 	"activation",
+	"blockOnTerminalTurns",
 	"model",
 	"effort",
 	"tools",
@@ -635,6 +639,9 @@ function mergeUserConfig(base: AdvisorConfig, document: ValidatedUserDocument): 
 	if (document.activation !== undefined) {
 		merged.defaultEnabled = document.activation === "always";
 		merged.armForTasks = document.activation === "task-branch";
+	}
+	if (document.blockOnTerminalTurns !== undefined) {
+		merged.blockOnTerminalTurns = document.blockOnTerminalTurns;
 	}
 	if (document.model !== undefined) merged.model = document.model;
 	if (document.effort !== undefined) merged.effort = document.effort;

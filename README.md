@@ -5,6 +5,115 @@ Automatic, isolated secondary review for [Pi](https://pi.dev).
 Pi Advisor observes meaningful completed turns from your primary Pi agent, called the Executor, and reviews them with a separate model that you choose.
 It stays silent when work is sound and delivers a bounded, actionable note when it finds a material correctness, safety, verification, or workflow issue.
 
+## Fork-Specific Features (cosmicnag/pi-advisor)
+
+This fork extends upstream ribbons-digital/pi-advisor with three features designed for push-task workflows and isolated leaf-branch development:
+
+1. **Leaf-branch auto-enable:** Advisor arms globally via `/advisor on`, then auto-enables only inside push-task leaf branches (detected via `task-start` entries). Auto-disables on return to main. Respects explicit `/advisor off` — stays off even in leaves until re-armed.
+2. **Sync review mode:** Optional `blockOnTerminalTurns` pauses the executor on terminal turns (no tool calls) and waits for advisor review before continuing. Status bar shows progress. 180s timeout. Async mode remains default for non-critical turns.
+3. **Status bar feedback:** Uses Pi's status bar (`ctx.ui.setStatus`) for transient blocking feedback instead of notifications — no popup spam, no transcript noise.
+
+Upstream behavior (cost governors, isolated review session, bounded delivery, memory suggestions, security model) is preserved unchanged. See [Leaf-Branch Auto-Enable](#leaf-branch-auto-enable-fork-specific) and [Sync vs Async Review Modes](#sync-vs-async-review-modes) for details.
+
+## Leaf-Branch Auto-Enable (Fork-Specific)
+
+This fork adds automatic advisor activation in push-task leaf branches, controlled by an explicit user arm flag. Designed for workflows using [pi-supergsd](https://github.com/coctostan/pi-supergsd) where advisor review is most valuable inside isolated task branches, not the main session.
+
+### Rationale
+
+- Advisor review is most valuable where implementation happens: inside push-task leaf branches during TDD loops, code changes, and focused work.
+- Main session (overseer/planning) doesn't need continuous review — mistakes are cheap to catch in leaves.
+- User explicitly arms the advisor via `/advisor on`; it auto-enables only when entering a task leaf, auto-disables on return.
+- Respects explicit `/advisor off` — if disabled, stays off even in leaves.
+
+### How It Works
+
+- `/advisor on` writes `armForTasks: true` to `~/.pi/agent/WATCHDOG.yml` (arm flag, global across projects).
+- On `turn_end`, if armed AND current branch contains a `task-start` entry → advisor auto-enables.
+- On `session_tree` (branch switch), if new branch has no `task-start` → advisor auto-disables.
+- On `session_start` (resume), if armed AND in task branch → advisor re-enables (covers process restart mid-task).
+- **Only manual `/advisor on/off` writes the config flag.** Auto-enable/disable never touch config — prevents race conditions during branch transitions.
+
+### Usage
+
+```text
+# Arm advisor (enables only in task leaves, not main)
+/advisor on
+
+# Start a push-task — advisor auto-enables inside the leaf
+/start-task
+
+# Inside leaf: advisor reviews turns automatically
+# Check status
+/advisor status  # shows "Advisor: active"
+
+# Disable advisor (persists across future tasks)
+/advisor off
+
+# Finish task — returns to main with advisor off
+/finish-task
+
+# Future tasks stay off until you re-arm
+/start-task  # advisor remains off
+/advisor on  # re-arm for next task
+```
+
+### Config
+
+In `~/.pi/agent/WATCHDOG.yml`:
+
+```yaml
+armForTasks: true               # arm flag — set by /advisor on/off
+blockOnTerminalTurns: false     # async by default; true blocks terminal turns for review
+model: llama-cpp/sidecar-ornith-9b
+effort: medium                  # recommended for smaller sidecar models
+```
+
+### Sync vs Async Review Modes
+
+**Async (default, `blockOnTerminalTurns: false`):**
+- Executor runs turn N, advisor reviews after the fact.
+- Advice delivered to turn N+1 via follow-up or steer.
+- Executor never blocks — fastest throughput, no added latency.
+- Best for: exploratory work, rapid iteration, non-critical tasks.
+
+**Sync (`blockOnTerminalTurns: true`):**
+- On terminal turns (assistant message with no tool calls), executor pauses and waits for advisor review.
+- Status bar shows "Waiting for advisor review..." during the wait.
+- Review completes before executor continues — catches issues before they compound.
+- Timeout: 180 seconds (executor resumes if advisor doesn't respond).
+- Best for: TDD loops, critical decisions, code review gates, when mistakes are expensive.
+
+**Terminal turn:** an assistant message that issued no tool calls (e.g., a summary, explanation, or final answer). Turns with tool calls always run async — only terminal turns can block.
+
+Set `blockOnTerminalTurns` in `WATCHDOG.yml` or via `/advisor configure` to toggle modes.
+
+### Key Differences from Upstream
+
+| Behavior | Upstream | This Fork |
+|----------|----------|----------|
+| Auto-enable on `session_start` | Yes (if `defaultEnabled: true`) | Only if armed AND in task branch |
+| Enable in main session | Yes (when enabled) | No — arm-only in main, enables in leaves |
+| Auto-disable on branch switch | No | Yes — disables when leaving task branch |
+| Config flag for leaf behavior | None | `armForTasks` |
+| Detection mechanism | `session_start` only | `turn_end` (main) + `session_start` (resume) + `session_tree` (disable) |
+
+### Install
+
+Path-load from this fork:
+
+```json
+// ~/.pi/agent/settings.json
+{
+  "packages": [
+    // ... other packages ...
+    "extensions/pi-advisor/src/index.ts"
+  ]
+}
+```
+
+Or clone this fork to `~/.pi/agent/extensions/pi-advisor` and register as above.
+
 > [!WARNING]
 > Pi extensions run with your full system permissions.
 > Review this package before installing it.
@@ -19,6 +128,55 @@ It stays silent when work is sound and delivers a bounded, actionable note when 
 ![Pi Advisor surfaces a concern about stale cache data after reviewing an Executor response](docs/assets/advisor-in-action.png)
 
 _Pi Advisor reviewing a synthetic cache implementation in a privacy-safe demo session._
+
+## Sync vs Async Review Modes
+
+Pi Advisor operates in two modes, controlled by `blockOnTerminalTurns` in `~/.pi/agent/WATCHDOG.yml`.
+
+### Async Mode (Default)
+
+```yaml
+blockOnTerminalTurns: false
+```
+
+- Executor completes turn N and continues immediately.
+- Advisor reviews turn N in the background (isolated session).
+- Advice delivered to turn N+1 via steering or follow-up.
+- Executor never waits — lowest latency, best for exploratory work.
+- Advisor may review turns that are already superseded by later work.
+
+### Sync Mode (Terminal Turns Only)
+
+```yaml
+blockOnTerminalTurns: true
+```
+
+- On terminal turns (assistant message with no tool calls), executor pauses after completing the turn.
+- Advisor reviews the turn synchronously.
+- Executor waits up to 180 seconds for review to complete.
+- Status bar shows "Waiting for advisor review..." during the wait.
+- Pressing Escape cancels the wait and aborts the active Advisor review.
+- Non-terminal turns (with tool calls) remain async — no blocking during active work.
+
+### When to Use Each
+
+| Use async when | Use sync when |
+|----------------|---------------|
+| Exploratory work, rapid iteration | Finalizing a solution before proceeding |
+| Executor is actively working (tool calls) | Executor reaches a decision point (no tool calls) |
+| Low-stakes turns | High-stakes decisions, safety-critical code |
+| You want maximum throughput | You want advisor to gate terminal decisions |
+
+### How It Works
+
+Sync mode detects terminal turns via the `turn_end` event: a turn is terminal when the assistant message has no tool calls. When `blockOnTerminalTurns` is true and a terminal turn completes, the executor:
+
+1. Submits the turn to advisor review.
+2. Waits for the review to start (polls active review state).
+3. Waits for the review to complete (up to 180s timeout).
+4. Resumes execution with any advisor feedback.
+
+If the timeout expires, the executor continues anyway — sync mode never hard-blocks indefinitely.
 
 ## Features
 

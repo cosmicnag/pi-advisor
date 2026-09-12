@@ -133,7 +133,7 @@ describe.sequential("Advisor advise schema mode", () => {
 			expect(tool).not.toHaveProperty("constrainedSampling");
 			expect(tool.parameters).toEqual(ADVISE_WIRE_SCHEMA);
 
-			const statusText = formatAdvisorStatus(runtime.getStatus());
+			const statusText = formatAdvisorStatus(runtime.getStatus(), false);
 			expect(statusText).toContain("Advise schema: portable");
 			const dump = formatAdvisorDiagnosticsDump(runtime.getStatus(), config);
 			// SAFETY: formatAdvisorDiagnosticsDump emits the status object inspected by this integration test.

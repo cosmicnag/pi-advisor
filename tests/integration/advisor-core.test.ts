@@ -355,7 +355,9 @@ describe.sequential("Slice 1 automatic Advisor core", () => {
 		const harness = await createSessionHarness({
 			provider: primary,
 			advisorProvider: advisor,
-			extensions: [advisorExtension(configFor(advisor), (value) => (runtime = value))],
+			extensions: [
+				advisorExtension(configFor(advisor), (value) => (runtime = value)),
+			],
 			tools: [],
 			mode: "json",
 		});

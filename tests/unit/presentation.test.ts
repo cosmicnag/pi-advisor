@@ -611,7 +611,7 @@ describe("Quality Slice Q6 short status and card mute IDs", () => {
 		const lines = formatAdvisorStatus({
 			...runtimeStatus(),
 			mutesUnavailable: "EACCES: permission denied",
-		}).split("\n");
+		}, false).split("\n");
 		const notes = lines.find((line) => line.startsWith("Notes:"));
 		expect(notes).toContain("muted findings unavailable");
 		expect(notes).not.toContain("0 muted findings");

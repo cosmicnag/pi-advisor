@@ -178,7 +178,7 @@ describe.sequential("Quality Slice Q4 review freshness and cost", () => {
 			});
 			const supersededStatus = runtime?.getStatus();
 			if (supersededStatus === undefined) throw new Error("Expected Advisor runtime");
-			expect(formatAdvisorStatus(supersededStatus)).toContain("1 superseded");
+			expect(formatAdvisorStatus(supersededStatus, false)).toContain("1 superseded");
 		} finally {
 			firstReview.release();
 			await harness.dispose();
@@ -436,7 +436,7 @@ describe.sequential("Quality Slice Q4 review freshness and cost", () => {
 			expect(runtime?.getStatus().effectiveMinTurnsBetweenReviews).toBe(2);
 			const cadenceStatus = runtime?.getStatus();
 			if (cadenceStatus === undefined) throw new Error("Expected Advisor runtime");
-			expect(formatAdvisorStatus(cadenceStatus)).toContain(
+			expect(formatAdvisorStatus(cadenceStatus, false)).toContain(
 				"Review cadence: every 2 meaningful turns",
 			);
 
