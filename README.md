@@ -63,21 +63,23 @@ This fork adds automatic advisor activation in push-task leaf branches, controll
 In `~/.pi/agent/WATCHDOG.yml`:
 
 ```yaml
-armForTasks: true               # arm flag — set by /advisor on/off
-blockOnTerminalTurns: false     # async by default; true blocks terminal turns for review
+armForTasks: true # arm flag — set by /advisor on/off
+blockOnTerminalTurns: false # async by default; true blocks terminal turns for review
 model: llama-cpp/sidecar-ornith-9b
-effort: medium                  # recommended for smaller sidecar models
+effort: medium # recommended for smaller sidecar models
 ```
 
 ### Sync vs Async Review Modes
 
 **Async (default, `blockOnTerminalTurns: false`):**
+
 - Executor runs turn N, advisor reviews after the fact.
 - Advice delivered to turn N+1 via follow-up or steer.
 - Executor never blocks — fastest throughput, no added latency.
 - Best for: exploratory work, rapid iteration, non-critical tasks.
 
 **Sync (`blockOnTerminalTurns: true`):**
+
 - On terminal turns (assistant message with no tool calls), executor pauses and waits for advisor review.
 - Status bar shows "Waiting for advisor review..." during the wait.
 - Review completes before executor continues — catches issues before they compound.
@@ -90,13 +92,13 @@ Set `blockOnTerminalTurns` in `WATCHDOG.yml` or via `/advisor configure` to togg
 
 ### Key Differences from Upstream
 
-| Behavior | Upstream | This Fork |
-|----------|----------|----------|
-| Auto-enable on `session_start` | Yes (if `defaultEnabled: true`) | Only if armed AND in task branch |
-| Enable in main session | Yes (when enabled) | No — arm-only in main, enables in leaves |
-| Auto-disable on branch switch | No | Yes — disables when leaving task branch |
-| Config flag for leaf behavior | None | `armForTasks` |
-| Detection mechanism | `session_start` only | `turn_end` (main) + `session_start` (resume) + `session_tree` (disable) |
+| Behavior                       | Upstream                        | This Fork                                                               |
+| ------------------------------ | ------------------------------- | ----------------------------------------------------------------------- |
+| Auto-enable on `session_start` | Yes (if `defaultEnabled: true`) | Only if armed AND in task branch                                        |
+| Enable in main session         | Yes (when enabled)              | No — arm-only in main, enables in leaves                                |
+| Auto-disable on branch switch  | No                              | Yes — disables when leaving task branch                                 |
+| Config flag for leaf behavior  | None                            | `armForTasks`                                                           |
+| Detection mechanism            | `session_start` only            | `turn_end` (main) + `session_start` (resume) + `session_tree` (disable) |
 
 ### Install
 
@@ -105,10 +107,10 @@ Path-load from this fork:
 ```json
 // ~/.pi/agent/settings.json
 {
-  "packages": [
-    // ... other packages ...
-    "extensions/pi-advisor/src/index.ts"
-  ]
+	"packages": [
+		// ... other packages ...
+		"extensions/pi-advisor/src/index.ts"
+	]
 }
 ```
 
@@ -160,12 +162,12 @@ blockOnTerminalTurns: true
 
 ### When to Use Each
 
-| Use async when | Use sync when |
-|----------------|---------------|
-| Exploratory work, rapid iteration | Finalizing a solution before proceeding |
+| Use async when                            | Use sync when                                     |
+| ----------------------------------------- | ------------------------------------------------- |
+| Exploratory work, rapid iteration         | Finalizing a solution before proceeding           |
 | Executor is actively working (tool calls) | Executor reaches a decision point (no tool calls) |
-| Low-stakes turns | High-stakes decisions, safety-critical code |
-| You want maximum throughput | You want advisor to gate terminal decisions |
+| Low-stakes turns                          | High-stakes decisions, safety-critical code       |
+| You want maximum throughput               | You want advisor to gate terminal decisions       |
 
 ### How It Works
 

@@ -279,9 +279,6 @@ export function normalizeAdvisorConfig(input: AdvisorConfig): AdvisorConfig {
 	return {
 		...merged,
 		version: ADVISOR_CONFIG_VERSION,
-		defaultEnabled: Boolean(input.defaultEnabled),
-		armForTasks: Boolean(input.armForTasks),
-		blockOnTerminalTurns: Boolean(input.blockOnTerminalTurns),
 		tools,
 		context: {
 			maxFraction: Math.min(

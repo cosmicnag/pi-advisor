@@ -608,10 +608,13 @@ describe("Quality Slice Q6 short status and card mute IDs", () => {
 	});
 
 	it("reports the mutes load failure in status full instead of a mute count", () => {
-		const lines = formatAdvisorStatus({
-			...runtimeStatus(),
-			mutesUnavailable: "EACCES: permission denied",
-		}, false).split("\n");
+		const lines = formatAdvisorStatus(
+			{
+				...runtimeStatus(),
+				mutesUnavailable: "EACCES: permission denied",
+			},
+			false,
+		).split("\n");
 		const notes = lines.find((line) => line.startsWith("Notes:"));
 		expect(notes).toContain("muted findings unavailable");
 		expect(notes).not.toContain("0 muted findings");
