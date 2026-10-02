@@ -1,4 +1,7 @@
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -12,6 +15,10 @@ const manifest = JSON.parse(readFileSync("package.json", "utf8")) as {
 	publishConfig?: { access?: string; provenance?: boolean; tag?: string };
 	pi?: { extensions?: string[]; image?: string };
 	peerDependencies?: Record<string, string>;
+	devDependencies?: Record<string, string>;
+	dependencies?: Record<string, string>;
+	bundledDependencies?: string[] | boolean;
+	bundleDependencies?: string[] | boolean;
 	engines?: { node?: string };
 };
 const readme = readFileSync("README.md", "utf8");
@@ -52,16 +59,92 @@ describe("public release surface", () => {
 		]);
 	});
 
-	it("documents official compatibility, install, update, and uninstall guidance", () => {
-		expect(manifest.engines?.node).toBe(">=22.19.0");
+	it("uses wildcard host peers and pinned Pi 1.0.0 development dependencies", () => {
 		for (const packageName of [
 			"@earendil-works/pi-agent-core",
 			"@earendil-works/pi-ai",
 			"@earendil-works/pi-coding-agent",
 			"@earendil-works/pi-tui",
+			"typebox",
 		]) {
-			expect(manifest.peerDependencies?.[packageName], packageName).toBe(">=0.81.1 <0.85.0");
+			expect(manifest.peerDependencies?.[packageName], packageName).toBe("*");
+			expect(manifest.dependencies, packageName).not.toHaveProperty(packageName);
+			expect(manifest.devDependencies?.[packageName], packageName).toBe(
+				packageName === "typebox" ? "1.3.27" : "1.0.0",
+			);
 		}
+		expect(manifest.dependencies).toEqual({ yaml: "^2.9.0" });
+		expect(manifest.bundledDependencies).toBeUndefined();
+		expect(manifest.bundleDependencies).toBeUndefined();
+	});
+
+	it("rejects invalid host dependency declarations and bundled host modules", () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-advisor-pack-contract-"));
+		const pack = {
+			name: manifest.name,
+			version: manifest.version,
+			filename: "pi-advisor-package.tgz",
+			files: [
+				"LICENSE",
+				"README.md",
+				"THIRD_PARTY_NOTICES.md",
+				"package.json",
+				"src/index.ts",
+				"docs/configuration.md",
+				"docs/security.md",
+			].map((path) => ({ path })),
+		};
+		const cases = [
+			{
+				manifest: {
+					...manifest,
+					peerDependencies: { ...manifest.peerDependencies, typebox: "^1.3.27" },
+				},
+				pack,
+				error: "typebox must be a wildcard peer dependency",
+			},
+			{
+				manifest: { ...manifest, dependencies: { ...manifest.dependencies, typebox: "1.3.27" } },
+				pack,
+				error: "typebox must not be a runtime dependency",
+			},
+			{
+				manifest: { ...manifest, bundledDependencies: ["typebox"] },
+				pack,
+				error: "typebox must not be bundled",
+			},
+			{
+				manifest: { ...manifest, bundleDependencies: ["@earendil-works/pi-ai"] },
+				pack,
+				error: "pi-ai must not be bundled",
+			},
+			{
+				manifest,
+				pack: { ...pack, files: [...pack.files, { path: "node_modules/typebox/index.js" }] },
+				error: "Forbidden packed files: node_modules/typebox/index.js",
+			},
+		];
+		try {
+			for (const fixture of cases) {
+				writeFileSync(join(root, "package.json"), JSON.stringify(fixture.manifest));
+				writeFileSync(join(root, "pack.json"), JSON.stringify(fixture.pack));
+				const result = spawnSync(
+					join(process.cwd(), "node_modules", ".bin", "tsx"),
+					[join(process.cwd(), "scripts", "validate-pack.ts"), "pack.json"],
+					{ cwd: root, encoding: "utf8", timeout: 10_000 },
+				);
+				expect(result.error).toBeUndefined();
+				expect(result.status, fixture.error).toBe(1);
+				expect(result.stderr).toContain(fixture.error);
+			}
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("documents published-release compatibility, install, update, and uninstall guidance", () => {
+		expect(manifest.engines?.node).toBe(">=22.19.0");
+		// The Pi 1.0.0 baseline is not a runtime support claim during the packaging-only phase.
 		for (const document of compatibilityDocs) {
 			expect(document.content, document.path).toContain(">=22.19.0");
 			expect(document.content, document.path).toContain(">=0.81.1 <0.85.0");

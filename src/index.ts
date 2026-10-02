@@ -673,7 +673,7 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {
-		const contextFiles = event.systemPromptOptions.contextFiles ?? [];
+		const contextFiles = event.systemPromptOptions.contextFiles;
 		runtime.captureContextFiles(contextFiles);
 		const message = runtime.takeDeferredAdvice(ctx);
 		return message === undefined ? undefined : { message };
@@ -712,8 +712,13 @@ function installPiAdvisor(pi: ExtensionAPI, options: PiAdvisorExtensionOptions):
 	});
 
 	pi.on("message_end", (event) => {
-		runtime.observeExecutorMessage(event.message);
+		const message = runtime.observeExecutorMessage(event.message);
+		return message === undefined ? undefined : { message };
 	});
+
+	pi.on("context", (event) => ({
+		messages: runtime.filterRevokedExecutorAdvice(event.messages),
+	}));
 
 	pi.on("agent_settled", (_event, ctx) => runtime.settleActiveAdvice(ctx));
 	pi.on("session_before_compact", (_event, ctx) => runtime.handleLifecycleHint(ctx));
