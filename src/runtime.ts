@@ -1,19 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
-import {
-	calculateContextTokens,
-	estimateContextTokens,
-	estimateTokens as estimatePiMessageTokens,
-	type AgentMessage,
-} from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import { isContextOverflow } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
 import {
+	calculateContextTokens,
 	createAgentSession,
 	DefaultResourceLoader,
+	estimateTokens as estimatePiMessageTokens,
 	getAgentDir,
 	SessionManager,
 	SettingsManager,
@@ -44,6 +41,7 @@ import {
 	type MemorySuggestCapability,
 } from "./compatibility/capabilities.js";
 import {
+	isAdvisorVirtualModel,
 	resolveAdvisorModelRuntime,
 	type ResolvedAdvisorModelRuntime,
 } from "./compatibility/model-runtime.js";
@@ -352,23 +350,6 @@ function estimateAdvisorToolSchemaTokens(tools: readonly AdvisorToolSchema[]): n
 	});
 }
 
-function withoutUsageAnchors(messages: readonly AgentMessage[]): AgentMessage[] {
-	return messages.map((message) => {
-		if (message.role !== "assistant") return message;
-		return {
-			...message,
-			usage: {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-		};
-	});
-}
-
 /** Estimate the next Advisor request using Pi's public usage and token-estimation APIs. */
 export function estimateAdvisorContext(
 	messages: readonly AgentMessage[],
@@ -382,24 +363,33 @@ export function estimateAdvisorContext(
 		content: pendingUpdate,
 		timestamp: Date.now(),
 	};
-	const estimatedMessages = allowUsageAnchor ? messages : withoutUsageAnchors(messages);
-	const estimate = estimateContextTokens([...estimatedMessages, pendingMessage]);
-	if (allowUsageAnchor && estimate.lastUsageIndex !== null) {
-		return {
-			tokens: estimate.tokens,
-			usageTokens: estimate.usageTokens,
-			trailingEstimateTokens: estimate.trailingTokens,
-			source: "usage-plus-estimate",
-		};
+	let usageTokens = 0;
+	let firstEstimatedIndex = 0;
+	if (allowUsageAnchor) {
+		for (let index = messages.length - 1; index >= 0; index--) {
+			const message = messages[index];
+			if (message !== undefined && validAssistantUsage(message)) {
+				usageTokens = calculateContextTokens(message.usage);
+				firstEstimatedIndex = index + 1;
+				break;
+			}
+		}
 	}
-	const fixedRequestTokens =
-		estimateTextTokens(systemPrompt) + estimateAdvisorToolSchemaTokens(tools);
-	const trailingEstimateTokens = estimate.trailingTokens + fixedRequestTokens;
+	let trailingEstimateTokens = estimatePiMessageTokens(pendingMessage);
+	if (usageTokens === 0) {
+		trailingEstimateTokens +=
+			estimateTextTokens(systemPrompt) + estimateAdvisorToolSchemaTokens(tools);
+	}
+	for (const message of messages.slice(firstEstimatedIndex)) {
+		// The current policy and tools above replace historical system deltas for a fresh estimate.
+		if (usageTokens === 0 && message.role === "system") continue;
+		trailingEstimateTokens += estimatePiMessageTokens(message);
+	}
 	return {
-		tokens: trailingEstimateTokens,
-		usageTokens: 0,
+		tokens: usageTokens + trailingEstimateTokens,
+		usageTokens,
 		trailingEstimateTokens,
-		source: "estimate-only",
+		source: usageTokens > 0 ? "usage-plus-estimate" : "estimate-only",
 	};
 }
 
@@ -571,6 +561,7 @@ interface OutstandingAdvice extends PendingAdvice {
 	reviewId: string;
 	turnNumber: number;
 	epoch: number;
+	queuedInExecutor?: boolean;
 }
 
 /**
@@ -672,6 +663,7 @@ interface UnvalidatedAdviceDetails {
 	findingKeyHash?: unknown;
 	memory?: unknown;
 	deliveryId?: unknown;
+	deliveryRevoked?: unknown;
 	reviewId?: unknown;
 	delivery?: unknown;
 	stale?: unknown;
@@ -2139,6 +2131,13 @@ export class AdvisorRuntime {
 			this.publishStatus();
 			return;
 		}
+		if (isAdvisorVirtualModel(model)) {
+			this.status.active = false;
+			this.status.inactiveReason =
+				"Virtual models are not supported by Advisor. Select a physical provider/model with /advisor configure. No fallback was selected.";
+			this.publishStatus();
+			return;
+		}
 		try {
 			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 			if (!this.activationStillCurrent(ctx, activationEpoch)) return;
@@ -2516,6 +2515,15 @@ export class AdvisorRuntime {
 
 	async observeTurn(event: TurnEndEvent, ctx: ExtensionContext): Promise<void> {
 		delete this.lifecycleResetEpoch;
+		for (const outstanding of this.activeAdvice.values()) {
+			outstanding.queuedInExecutor = event.context.pendingMessages.some(
+				(message) =>
+					message.role === "custom" &&
+					message.customType === ADVISOR_CUSTOM_TYPE &&
+					this.deliveryIdFromDetails(message.details) === outstanding.deliveryId &&
+					this.reviewIdFromDetails(message.details) === outstanding.reviewId,
+			);
+		}
 		if (event.message.role === "assistant" && event.message.stopReason === "aborted") {
 			const run = this.currentRun;
 			if (run !== undefined) run.deferAdvice = true;
@@ -2821,9 +2829,11 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		return discarded;
 	}
 
-	private rollbackNestedAttempt(session: AgentSession, messages: AgentMessage[]): void {
+	private rollbackNestedAttempt(session: AgentSession, checkpoint: string | null): void {
 		if (this.session !== session) return;
-		session.state.messages = messages;
+		if (checkpoint === null) session.sessionManager.resetLeaf();
+		else session.sessionManager.branch(checkpoint);
+		session.refreshContext();
 		this.extractStaleNestedQueue(session);
 	}
 
@@ -2839,13 +2849,20 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		submittedPrompt: string,
 		allowUsageAnchor = !this.usageAnchorInvalidated,
 	): AdvisorContextEstimate {
-		return estimateAdvisorContext(
+		const estimate = estimateAdvisorContext(
 			session.messages,
 			submittedPrompt,
 			buildAdvisorSystemPrompt(this.config, this.projectInstructions),
 			allowUsageAnchor,
 			session.agent.state.tools,
 		);
+		if (estimate.source !== "usage-plus-estimate") return estimate;
+		const currentTokens = session.getContextUsage()?.tokens;
+		if (currentTokens == null) return estimate;
+		const tokens =
+			currentTokens +
+			estimatePiMessageTokens({ role: "user", content: submittedPrompt, timestamp: 0 });
+		return { ...estimate, tokens, trailingEstimateTokens: tokens - estimate.usageTokens };
 	}
 
 	private clearPrivateContextAtCurrentCursor(session: AgentSession): void {
@@ -2853,9 +2870,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		for (const outstanding of this.activeAdvice.values()) {
 			outstanding.epoch = this.status.epoch;
 		}
-		this.extractStaleNestedQueue(session);
-		session.state.messages = [];
-		session.sessionManager.resetLeaf();
+		this.rollbackNestedAttempt(session, null);
 		this.usageAnchorInvalidated = true;
 		this.status.contextReprimesCompleted++;
 		this.status.consecutiveFailures = 0;
@@ -3047,7 +3062,8 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		}
 		this.updateBacklogStatus();
 		if (this.submittedProjectContext !== this.projectContext) {
-			session.state.messages = [];
+			this.rollbackNestedAttempt(session, null);
+			this.usageAnchorInvalidated = true;
 			this.submittedProjectContext = this.projectContext;
 		}
 		const capability = this.refreshMemorySuggestionCapability();
@@ -3120,7 +3136,8 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		let supersededUpdate: QueuedAdvisorUpdate | undefined;
 		for (let attempt = 0; attempt <= MAX_ADVISOR_RETRIES_PER_UPDATE; attempt++) {
 			this.resetCollectorForAttempt(update, capability);
-			const messagesBeforeAttempt = structuredClone(session.messages);
+			const checkpointBeforeAttempt = session.sessionManager.getLeafId();
+			const messageCountBeforeAttempt = session.messages.length;
 			const run: CurrentRun = {
 				epoch,
 				reviewId,
@@ -3174,7 +3191,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				this.pendingUpdate !== undefined &&
 				this.activeReviewMatches(reviewId)
 			) {
-				this.rollbackNestedAttempt(session, messagesBeforeAttempt);
+				this.rollbackNestedAttempt(session, checkpointBeforeAttempt);
 				persistOutcome({ outcome: "superseded" }, "superseded");
 				const coalesced = this.coalescePending(update, this.pendingUpdate);
 				delete this.pendingUpdate;
@@ -3215,7 +3232,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				thrownFailure ?? run.governorFailure ?? run.toolFailure ?? run.providerFailure;
 			const accepted = this.getAcceptedAdvice();
 			if (failure === undefined) {
-				if (session.messages.slice(messagesBeforeAttempt.length).some(validAssistantUsage)) {
+				if (session.messages.slice(messageCountBeforeAttempt).some(validAssistantUsage)) {
 					this.usageAnchorInvalidated = false;
 				}
 				let delivery: AdviceDelivery | undefined;
@@ -3233,7 +3250,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 									reviewId,
 								);
 				} catch (error) {
-					this.rollbackNestedAttempt(session, messagesBeforeAttempt);
+					this.rollbackNestedAttempt(session, checkpointBeforeAttempt);
 					const reason = boundedReason(error);
 					this.recordAttemptFailure(reason);
 					// The attempt itself succeeded (no governor outcome), so a delivery failure is a
@@ -3267,7 +3284,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				break;
 			}
 
-			this.rollbackNestedAttempt(session, messagesBeforeAttempt);
+			this.rollbackNestedAttempt(session, checkpointBeforeAttempt);
 			if (run.providerOverflow) {
 				if (
 					(!contextWasFresh || lifecycleReprime.usedSnapshot) &&
@@ -3813,7 +3830,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 		return true;
 	}
 
-	observeExecutorMessage(message: AgentMessage): void {
+	observeExecutorMessage(message: AgentMessage): AgentMessage | undefined {
 		if (message.role !== "custom" || message.customType !== ADVISOR_CUSTOM_TYPE) return;
 		const deliveryId = this.deliveryIdFromDetails(message.details);
 		const reviewId = this.reviewIdFromDetails(message.details);
@@ -3825,10 +3842,30 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 					(outstanding) =>
 						outstanding.deliveryId === deliveryId &&
 						(reviewId === undefined || outstanding.reviewId === reviewId),
-				)
-		) {
-			this.acknowledgeActiveAdvice(deliveryId);
-		}
+				) &&
+			this.acknowledgeActiveAdvice(deliveryId)
+		)
+			return;
+		if (deliveryId === undefined || !isRuntimeRecord(message.details)) return;
+		// Strip model-facing content before persistence; summaries bypass the context handler.
+		return {
+			...message,
+			content: [],
+			display: false,
+			details: { ...message.details, deliveryRevoked: true },
+		};
+	}
+
+	filterRevokedExecutorAdvice(messages: AgentMessage[]): AgentMessage[] {
+		return messages.filter(
+			(message) =>
+				!(
+					message.role === "custom" &&
+					message.customType === ADVISOR_CUSTOM_TYPE &&
+					isRuntimeRecord(message.details) &&
+					message.details.deliveryRevoked === true
+				),
+		);
 	}
 
 	private branchContainsDelivery(
@@ -3868,6 +3905,8 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 				this.acknowledgeActiveAdvice(outstanding.deliveryId, false);
 				continue;
 			}
+			// Pi 1.0 retains queued steering after abort. Do not also replay it as deferred advice.
+			if (outstanding.queuedInExecutor) continue;
 
 			this.activeAdvice.remove(outstanding.identity);
 			const pending: PendingAdvice = {
@@ -4080,9 +4119,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			);
 			return;
 		}
-		this.extractStaleNestedQueue(session);
-		session.state.messages = [];
-		session.sessionManager.resetLeaf();
+		this.rollbackNestedAttempt(session, null);
 		this.usageAnchorInvalidated = false;
 		this.nestedContextStale = false;
 	}
@@ -4097,9 +4134,7 @@ The proposed memory text must be exact, durable, safe, and independently useful 
 			await this.replaceStuckNestedSession();
 			return;
 		}
-		this.extractStaleNestedQueue(session);
-		session.state.messages = [];
-		session.sessionManager.resetLeaf();
+		this.rollbackNestedAttempt(session, null);
 		this.usageAnchorInvalidated = false;
 	}
 

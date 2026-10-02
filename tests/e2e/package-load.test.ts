@@ -73,7 +73,7 @@ function runPi(args: string[], cwd: string, env: NodeJS.ProcessEnv, input?: stri
 
 describe("packed Pi package", () => {
 	it("uses the intended installed Pi version", () => {
-		expect(expectedPiVersion).toMatch(/^0\.8[1-4]\.\d+$/);
+		expect(expectedPiVersion).toMatch(/^(?:0\.8[1-4]\.\d+|1\.0\.0)$/);
 		// SAFETY: the installed package.json is controlled by pnpm.
 		const installedManifest = JSON.parse(
 			readFileSync(
@@ -138,11 +138,13 @@ describe("packed Pi package", () => {
 			) as {
 				private?: boolean;
 				dependencies?: Record<string, string>;
+				peerDependencies?: Record<string, string>;
 				pi?: { extensions?: string[] };
 				publishConfig?: object;
 			};
 			expect(packedManifest.private).not.toBe(true);
-			expect(packedManifest.dependencies).toMatchObject({ typebox: "1.1.38", yaml: "^2.9.0" });
+			expect(packedManifest.dependencies).toEqual({ yaml: "^2.9.0" });
+			expect(packedManifest.peerDependencies?.typebox).toBe("*");
 			expect(packedManifest.pi?.extensions).toEqual(["./src/index.ts"]);
 			expect(packedManifest.publishConfig).toMatchObject({ access: "public", provenance: true });
 
@@ -157,6 +159,7 @@ describe("packed Pi package", () => {
 							"@earendil-works/pi-ai": `file:${join(projectRoot, "node_modules", "@earendil-works", "pi-ai")}`,
 							"@earendil-works/pi-coding-agent": `file:${join(projectRoot, "node_modules", "@earendil-works", "pi-coding-agent")}`,
 							"@earendil-works/pi-tui": `file:${join(projectRoot, "node_modules", "@earendil-works", "pi-tui")}`,
+							typebox: `file:${realpathSync(join(projectRoot, "node_modules", "typebox"))}`,
 							"@ribbons-digital/pi-advisor": `file:${archive}`,
 						},
 					},
@@ -177,11 +180,9 @@ describe("packed Pi package", () => {
 			const installedRequire = createRequire(
 				join(realpathSync(installedPackageDir), "package.json"),
 			);
-			for (const dependency of ["typebox", "yaml"]) {
-				const dependencyEntry = installedRequire.resolve(dependency);
-				expect(existsSync(dependencyEntry)).toBe(true);
-				expect(dependencyEntry).not.toContain(projectRoot);
-			}
+			const yamlEntry = installedRequire.resolve("yaml");
+			expect(existsSync(yamlEntry)).toBe(true);
+			expect(yamlEntry).not.toContain(projectRoot);
 
 			const compatibilityUrl = pathToFileURL(
 				join(realpathSync(installedPackageDir), "src", "compatibility", "constrained-sampling.ts"),
@@ -297,7 +298,7 @@ process.stdout.write(JSON.stringify({ mode, constrainedSampling: tool.constraine
 			writeFileSync(
 				scriptedExtension,
 				`import { appendFileSync } from "node:fs";
-import { createAssistantMessageEventStream } from ${JSON.stringify(piAiEntry)};
+import { createAssistantMessageEventStream, getCurrentTools } from ${JSON.stringify(piAiEntry)};
 
 let advisorCalls = 0;
 const usage = {
@@ -350,7 +351,7 @@ export default function(pi) {
     streamSimple(model, context) {
       appendFileSync(${JSON.stringify(requestMarker)}, model.id + "\\n");
       if (model.id === "advisor") {
-        const advise = context.tools?.find((tool) => tool.name === "advise");
+        const advise = getCurrentTools(context.messages).find((tool) => tool.name === "advise");
         if (advise) appendFileSync(${JSON.stringify(adviseToolMarker)}, JSON.stringify(advise));
         advisorCalls++;
         return advisorCalls === 1
