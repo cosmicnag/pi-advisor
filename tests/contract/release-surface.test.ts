@@ -1,9 +1,23 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { describe, expect, it } from "vitest";
+import { parse } from "yaml";
+
+interface WorkflowDefinition {
+	on: { workflow_dispatch?: { inputs: { tag: { description: string } } } };
+	jobs: Record<
+		string,
+		{
+			name?: string;
+			environment?: { name: string };
+			strategy?: { matrix: { node: string[] } };
+			steps: { run?: string; uses?: string; with?: { "node-version"?: string } }[];
+		}
+	>;
+}
 
 // SAFETY: this test fixture deliberately supplies the asserted boundary shape.
 const manifest = JSON.parse(readFileSync("package.json", "utf8")) as {
@@ -20,6 +34,7 @@ const manifest = JSON.parse(readFileSync("package.json", "utf8")) as {
 	bundledDependencies?: string[] | boolean;
 	bundleDependencies?: string[] | boolean;
 	engines?: { node?: string };
+	scripts?: Record<string, string>;
 };
 const readme = readFileSync("README.md", "utf8");
 const configuration = readFileSync("docs/configuration.md", "utf8");
@@ -34,10 +49,10 @@ const publicDocs = [
 ].map((path) => ({ path, content: readFileSync(path, "utf8") }));
 
 describe("public release surface", () => {
-	it("declares discoverable publishable 0.4.1 metadata", () => {
+	it("declares discoverable publishable 0.5.0 metadata", () => {
 		expect(manifest).toMatchObject({
 			name: "@ribbons-digital/pi-advisor",
-			version: "0.4.1",
+			version: "0.5.0",
 			publishConfig: { access: "public", provenance: true },
 			pi: {
 				extensions: ["./src/index.ts"],
@@ -90,6 +105,7 @@ describe("public release surface", () => {
 				"THIRD_PARTY_NOTICES.md",
 				"package.json",
 				"src/index.ts",
+				"docs/assets/advisor-in-action.png",
 				"docs/configuration.md",
 				"docs/security.md",
 			].map((path) => ({ path })),
@@ -123,6 +139,20 @@ describe("public release surface", () => {
 				pack: { ...pack, files: [...pack.files, { path: "node_modules/typebox/index.js" }] },
 				error: "Forbidden packed files: node_modules/typebox/index.js",
 			},
+			...[
+				"docs/development.md",
+				"docs/releasing.md",
+				"docs/f9-evaluation.md",
+				"docs/internal/CONTEXT.md",
+				"docs/handoff.md",
+				"docs/slice-3-plan.md",
+				"docs/review-notes.md",
+				"AGENTS.md",
+			].map((path) => ({
+				manifest,
+				pack: { ...pack, files: [...pack.files, { path }] },
+				error: `Forbidden packed files: ${path}`,
+			})),
 		];
 		try {
 			for (const fixture of cases) {
@@ -142,23 +172,76 @@ describe("public release surface", () => {
 		}
 	});
 
-	it("documents published-release compatibility, install, update, and uninstall guidance", () => {
+	it("checks release wording inside the actual archive", () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-advisor-packed-docs-"));
+		const files = [
+			"LICENSE",
+			"README.md",
+			"THIRD_PARTY_NOTICES.md",
+			"package.json",
+			"src/index.ts",
+			"docs/assets/advisor-in-action.png",
+			"docs/configuration.md",
+			"docs/security.md",
+		];
+		try {
+			for (const path of files) {
+				const destination = join(root, "package", path);
+				mkdirSync(dirname(destination), { recursive: true });
+				writeFileSync(destination, readFileSync(path));
+			}
+			writeFileSync(join(root, "package.json"), JSON.stringify(manifest));
+			writeFileSync(
+				join(root, "pack.json"),
+				JSON.stringify({
+					name: manifest.name,
+					version: manifest.version,
+					filename: "pi-advisor-package.tgz",
+					files: files.map((path) => ({ path })),
+				}),
+			);
+			for (const invalid of [false, true]) {
+				writeFileSync(
+					join(root, "package", "README.md"),
+					invalid ? `${readme}\nThis build is unreleased.\n` : readme,
+				);
+				const archive = spawnSync("tar", ["-czf", "pi-advisor-package.tgz", "package"], {
+					cwd: root,
+					encoding: "utf8",
+				});
+				expect(archive.status).toBe(0);
+				const result = spawnSync(
+					join(process.cwd(), "node_modules", ".bin", "tsx"),
+					[join(process.cwd(), "scripts", "validate-pack.ts"), "pack.json"],
+					{ cwd: root, encoding: "utf8", timeout: 10_000 },
+				);
+				expect(result.error).toBeUndefined();
+				expect(result.status).toBe(invalid ? 1 : 0);
+				if (invalid)
+					expect(result.stderr).toContain("Release-preparation wording in packed README.md");
+			}
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("documents Pi Advisor 0.5.0 support and pinned older-Pi releases", () => {
 		expect(manifest.engines?.node).toBe(">=22.19.0");
-		// The Pi 1.0.0 baseline is not a runtime support claim during the packaging-only phase.
 		for (const document of compatibilityDocs) {
 			expect(document.content, document.path).toContain(">=22.19.0");
-			expect(document.content, document.path).toContain(">=0.81.1 <0.85.0");
+			expect(document.content, document.path).toContain("Pi Advisor 0.5.0 targets Pi 1.0.0");
 			expect(document.content, document.path).toContain(
-				"Pi 0.82.0 is the primary tested Pi release",
+				"Wildcard peers are a host-module loading contract, not a compatibility range.",
 			);
+			expect(document.content, document.path).toContain("Published Pi Advisor 0.4.1");
+			expect(document.content, document.path).toContain("npm:@ribbons-digital/pi-advisor@0.4.1");
 			expect(document.content, document.path).toContain(
-				"compatibility coverage retained for Pi 0.81.1, Pi 0.83.0, and Pi 0.84.1",
+				"Live model-service compatibility remains unverified.",
 			);
 		}
-		expect(readme).toContain("Pi Advisor 0.4.1 requires Pi");
-		expect(readme).toContain("Declared compatibility range: >=0.81.1 <0.85.0");
-		expect(readme).toContain("Primary tested Pi release: 0.82.0");
-		expect(readme).toContain("Compatibility-tested Pi releases: 0.81.1, 0.83.0, and 0.84.1");
+		expect(readme).toContain("Supported Pi release: 1.0.0");
+		expect(readme).not.toContain("Declared compatibility range: >=0.81.1 <0.85.0");
+		expect(readme).toContain("Pi Advisor 0.5.0 requires Pi 1.0.0.");
 		expect(readme).toContain("Pi Advisor 0.1.3 is the legacy release for Pi 0.80.7");
 		expect(readme).toContain(
 			"unverifiable provider parity leave Advisor inactive without fallback",
@@ -181,9 +264,65 @@ describe("public release surface", () => {
 		expect(configuration).toContain("current Executor reasoning level as supplementary context");
 		expect(configuration).toContain("Advisor selection remains independent");
 		expect(configuration).toContain("is not automatically coupled");
-		expect(configuration).toContain(
-			"Pi 0.81 compatibility path omits the supplementary Executor text without changing selection or runtime behavior",
+		expect(configuration).not.toContain("Pi 0.81 compatibility path");
+	});
+
+	it("gates CI and manual publication on the verified Pi and Node baselines", () => {
+		// SAFETY: these workflow files are controlled by this repository.
+		const ci = parse(readFileSync(".github/workflows/ci.yml", "utf8")) as WorkflowDefinition;
+		// SAFETY: this release workflow is controlled by this repository.
+		const release = parse(
+			readFileSync(".github/workflows/release.yml", "utf8"),
+		) as WorkflowDefinition;
+		expect(Object.keys(ci.jobs)).toEqual(["verify-pi-1-0-0"]);
+		expect(
+			Object.keys(manifest.scripts ?? {}).filter((name) => name.startsWith("compat:")),
+		).toEqual([]);
+		expect(existsSync("scripts/verify-pi-compat.sh")).toBe(false);
+		const job = ci.jobs["verify-pi-1-0-0"];
+		expect(job?.name).toBe("Verify Pi 1.0.0 on Node ${{ matrix.node }}");
+		expect(job?.strategy?.matrix.node).toEqual(["22.19.0", "22.22.3"]);
+		expect(
+			job?.steps.find((step) => step.uses?.startsWith("actions/setup-node@"))?.with?.[
+				"node-version"
+			],
+		).toBe("${{ matrix.node }}");
+		const commands = job?.steps.map((step) => step.run ?? "").join("\n");
+		for (const command of [
+			"pnpm install --frozen-lockfile",
+			"pnpm verify",
+			"PI_EXPECTED_VERSION=1.0.0 pnpm test:e2e",
+			"pnpm pack:validate",
+			'test "$actual_version" = "1.0.0"',
+		])
+			expect(commands).toContain(command);
+		expect(commands).not.toContain("publish");
+		expect(Object.keys(release.on)).toEqual(["workflow_dispatch"]);
+		expect(release.jobs.publish?.environment?.name).toBe("npm-release");
+		expect(release.on.workflow_dispatch?.inputs.tag.description).toContain("approved");
+		expect(
+			release.jobs.publish?.steps.find((step) => step.uses?.startsWith("actions/setup-node@"))
+				?.with?.["node-version"],
+		).toBe("22.22.3");
+		expect(release.jobs.publish?.steps.map((step) => step.run ?? "").join("\n")).toContain(
+			"PI_EXPECTED_VERSION=1.0.0 pnpm test:e2e",
 		);
+	});
+
+	it("documents recovered-instruction checks and the separate release approval gate", () => {
+		expect(configuration).toContain("changed or missing fingerprint");
+		expect(configuration).toContain("successful nested Memory calls");
+		const releasing = readFileSync("docs/releasing.md", "utf8");
+		expect(releasing).toContain("A clean review does not authorize a merge or publication.");
+		expect(releasing).toContain("Do not republish 0.4.1");
+		expect(releasing).toContain("Release target: v0.5.0.");
+		expect(releasing).toContain("tag the exact approved commit as `v0.5.0`");
+		expect(releasing).toContain("Live model-service compatibility remains unverified.");
+		expect(releasing).toContain("Verify Pi 1.0.0 on Node 22.19.0");
+		expect(releasing).toContain("Verify Pi 1.0.0 on Node 22.22.3");
+		expect(releasing).toContain("does not authorize changing repository protections");
+		expect(releasing).toContain("workflow_dispatch");
+		expect(releasing).toContain("Pi 1.0.0");
 	});
 
 	it("keeps internal development history out of public documentation", () => {
@@ -191,6 +330,19 @@ describe("public release surface", () => {
 			expect(document.content, document.path).not.toMatch(/\bSlice\s+\d/i);
 			expect(document.content, document.path).not.toMatch(/^## Development$/m);
 			expect(document.content, document.path).not.toContain("docs/internal");
+			expect(document.content, document.path).not.toMatch(
+				/\b(?:unreleased|unpublished)\b|planned release|not yet available|until release approval/i,
+			);
+			expect(document.content, document.path).not.toContain("docs/f9-evaluation.md");
+		}
+		expect(readme).toContain(
+			"[Development](https://github.com/ribbons-digital/pi-advisor/blob/main/docs/development.md)",
+		);
+		expect(readme).toContain(
+			"[Release approval](https://github.com/ribbons-digital/pi-advisor/blob/main/docs/releasing.md)",
+		);
+		for (const path of ["docs/development.md", "docs/releasing.md", "docs/f9-evaluation.md"]) {
+			expect(readFileSync(path, "utf8"), path).not.toMatch(/\bunreleased\b/i);
 		}
 	});
 });
